@@ -2033,6 +2033,36 @@ delete 两次。
 `waitForNoInflightReclaimLocked()` 与 `endInflightReclaimLocked()`，保持实现最小。
 **教训**：凡是「为了拿所有权而等待」的设计，都要先问清楚对方此刻是否正阻塞在别处。
 
+#### 16.6.1 更正（2026-11-11 第五段复核裁定）：生命周期等待 ≠ 启动预算
+
+本节初稿曾把两件事混为一谈，按复核意见更正——
+
+- **启动预算 `StartHandshakeTimeoutMs`（100ms）**：语义是「GUI 多久之内必须拿到一个明确
+  答复（成功启动 / 明确拒绝）」。它**必须有界**，超时就必须拒绝，不得把 GUI 拖住。
+- **生命周期等待（`waitForReclaimBorrowsReturned()`、`joinWorkerThread()` 的 `thread->wait()`）**：
+  语义是「这个对象什么时候才真的可以销毁」。它**允许长期无界等待**，因为它的正确性判据是
+  「无人再使用该对象」，而不是「多久之内答复」。
+
+两者共用同一个数字会造成一个必然会犯的错误取舍：**为了不超预算，而在仍有回收调用正在
+使用 worker 时放行 `shutdown()` 并删除它**。第五段复核正是抓到了这个取舍——当时 `shutdown()`
+在 `FlowExecutionService.cpp:128` 的 `thread->wait()` 仍在进行时就接管了删除权，评审探针
+3/3 观察到 `shutdownOk=1` / `shutdownBeforeReclaimReturned=1` / `workerDeletedWhileWaitActive=1`。
+
+因此把两者的适用边界写死如下（**本条只澄清 16.6 自身未区分二者的问题，不引用任何
+此前不存在的原文**）：
+
+- 第 14 章的 `StartHandshakeTimeoutMs`（100ms）**只**约束 `enqueue()` 启动路径上的
+  有界回收 + 握手，二者共用同一个 `QElapsedTimer`（见 16.5 表格与第 14 章）。
+- `shutdown()` / 析构对活跃回收借用的等待**不属于该预算**，它与 `joinWorkerThread()`
+  一样属于生命周期同步，允许无界等待。
+- 混用的后果是可预期的错误取舍：**为了不超预算，而在仍有回收调用正在使用 worker 时
+  放行 `shutdown()` 并删除它**。第五段复核抓到的正是这一点——`shutdown()` 在
+  `FlowExecutionService.cpp:128` 的 `thread->wait()` 仍在进行时就接管了删除权，
+  评审探针 3/3 观察到 `shutdownOk=1` / `shutdownBeforeReclaimReturned=1` /
+  `workerDeletedWhileWaitActive=1`。
+
+第 17 章按此实现 `waitForReclaimBorrowsReturned()` 的无界等待。
+
 ### 16.7 反向验证（判别性）
 
 | 验证 | 结果 |
@@ -2089,3 +2119,689 @@ delete 两次。
 | T2.5 / T2.8 / T2.9 | **暂不收口**（按复核要求，不自行宣告） |
 | T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
 | R2 整批 | **尚未完成**（十轮连续门禁、`git revert` 抽查留待整批） |
+
+---
+
+## 17. T2.5 P1 第七次整改：回收借用必须在「移交指针」的同一临界区内登记
+
+### 17.1 复核提出的问题（第六段）
+
+第 16 章把「在途标记」提前到了 `enqueue()` 的锁内，使 `shutdown()` **看得见**正在被回收的
+worker。但「看得见」不等于「知道有人正在用它」——借用计数虽然加了，却**登记得太晚**：
+
+```
+enqueue()：
+  { QMutexLocker locker(&m_mutex);
+    retired = m_thread;
+    m_thread = nullptr;                      // ① 指针移交
+    beginInflightReclaimLocked(retired); }   // ② 在途可见 —— 解锁
+  ...
+retireWorkerThreadBounded(retired, ...)：
+  ReclaimBorrow borrow(this, retired, ...);  // ③ 此刻才登记借用
+  thread->wait(...);                         // ④ 才使用对象
+```
+
+`shutdown()` 若插在 ② 与 ③ 之间，它读到的借用数为零 → `waitForReclaimBorrowsReturned()`
+立即返回 → 接管所有权并 `delete`；随后 ③ 才登记、④ 才 `thread->wait()`，
+**访问已释放对象**。评审给出的位置是 `FlowExecutionService.cpp:413`（移交）与 `:191`（使用）。
+
+评审同时指出新用例的三处缺陷：
+
+1. 钩子（`tests/test_flowexecutionservice.cpp:2034`）位于**借用登记之后**，覆盖不到上述空档；
+2. 测试**同步**调用 `shutdown()` 时，回收钩子要等最多 5 秒才自行放行，正常修复路径被拖住；
+3. 判据（`:2137`、`:2141`）观察**整个 `startSingle()` 是否返回**，而不是**借用何时归还**，
+   可能把正确实现误判为失败。
+
+### 17.2 修复
+
+**① 借用登记移进同一个临界区。** 新增 `registerReclaimBorrowLocked(WorkerThread*)`，
+调用方必须持 `m_mutex`；`enqueue()` 在同一次加锁内按序完成三件事：
+
+```cpp
+retired = m_thread;
+m_thread = nullptr;                     // 指针移交
+beginInflightReclaimLocked(retired);    // 在途可见
+registerReclaimBorrowLocked(retired);   // 借用随即可见 —— 三件事同一临界区
+```
+
+**② RAII 守卫改为「接管」而非「新建」。** `ReclaimBorrow` 增加
+`enum class Registration { AdoptAlreadyRegistered, RegisterNow }`：
+启动路径传 `AdoptAlreadyRegistered`（只接管已登记的借用，不再登记）；
+`borrowRegistered == false` 时回退 `RegisterNow`，并以 `Q_ASSERT_X` 显式声明该前提。
+
+**③ 删除前必须等借用归还。** `waitForReclaimBorrowsReturned()` 插入两处：
+`joinWorkerThread()` 开头（真正删除之前）与 `shutdown()` 在
+`detachLiveWorkerThreadsLocked()` 之后、`joinWorkerThread()` 循环之前。
+语义是「等回收**函数返回**」，不是「等 worker 退出」——两者并不同时发生。
+
+**④ 生命周期等待与启动预算彻底分开**（见 16.6.1 更正）：`waitForReclaimBorrowsReturned()`
+无界等待，不复用 `StartHandshakeTimeoutMs`(100ms)。
+
+### 17.3 测试判据的重做（三处缺陷逐一对应）
+
+| 评审指出的缺陷 | 本轮的改法 |
+|---|---|
+| 钩子在借用登记之后，覆盖不到空档 | 新增 `setInCriticalSectionHookForTest()`，**在 `enqueue()` 的临界区之内、持锁调用**；同时新增 `inflightWithoutBorrowCountForTest()`（锁内扫描 `m_inflightReclaim`，其中每条线程都必须已有 ≥1 笔借用） |
+| 同步 `shutdown()` 被回收钩子拖住 5 秒 | `shutdown()` 改到独立 `std::thread` 上发起，主线程按**状态**等待（≤300ms，确认它没有提前返回）后放行钩子；实测单轮耗时从 5.3s 降到 458ms 量级，5 次全量运行共 38s |
+| 判据观察 `startSingle()` 是否返回 | 判据改为**采样 `shutdown()` 返回那一刻的借用/守卫状态**，完全不看 `startSingle()` 的返回值 |
+
+### 17.4 过程中被自己否掉的两个无效判据（保留现场）
+
+**无效判据 A：`reclaimStillActive`（回收线程尚未从 `startSingle()` 返回）。**
+缺陷态 3/3 仍绿。原因：`startSingle()` 在回收之后还要走握手，天然会晚一点返回，
+这条判据对「借用是否已归还」不敏感。
+
+**无效判据 B：`activeReclaimBorrowCountForTest() > 0`（计数表非零）。**
+缺陷态仍绿，原因更本质：**计数表就是 `shutdown()` 的等待条件**。正确的 `shutdown()`
+在 `waitForReclaimBorrowsReturned()` 之后才继续，所以它返回时计数表必然为 0；
+缺陷态的 `shutdown()` 走「非 Idle 早退」分支时不删任何东西，计数表同样可能是 0。
+于是「计数表 > 0」在两种实现下**都**读不到，判据没有判别力。
+
+**有效判据：`liveReclaimGuardCountForTest() > 0`（借用守卫是否仍在作用域内）。**
+它与 `shutdown()` 的等待没有耦合假设：缺陷态下 `shutdown()` 不等就返回，回收守卫
+仍停在钩子上（作用域内）→ 必然 > 0。实现上是 `ReclaimBorrow` 的一个
+`std::atomic_bool m_alive` + `.cpp` 匿名空间里的全局原子计数，**不新增类数据成员**
+（遵守测试钩子纪律），构造时在借用生效**之后**置位、析构时在归还**之前**撤销。
+
+同时把缺陷判据**从「`shutdownOk && 借用>0`」改为「`shutdown` 已返回即算」**：缺陷态的
+`shutdown()` 在回收活跃时会走非 Idle 早退并返回 **false**，把判据挂在 `shutdownOk` 上
+会漏掉这条最典型的缺陷路径。
+
+> **更正（2026-11-12 第六段复核 P2，第 18.4 节）**：上面这条改法是**错的**，已撤回。
+> 既定契约里 `shutdown()` 返回 `false` 只表示「非 Idle：已请求停止，未销毁任何对象」，
+> 这种情形下**允许**仍有回收借用、也允许 worker 还在跑——它们本来就该留着。
+> 把「返回 `false` 且仍有借用」算作缺陷，等于把 `false` 的语义扩大成「也已安全关闭」。
+> 正确做法是**让用例进入成功关闭路径**（首启不入队任何 job、服务处于 Idle），
+> 判据只挂在 `shutdownOk == true` 上，并以「至少一轮真的走了成功关闭路径」为正向前提。
+> 详见第 18 章。
+
+### 17.5 缺陷态的构造（隔离工作树，不在交付树）
+
+位置：`/var/tmp/t25r5-wt`（`git worktree` **detach 于 `199bbfb`**）、
+构建目录 `/var/tmp/t25r5-b1`。缺陷态**从交付树源码用脚本派生**，只动三处：
+
+1. `enqueue()` 去掉 `registerReclaimBorrowLocked(retired)`，改 `borrowRegistered = false;`
+   （即第六次整改原貌：借用登记推迟到 `retireWorkerThreadBounded()` 内）；
+2. `retireWorkerThreadBounded()` 把 `runReclaimWaitHookForTest()` 移到 `ReclaimBorrow`
+   构造**之前**，使钩子正好落在「指针已移交、借用未登记」的窗口正中；
+3. 关闭 `Q_ASSERT_X(borrowRegistered, ...)`——该断言的前提正是本变体要撤销的那条不变量。
+
+> 现场保留：派生脚本第一次跑时锚点匹配失败（`AssertionError: hook block not found`），
+> 是因为锚点文本中间夹了一行注释；随后又出现「钩子被调用两次 → 第一处等 5s、
+> 主线程永久 join」的挂死（`rc=124`）。都已逐个定位修正，最终缺陷态三处标记
+> 与交付树 diff 逐字节可核对。
+
+### 17.6 反向验证（判别性）
+
+| 验证 | 结果 |
+|---|---|
+| **撤销态**（借用登记推迟到 `retireWorkerThreadBounded()` 内） | **5/5 `rc=1`**，全部失败于 `invariantViolations.load() == 0`（`violations=3`） |
+| **修复态**（借用登记与指针移交同临界区） | **5/5 `rc=0`**，`windowHits=3`、`earlyDeletes=0`、`invariantViolations=0` |
+| 服务套件（修复态，格式化前） | **30/30、`SUITE_rc=0`**（31919ms） |
+| 正向前提 | `windowHits=3`：确实进入过「移交指针 + 登记借用」的同一临界区，证明被测路径执行过 |
+
+**判别性说明**：撤销态未出现「仍全绿」，故不适用第 12/13 章的「无判别力」判定。
+`windowHits=3` 作为正向前提，排除了「测了未执行的代码」。
+
+日志：缺陷态 `/var/tmp/t25r5-defect-final-{1..5}.log`、
+修复态 `/var/tmp/t25r5-fix-final-{1..5}.log`、套件 `/var/tmp/t25r5-suite-fix.log`。
+
+### 17.7 状态
+
+| 项 | 状态 |
+|---|---|
+| P1（借用登记晚于指针移交） | **已复现（撤销态 5/5 红灯）、已修复、修复态 5/5 绿**，性质为真实缺陷 |
+| 第 16 章 P1 | 本轮整改覆盖其「删除前未等借用归还」的一半；**第 16 章结论需随本章一并复审** |
+| T2.5 / T2.8 / T2.9 | **暂不收口**（按复核要求，不自行宣告） |
+| T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
+| R2 整批 | **尚未完成**（十轮连续门禁、`git revert` 抽查留待整批） |
+
+---
+
+## 18. T2.5 P1 第八次整改：关闭期间禁止启动 + 用例判别性重做
+
+基线 `199bbfb`（第 17 章结论）。第六段复核给出 1 项 P1、2 项 P2，本章逐条对应。
+
+### 18.1 P1：shutdown 期间仍能启动新任务（真实缺陷）
+
+**机理。** `shutdown()` 的 Idle 路径置 `m_quitRequested = true`，但 `enqueue()` 的最终入队
+调用 `ensureThreadLocked()`，后者把 `m_quitRequested` **复位成 false**——那是为
+「shutdown 之后可以重新启动」准备的。于是关闭期间到达的启动请求照样重建 worker、
+照样执行任务。另一道 `m_reclaimAborted` 只在 `detachLiveWorkerThreadsLocked()` 发现
+**存在在途回收**时才置位，普通 Idle 关闭根本不置位，`enqueue()` 入口的检查形同虚设。
+
+复核实测 3/3：`shutdown=true` 但新任务在跑、引擎仍忙。同一现象在上一轮构建也能复现，
+因此是**既有缺口**，不是本轮新引入。
+
+**修复（四步）。**
+
+| 步骤 | 位置 | 内容 |
+|---|---|---|
+| 1 | `FlowExecutionService.h:311` | 新增独立标记 `bool m_shutdownInProgress = false`（**不**复用 `m_reclaimAborted`：后者语义是「让回收线程让出所有权」，与「服务正在关闭」不是一回事） |
+| 2 | `shutdown()` 入口 `:775` | 在锁内**一开始**就置位，覆盖所有关闭路径（Idle 与非 Idle） |
+| 3 | 非 Idle 分支 `:800` | **撤销标记**。该分支按既定契约「只请求停止并返回 false」，不销毁任何对象；把标记留在置位状态会把 false 的语义扩大成「服务已关闭」，使后续正常启动被永久拒绝 |
+| 4 | 成功关闭结尾 `:821` + `enqueue()` 入口 `:454` + **最终入队临界区 `:526`** | 关闭完成时清除；入口与最终入队各检查一次。**两处都要**：入口检查发生在回收之前，之后 shutdown 可能已完成收尾并返回；最终入队才是「命令即将交给 worker」的最后一刻 |
+
+### 18.2 P2：用例放行点耦合，掩盖了「不等待借用就删除」
+
+**评审手法。** 只把「等待借用归还」的助手替换为空操作，交付测试仍 **3/3 通过**；
+独立生命周期探针则 3/3 检出提前删除。
+
+**根因。** 旧用例把「放行旧 worker」写在 starter 线程里 `startSingle()` **之后**：
+
+```cpp
+starter = std::thread([&] {
+    (void) service.startSingle();
+    reclaimReturned.store(true, ...);
+    holdBarrier.store(false, ...);   // <-- 放行屏障
+    releaseBarrier.release();
+});
+```
+
+这隐含了「`startSingle()` 已返回 => worker 已退出」这一**测试自己制造的**顺序，
+于是借用必然先归还、缺陷无从显现。
+
+**整改。** 两个控制点彻底解耦，都不由 `startSingle()` 的返回驱动：
+
+| 控制点 | 控制对象 | 由谁放行 |
+|---|---|---|
+| A `releaseReclaimHook` | 回收调用是否归还借用 | 主线程，在 shutdown 已确认停在窗口内之后 |
+| B `releaseBarrier` | 旧 worker 是否退出 | 主线程，在判据采样并 join 之后 |
+
+配套的顺序修正（第一版实测暴露）：必须先把**退出屏障关掉**、建好常驻 worker
+（跑一次正常 job 回到 Idle），**再**武装屏障。否则首启的启动握手会撞上
+「回收调用等 worker 退出、而 worker 正卡在屏障里」，触发
+`QThread::wait: Thread tried to wait on itself`，用例全轮跳过（`windowHits=0`）。
+同理，预热阶段必须先 `armed.store(0)`，否则故障注入让 worker 第一轮就退役。
+
+### 18.3 P2：测试与证据扩大了 `shutdown(false)` 的保证
+
+**问题。** 旧判据把「`shutdown()` 返回时仍有借用」一律算缺陷，且**刻意不要求**
+`shutdownOk`。但既定契约里 `return false` 只表示「非 Idle：已请求停止，未销毁任何
+对象」——这种情形下允许仍有借用、也允许 worker 还在跑，它们本来就该留着。
+把它算作缺陷，等于把 false 的语义扩大成「也已安全关闭」。
+
+**整改。** 不改 `shutdown()` 的 false 语义，而是**让用例进入成功关闭路径**：
+
+1. 用例每轮先跑一次正常 job 回到 Idle，服务处于 Idle 且无在途 job => 走 Idle 关闭分支；
+2. 判据只挂在 `shutdownOk == true` 上，并要求「返回时守卫数为 0 **且** 被借用的 worker
+   不在运行」（新增 `workerRunningAtReturn` 采样，直接对应「提前删除」的后果）；
+3. 新增正向前提 `shutdownOkRounds >= 1`：缺这一条，`earlyDeletes==0` 也可能只是
+   「一次都没走过成功关闭路径」；
+4. 走 false 分支的轮次打印诊断但**不计缺陷**。
+
+同一条更正同步写回 §17.4（见该节的「更正」块）。
+
+### 18.4 新增用例：`testStartDuringShutdownMustBeRejected`
+
+停靠点用 **worker 退出屏障**，不是回收等待钩子。第一版用回收钩子实测 `windowsEntered=0`：
+Idle 关闭路径下 `m_thread` 直接进 retiring，**根本不经过** `retireWorkerThreadBounded()`，
+钩子不触发。退出屏障位于 `WorkerThread::run()` 末尾（`workerLoop()` 已返回、线程尚未
+结束），Idle 关闭必须经 `joinWorkerThread()` 等它，因此一定能停住 `shutdown()`，
+且屏障等待不持 `m_mutex`。
+
+用例流程（3 轮）：预热 job -> 武装退出屏障 -> 独立线程发起 `shutdown()` -> 等「worker 已停
+在屏障上」-> **主线程发起 `startSingle()`** -> 断言被拒绝且模块执行次数不变 ->
+放行屏障并收敛。
+
+判据：`startedDuringClose == 0`、`runsDuringClose == 0`，正向前提 `windowsEntered >= 1`。
+
+### 18.5 反向验证（判别性）
+
+缺陷态位置：`/var/tmp/t25r7-defect-wt`（`git worktree` detach 于 `199bbfb`，**仅**同步
+本轮三个源码文件）+ 构建目录 `/var/tmp/t25r7-defect-build`。两处缺陷用**环境变量**切换
+（未设置时行为与交付树完全一致），避免为每个变体各付一次 Generate：
+
+| 变体 | 派生方式 | 对应评审判点 |
+|---|---|---|
+| A | `waitForReclaimBorrowsReturned()` 在 `DEEPLUX_DEFECT_NO_WAIT_BORROW` 非空时**直接 return**（即评审的「把等待助手换成空操作」） | P2 判别性 |
+| B | 删去 `enqueue()` 最终入队临界区的 `if (m_shutdownInProgress) return false;` | P1 |
+
+**验收口径**：变体 A 下 `testShutdownMustWaitForActiveReclaimBorrowBeforeDeleting` 必须
+变红；变体 B 下 `testStartDuringShutdownMustBeRejected` 必须变红；两者在对应环境变量
+未设置时都必须复绿。
+
+### 18.6 结果
+
+**缺陷态构造的实际形态（修正记录）。** 第一版把两处缺陷写成**无条件**撤销，结果
+「缺陷态构建 + 不设环境变量」仍然红灯（`accepted=3`），无法与修复态对照。改为
+**环境变量门控**后的最终形态：
+
+| 变体 | 变量 | 生效内容 | 未设置时 |
+|---|---|---|---|
+| A | `DEEPLUX_DEFECT_NO_WAIT_BORROW` | `waitForReclaimBorrowsReturned()` 直接 `return` | 与交付树等价 |
+| B | `DEEPLUX_DEFECT_ALLOW_START_DURING_SHUTDOWN` | `enqueue()` 入口与最终入队**两处**都不看 `m_shutdownInProgress` | 与交付树等价 |
+
+> 现场保留：变体 B 起初只撤销**最终入队**的检查，缺陷态仍 5/5 全绿——因为入口
+> `:466` 的检查先把启动拒掉了。这说明「最终入队检查」单独存在时并非唯一防线，
+> 撤销必须同时覆盖两处，才对应评审所说的「既有缺口」。
+
+**判别性打磨过程中的三次失败（保留现场，均已在交付测试中修正）。**
+
+1. **`windowHits=0`（用例全轮跳过）**：停靠点最初用回收等待钩子，但 Idle 关闭路径下
+   `m_thread` 直接进 retiring，**不经过** `retireWorkerThreadBounded()`，钩子永不触发。
+   改为 worker 退出屏障。
+2. **`windowHits=0`（预热吃掉了钩子）**：`reclaimHookEnabled` 在循环开头就置 true，
+   预热那次 `startSingle()` 把钩子消费掉了。改为预热之后才武装。
+3. **`windowHits=3` 但 `at return: liveGuards=0`（缺陷态仍全绿）**——最本质的一次：
+   旧版让旧 worker 一直卡在退出屏障上，于是 `shutdown()` 里的 `joinWorkerThread() ->
+   thread->wait()` 恰好被这条 worker 挡住。**「等 worker 退出」与「等借用归还」在
+   worker 尚未退出时恰好同效**，缺陷被掩盖。修正：先放行 worker 退出并确认它真正结束
+   （`oldWorkerRunning==false`），此时 `thread->wait()` 立即返回，shutdown 唯一的阻挡
+   就只剩「等待借用归还」；回收调用仍停在钩子上，借用确定处于持有状态。
+
+**实测（最终形态）。**
+
+| 验证 | 命令 | 结果 |
+|---|---|---|
+| 修复态 · 借用用例 | `./bin/test_flowexecutionservice testShutdownMustWaitForActiveReclaimBorrowBeforeDeleting` ×5 | **5/5 `rc=0`**，`windowHits=3 earlyDeletes=0 shutdownOkRounds=3` |
+| 缺陷态 A · 借用用例 | `DEEPLUX_DEFECT_NO_WAIT_BORROW=1` ×5 | **5/5 `rc=134`**（SIGSEGV，use-after-free），`Totals: 1 passed, 1 failed` |
+| 缺陷态 A · 不设变量 | 同上 ×3 | **3/3 `rc=0`**，`windowHits=3 earlyDeletes=0`（对照成立：门控关闭时等价修复态） |
+| 修复态 · P1 用例 | `... testStartDuringShutdownMustBeRejected` ×5 | **5/5 `rc=0`**，`windowsEntered=3 rejected=3 accepted=0 runsDuringClose=0` |
+| 缺陷态 B · P1 用例 | `DEEPLUX_DEFECT_ALLOW_START_DURING_SHUTDOWN=1` ×5 | **5/5 `rc=1`**，`windowsEntered=3 rejected=0 accepted=3 runsDuringClose=3` |
+| 缺陷态 B · 不设变量 | 同上 ×5 | **5/5 `rc=0`**，`accepted=0 runsDuringClose=0`（对照成立） |
+| 服务套件（交付树） | `./bin/test_flowexecutionservice` | **31/31、`SUITE_rc=0`** |
+
+**判别性结论。** 两个用例在各自缺陷态下均**未出现「仍全绿」**：借用用例以
+`rc=134`（真实 use-after-free）失败，P1 用例以 `accepted=3 runsDuringClose=3`
+（关闭期间模块确实执行了）失败。正向前提 `windowHits>=1` / `windowsEntered>=1`
+每次都成立，排除了「测了未执行的代码」。
+
+**环境变量未设置时的等价性**是本章自查补上的一环：第一版缺陷态是无条件撤销，
+「不设变量」也红灯，等于对照组失效；改为门控后三组对照全部复绿，双向才真正成立。
+
+日志（均在 `/var/tmp/`）：缺陷态 A `r7d-borrow-{1..5}.log`、A 对照 `r7A-off-{1..3}.log`、
+缺陷态 B `r7B-on-{1..5}.log`、B 对照 `r7B-off-{1..5}.log`、修复态
+`r7f-borrow-{1..5}.log` / `r7f-p1-{1..5}.log`、套件 `r7-suite-final.log`。
+
+### 18.7 状态
+
+| 项 | 状态 |
+|---|---|
+| P1（关闭期间可启动新任务） | **已复现（缺陷态 B 5/5 红灯）、已修复、修复态 5/5 绿**，性质为真实缺陷 |
+| P2（用例放行点耦合） | **已整改，判别性双向成立**（空操作化后 5/5 `rc=134`） |
+| P2（扩大 `shutdown(false)` 语义） | **已整改**：判据只挂成功关闭路径，并以 `shutdownOkRounds>=1` 为前提；§17.4 已同步更正 |
+| §17 的判定 | 本轮**不改写** §17 的通过记录，但其中「判据不要求 shutdownOk」一条已被 §18.3 取代 |
+| T2.5 / T2.8 / T2.9 | **暂不收口**（按复核要求，不自行宣告） |
+| T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
+| R2 整批 | **尚未完成**（十轮连续门禁、`git revert` 抽查留待整批） |
+
+---
+
+## 19. T2.5 P1 第九次整改：排他关闭权 + 可独立编译的 NF 基线 + 死变量清理
+
+> **本章更正第 18 章的收口判断。** 第 18 章基于已撤销的提交链
+> `45369b5 / 5a6f987 / 7b6b22c / 0a1d940`，宣称「P1 已修复、判别性双向成立」。
+> 第八段复核（`/tmp/deeplux-t25-r8-review.xNyqjd/REVIEW.md`，Reviewed `0a1d940`）
+> 用独立探针推翻了这一结论：单次关闭期间拒绝启动**成立**，但**第二次 `shutdown()`
+> 会提前解除第一次关闭的保护**；同一条链上的**测试提交不能独立编译**，用例还有
+> **固定约 15s 死等**。故整条链以 `git reset --mixed 199bbfb` 撤销重做。
+> 第 18 章保留为过程记录，其结论以本章为准；§18.7 中「P1 已修复」不再成立。
+
+### 19.1 复核提出的三项问题（逐条只读核对）
+
+复核证据 `REVIEW.md` 的关键输出：
+
+```text
+Single shutdown, start attempted while old worker held at exit | 3/3 correctly rejected
+Second shutdown during first shutdown, then attempt start       | 3/3 reproduced early success and accepted start
+Borrow-wait helper replaced with no-op via LD_PRELOAD          | rc=134, fatal signal 11
+Current service suite                                          | 31/31, 46824ms
+Test-only commit 45369b5 syntax check                          | Compile failure: seven missing test-hook methods
+clang-format dry-run; git diff --check                         | Passed
+secondShutdownOkBeforeWorkerReleased=1 shutdownOk=1 restartOk=1
+activeAtShutdownReturn=1 engineBusyAtShutdownReturn=1
+```
+
+| 编号 | 复核判点 | 位置 | 本轮只读核对结果 |
+|---|---|---|---|
+| P1 | 第二次 `shutdown()` 提前解除第一次关闭的保护；应在锁内取得**排他关闭权**，重入调用不得清除原关闭者的标记 | `FlowExecutionService.cpp:775`（入口）、`:821`（标记清除） | 属实。旧入口无条件 `m_shutdownInProgress = true`；第二次调用看到空 `retiring`/`inflight`，走到成功结尾返回 `true` 并清标记，随后 `enqueue()` 放行新任务 |
+| P2 | 测试提交 `45369b5` 用了直到 `5a6f987` 才提供的 7 个接口，单独检出**编译失败**，不构成 NF 红灯基线；撤销完整修复也会删除测试基础设施 | `tests/test_flowexecutionservice.cpp:2036` | 属实。`45369b5` 只改测试文件（+627），`5a6f987` 才改 `.h`(+126)/`.cpp`(+304) 提供 hook |
+| P3 | `reclaimReturned` 初始化为 `false` 后无任何写入，三轮等待各耗尽 5s，后续「仍在回收」诊断恒真 | `tests/test_flowexecutionservice.cpp:2186`、`:2305` | 属实。套件耗时 46824ms 中含约 15s 无效等待 |
+
+**已确认改善（复核明确列出，本轮不改）**：单次关闭期间启动被正确拒绝；借用测试撤销等待后已变红
+（`rc=134`）；`shutdown(false)` 判据已纠正；服务套件 31/31、格式与差异检查通过。
+
+### 19.2 提交链重做：钩子基础设施与行为修复必须分离
+
+**旧链（已撤销）：**
+
+```text
+199bbfb docs: record the fourth-round P1 (off-lock reclaim ownership window)
+45369b5 test: cover start-during-shutdown and decouple the reclaim-borrow window
+5a6f987 fix: forbid starting a job once shutdown has begun (P1)
+7b6b22c docs: record the eighth-round P1 fix and the corrected borrow-window judgement
+0a1d940 docs: drop a stray blank line at end of the evidence file
+```
+
+**新链（`git reset --mixed 199bbfb` 后重做）：**
+
+```text
+199bbfb docs: record the fourth-round P1 (off-lock reclaim ownership window)
+c60f76e test: provide lifecycle test hooks and land the borrow-ownership hardening (infra)
+2ef8011 test: cover start-during-shutdown, reclaim-borrow window, and shutdown reentry
+b2bfbec fix: forbid starts during shutdown and serialize shutdown ownership (P1)
+293d69b style: clang-format the shutdown-owner regression test
+C4      docs/证据（本章）
+```
+
+`293d69b` 是门禁自查发现的**本轮真实退步**：重做 C2 时新增用例未经
+`clang-format`，`--dry-run --Werror` 报 5 处违规（`:2787`–`:2822`）。按既有惯例
+（旧链曾为文档末尾空行单独补 `0a1d940`），用独立 `style` 提交修正，只改测试文件
+（4 insertions / 6 deletions，纯换行与空白，**语义与判据零改动**），不动已拆好的
+C1/C2/C3 链。`FMT_rc=0`、`DIFFCHECK_rc=0`。
+
+拆分口径：测试基础设施（hook / `ReclaimBorrow` / 借用登记时序）**先于**测试提交落地，
+行为修复（含 `m_shutdownInProgress` 与排他关闭权）**最后**落地。于是「测试提交单独检出」
+既能编译、又必然因运行断言变红；撤销 `b2bfbec` 不再删除任何测试基础设施。
+
+**可恢复性归档**（执行 `git reset --mixed` 前完成）：
+
+- `git branch backup/r8-pre-resplit 0a1d940`（旧链 HEAD 仍可检出）。
+- `/var/tmp/deeplux-r9-backup/`：四个源文件的完整副本 + `OLD_SHA_MAP.txt`（旧 SHA 映射）。
+- 五份提交快照导出并逐字节核对（`git show <c>:<p> | sha256sum` vs `sha256sum <snap>`，**5/5 MATCH**）：
+
+| 快照 | commit:path | SHA-256 |
+|---|---|---|
+| `C1.FlowExecutionService.h` | `c60f76e:src/core/engine/FlowExecutionService.h` | `70fbfa04cac85e38c9d38996fddcc95eb37217252333169a216391c49d5b0fdd` |
+| `C1.FlowExecutionService.cpp` | `c60f76e:src/core/engine/FlowExecutionService.cpp` | `9614fbe831f130e7097043e1854a28e39f9f0c019364aab2756a8d43fa104e95` |
+| `C2.test_flowexecutionservice.cpp` | `2ef8011:tests/test_flowexecutionservice.cpp` | `6fc3c33b47f24d22384e118bcbc10651efe4af2e65682bbca0407855cb481eb1` |
+| `C3.FlowExecutionService.h` | `b2bfbec:src/core/engine/FlowExecutionService.h` | `2581e71a4de5b9568cc54eca4bbc5ced0744a0a5c5e43d34aff95283a78c20e4` |
+| `C3.FlowExecutionService.cpp` | `b2bfbec:src/core/engine/FlowExecutionService.cpp` | `1766e089b00f05363189efa5c560844e8e0c4340955ce0b89d18d18908000e89` |
+
+**半初始化工作树的修复（现场保留）。** `git worktree add --detach /var/tmp/t25r9-wt b2bfbec`
+在 `Updating files: 93%` 被 SIGTERM（`Exit Code 137`），残留 0 字节 `index.lock`、
+无 index、862 条 staged deletion、`locked` 标记。处理顺序：确认无存活 git 进程 →
+删除陈旧 `index.lock` → `git -C /var/tmp/t25r9-wt reset --hard HEAD`（`RESET_rc=0`，
+`Updating files: 100% (850/850), done.`）→ `status --short` **0 行** →
+`git worktree unlock`（`UNLOCK_rc=0`）。**未带半初始化状态做任何验证。**
+
+### 19.3 P1 修复：关闭权是排他的（`b2bfbec`）
+
+**根因。** `m_shutdownInProgress` 旧语义只是「正在关闭」的布尔标记，不区分「谁持有本次关闭」。
+第一次关闭已在 `detachLiveWorkerThreadsLocked()` 把旧 worker 移进 `retiring`，随后阻塞在
+`joinWorkerThread()` 的 `thread->wait()`；此时第二次 `shutdown()` 进入同一临界区，无条件
+重新置位，看到的 `retiring` 是**自己的空局部列表**，于是一路走到成功结尾：返回 `true`、
+清掉第一次关闭者的标记、`m_reclaimWake.wakeAll()` 并报告「清理已完成」。
+第一次关闭者仍持有旧 worker，新 `enqueue()` 却已通过两道检查并执行。
+
+**修复**：在 `shutdown()` 入口的**同一临界区**内先取得排他关闭权（`b2bfbec`）：
+
+```cpp
+if (m_shutdownInProgress) {
+    return false;   // 重入调用不是 owner：不清标记、不改收尾状态、不报告完成
+}
+m_shutdownInProgress = true;
+```
+
+只有 owner 在成功结尾清除标记并恢复服务；非 Idle 分支仍按契约撤销标记后返回 `false`。
+`waitForReclaimBorrowsReturned()` 的注释同步更正：`m_reclaimAborted` **只在存在在途回收时**
+由 `detachLiveWorkerThreadsLocked()` 置位，普通 Idle 关闭不能依赖它——「禁止新启动」与
+「等借用归还」的先后关系由 `m_shutdownInProgress` 建立，二者仍是生命周期等待，不复用
+`StartHandshakeTimeoutMs(100ms)`。
+
+**新增回归** `testSecondShutdownMustNotReleaseFirstShutdownGuard()`（C2，3 轮）：
+用 `setWorkerExitBarrierForTest()` 把第一次 `shutdown()` 停在关闭段中间，叠加第二次
+`shutdown()`，随后发起 `startSingle()`。判据：
+
+```cpp
+QVERIFY2(windowsEntered.load() >= 1, ...);              // 正向前提：被测路径真被执行
+QVERIFY2(firstShutdownOkRounds.load() >= 1, ...);
+QVERIFY2(secondShutdownOk.load() == 0, ...);            // 重入不得报告完成
+QVERIFY2(restartAccepted.load() == 0, ...);             // 不得放行新启动
+QVERIFY2(runsDuringGuard.load() == 0, ...);             // 关闭期间模块不执行
+QVERIFY2(restartAfterRelease, ...);                     // owner 释放后服务恢复可用
+```
+
+### 19.4 P2 修复：NF 红灯基线必须来自运行断言
+
+**C1 `c60f76e`（infra）**：保留全部测试钩子、`ReclaimBorrow` RAII 守卫、
+`liveReclaimGuardCountForTest()`、`waitForReclaimBorrowsReturned()` 与既有借用登记时序，
+但**不含任何 `m_shutdownInProgress` 行为修复**。核对结果：
+
+```text
+C1.h   ForTest decls           : 21
+C1.h   m_shutdownInProgress    : 0
+C1.cpp m_shutdownInProgress    : 0
+```
+
+C2 测试引用的 21 个 `ForTest` 符号中，4 个不在 `FlowExecutionService.h`
+（`setExecutionFaultInjectionForTest` / `clearExecutionFaultInjectionForTest` /
+`clearFinalizeHookForTest` / `setModuleExecutionAffinityForTest`），已逐一核对为
+`RunEngine.h:291/296/298/299` 的**既有**声明——不是本轮新增、不会随行为修复一起消失。
+
+**C2 `2ef8011`（test）**：在 C1 之上可独立编译；含 P3 清理、排他关闭权用例与既有两项借用/关闭用例。
+**C3 `b2bfbec`（fix）**：仅改 `.h/.cpp`（`git diff --stat 2ef8011 b2bfbec` =
+2 files changed, 70 insertions(+), 4 deletions(-)），**不碰测试文件**。
+
+因此「测试提交单独检出」= `c60f76e` 的 `.h/.cpp` + `2ef8011` 的测试源文件，
+等价命令 `git checkout -f 2ef8011`，其红灯只能来自 `QVERIFY2` 运行断言。
+
+### 19.5 P3 修复：`reclaimReturned` 只作收尾兜底
+
+P3 是 §18.2「放行点解耦」的残留：starter 线程不再写完成信号，但变量、等待循环和
+`reclaimStillActive` 诊断被保留下来，导致 `false` 恒值 → 三轮各空等 5s → 约 15s 固定开销、
+诊断恒真。修复（C2）：
+
+```cpp
+// P3 更正：本变量**只**用于下方 join 的有界兜底，绝不参与任何判据。
+std::atomic_bool reclaimReturned{false};
+starter = std::thread([&] {
+    (void) service.startSingle();
+    reclaimReturned.store(true, std::memory_order_release);
+});
+```
+
+同时删除 `reclaimStillActive` 与 `qInfo` 中的 `(reclaimReturned=%d)` 字段，等待循环注释
+明确「只用于避免主线程在 join 上永久阻塞，绝不参与判据」。核对：
+`reclaimReturned` 写入次数 = 1，`reclaimStillActive` 出现次数 = 0。
+
+### 19.6 缺陷态构造：隔离工作树 + 环境变量门控
+
+- 工作树：`/var/tmp/t25r9-wt`（detach，出工作区），构建目录：`/var/tmp/t25r9-gate`（全新）。
+- 配置：`TMPDIR=/var/tmp/gcc-tmp`（`/tmp` 为 10M tmpfs），
+  `-DUSE_QT6=ON -DQt5_DIR=/usr/lib/x86_64-linux-gnu/cmake/Qt5
+  -DONNXRUNTIME_DIR=/home/charles/Data/onnxruntime
+  -DOpenCV_DIR=/usr/local/lib/cmake/opencv4 -DDEEPLUX_NATIVE_SAM=ON
+  -DENABLE_CAMERA_BASLER=OFF -DENABLE_CAMERA_HIKVISION=OFF -DENABLE_HYMSON3D=OFF`。
+  （`OpenCV_DIR` 用真实可用路径 `/usr/local/lib/cmake/opencv4`，实测
+  `OpenCV: Found (version 4.8.1)`、`Qt version: 5.15.3`。）
+- CTest：`unset DISPLAY`、`QT_QPA_PLATFORM=offscreen`、`TMPDIR` 指向大容量 `/var/tmp` 目录。
+- 门控缺陷（**只在隔离工作树应用**，脚本 `make_defect.py`）：
+
+```cpp
+static const bool allowReentry =
+    !qgetenv("DEEPLUX_DEFECT_ALLOW_SHUTDOWN_REENTRY").isEmpty();
+if (!allowReentry && m_shutdownInProgress) {
+    return false;
+}
+m_shutdownInProgress = true;
+```
+
+未设置变量时 `!allowReentry && m_shutdownInProgress` 等价于交付树的
+`m_shutdownInProgress`；设置时跳过排他检查，复现「第二次 shutdown 清标记并接受启动」。
+脚本锚点先在副本上 dry-run 通过（`DRYRUN_rc=0`，两处替换各 1 次匹配）。
+
+### 19.7 门禁环境事故与处置（如实留档，不重试到绿）
+
+第一次门禁跑在**交付树既有局部构建目录** `build/`（Qt5 Makefile，非全新目录），
+命令 `TMPDIR=/var/tmp/gcc-tmp make -j24` + `ctest --output-on-failure`，得到三个红信号：
+
+| 项 | 结果 | 原始输出 |
+|---|---|---|
+| 全量构建 | `BUILD_ALL_rc=2`、`ERROR_COUNT=1`，38% 中断 | `Cannot create temporary file in /var/tmp/gcc-tmp/: Operation not permitted` → `c++: internal compiler error: Aborted signal terminated program collect2` → `libLinesDistancePlugin.so] Error 4` |
+| 全量 CTest | `CTEST_rc=8`，`96% tests passed, 4 tests failed out of 97`，430.61s | 失败：`4 - test_mainwindow`、`38 - test_imagerefreshcoalescer`、`39 - test_flowidentitycontract`、`46 - test_agentactor (SEGFAULT)` |
+| 格式 | `FMT_rc=1` | 5 处 `clang-format-violations`，全在新增用例 `:2787`–`:2822` |
+
+**本轮改动的服务套件本身通过**：
+
+```text
+18/97 Test #18: test_flowexecutionservice ............   Passed   38.90 sec
+```
+
+**根因判定（环境，非源码）。** `/var/tmp/gcc-tmp` 为 `root:root 775`，磁盘 456G 可用、
+inode 使用率 6%，空间/权限均正常；但目录内 `cc*.s` / `cc*.cdtor.c` 临时文件**全部为
+0 字节**，对应 GCC `mkstemp` 拿到 `EPERM`（沙箱对并发临时文件创建的拦截，`-j24` 放大）。
+构建在 38% 中断后，已更新的 `libdeeplux_core.so` 与大量**未重编**的旧测试二进制处于
+半更新状态，那 4 个失败（含 `test_agentactor` SEGFAULT、`test_mainwindow` 大量
+`BashProcess::Failed`）是**构建不完整的连锁反应**，不是本轮源码回归的证据。
+
+**处置（严守两条纪律）。**
+
+1. **不在旧目录重试到绿**——旧的 `build/` 结果不作为门禁结论，原样留档：
+   `/var/tmp/deeplux-r9-backup/delivery_build_all.log`、`delivery_ctest.log`、
+   `delivery_fmt.log`、`delivery_gate_result.log`。
+2. **门禁移到工作区外全新目录** `/var/tmp/t25r9-gate`
+   （`CONFIGURE_rc=0`，`Generating done (1342.7s)`，`Build files have been written`），
+   源码为独立工作树 `/var/tmp/t25r9-wt`（detach `293d69b`，`status --short` **0 行**），
+   TMPDIR 改为构建目录私有 `/var/tmp/t25r9-gate/tmp`，并发降为 `-j8`，
+   CTest 用 `unset DISPLAY` + `QT_QPA_PLATFORM=offscreen` + 大容量 TMPDIR。
+3. **那 4 个失败是否消失，由该全新目录的完整 CTest 判定，不预设结论**；若仍红，
+   按真实回归深挖，不得收口。
+
+### 19.8 NF 红灯基线：测试提交单独检出（P2 判定）
+
+**执行位置**：工作树 `/var/tmp/t25r9-wt`（detach `2ef8011`）、构建目录
+`/var/tmp/t25r9-gate`、脚本 `/var/tmp/deeplux-r9-backup/iso_experiments.sh`、
+结果 `iso_experiments_result.log`、日志 `iso_nf_*.log`。
+
+命令：`git -C /var/tmp/t25r9-wt checkout -f 2ef8011` →
+`make test_flowexecutionservice -j8`（`TMPDIR` 为构建目录私有）。
+
+前置核对（证明「无行为修复」且「可独立编译」）：
+
+```text
+NF_HEAD=2ef801191e9057d4e1630730dccaf6f287782566
+NF_DIRTY_LINES=0
+NF_HAS_FIX_MARKER=0              # .cpp 中 m_shutdownInProgress 出现 0 次
+BUILD_rc=0  ERROR_COUNT=0  NF_BUILD_MISSING_METHODS=0  TST_EXISTS=1
+```
+
+七个 hook 接口由 C1 `c60f76e` 提供，不再依赖 `5a6f987` 里与行为修复捆绑的那份。
+对照旧链：复核实测 `45369b5` 单独检出为 **compile failure**（seven missing
+test-hook methods）；新链 `2ef8011` 单独检出为 **`BUILD_rc=0` + 运行断言红灯**。
+
+| 验证 | 命令 | 结果 |
+|---|---|---|
+| 全套件 | `./bin/test_flowexecutionservice`（`timeout 300`） | **`rc=2`**，`Totals: 30 passed, 2 failed, 0 skipped, 0 blacklisted, 42945ms` |
+| 定向 ×3 | `... testStartDuringShutdownMustBeRejected testSecondShutdownMustNotReleaseFirstShutdownGuard` | **3/3 `rc=2`、`FAILS=2`** |
+
+FAIL 断言原文（**来自 `QVERIFY2` 运行断言，不是编译错误**）：
+
+```text
+FAIL! : ...testStartDuringShutdownMustBeRejected()
+       'startedDuringClose.load() == 0' returned FALSE. (accepted=3/3 ...)
+       Loc: [/var/tmp/t25r9-wt/tests/test_flowexecutionservice.cpp(2606)]
+FAIL! : ...testSecondShutdownMustNotReleaseFirstShutdownGuard()
+       'secondShutdownOk.load() == 0' returned FALSE. (secondShutdownOk=3/3)
+       Loc: [...(2805)]
+```
+
+**P2 判定：修复成立。** 撤销完整行为修复提交不再删除测试基础设施；NF 红灯来自
+断言而非 `no member named` / `not declared in this scope`（`NF_BUILD_MISSING_METHODS=0`）。
+
+### 19.9 反向验证：双门控缺陷态判别性（P1 判定）
+
+缺陷态**只在隔离工作树应用**，脚本 `make_defect_dual.py`（两处替换各 1 次匹配，
+`DEFECT_DERIVE_rc=0`，`DEFECT_MARKERS=2`），两个**互相独立**的环境变量：
+
+| 门控 | 生效内容 | 未设置时 |
+|---|---|---|
+| `DEEPLUX_DEFECT_ALLOW_SHUTDOWN_REENTRY=1` | 跳过排他关闭权检查，复现第二次 shutdown 清标记并接受启动 | `!allowReentry && m_shutdownInProgress` 等价交付树 |
+| `DEEPLUX_DEFECT_NO_WAIT_BORROW=1` | `waitForReclaimBorrowsReturned()` 直接 `return`（评审的 LD_PRELOAD 手法） | 与交付树等价 |
+
+| 组 | 命令 | 结果 |
+|---|---|---|
+| reentry ON ×5 | 变量置 1 + `testSecondShutdownMustNotReleaseFirstShutdownGuard` | **5/5 `rc=1 FAILS=1`**，`secondShutdownOk=3 restartAccepted=3 runsDuringGuard=3` |
+| borrow ON ×5 | 变量置 1 + `testShutdownMustWaitForActiveReclaimBorrowBeforeDeleting` | **5/5 `rc=134`**，`QFATAL Received signal 11`（SIGSEGV / use-after-free），`Totals: 1 passed, 1 failed` |
+| 交叉特异性 ×3 | reentry ON 跑 borrow 用例 / borrow ON 跑 owner 用例 / reentry ON 跑 start 用例 | **3/3 `rc=0 FAILS=0`**（每个门控只打断自己对应的用例） |
+| 双门控 OFF ×5 | 两变量 `unset` + owner 用例 | **5/5 `rc=0 FAILS=0`** |
+| 双门控 OFF 全套件 | 两变量 `unset` | **`rc=0`**，`32 passed, 0 failed`，38039ms |
+| 恢复 pristine | `git checkout -f 293d69b` 后全套件 | **`rc=0`**，`32 passed`，34145ms |
+
+reentry ON 的 FAIL 原文：`'secondShutdownOk.load() == 0' returned FALSE ... Loc: [...(2804)]`
+—— 行号比 NF 基线的 `(2805)` 少 1，正是 `293d69b` 删去一行的结果，恰好旁证
+两次构建用的是不同 commit 的源码。borrow ON 的 `signal 11` 与复核报告
+`fatal signal 11` 一致。
+
+**双向成立**：两个用例在各自缺陷态下**均未出现「仍全绿」**；门控关闭时全部复绿。
+修复态三个套件（`iso_probe_suite.log` / `iso_defect_off_suite.log` /
+`iso_restore_suite.log`）的正向前提计数一致，排除「测了未执行的代码」：
+
+```text
+[P1-SHUTDOWN-START]  rounds=3 windowsEntered=3 rejected=3 accepted=0 runsDuringClose=0 shutdownOkRounds=3
+[P1-SHUTDOWN-OWNER]  rounds=3 windowsEntered=3 secondShutdownOk=0 restartAccepted=0 runsDuringGuard=0 firstShutdownOkRounds=3
+```
+
+**重编真实性核实**（防止「其实没重编」的假阳性）：`iso_nf_build.log`、
+`iso_defect_build.log`、`iso_restore_build.log` 三份日志均含
+`[  7%] Building CXX object src/core/CMakeFiles/deeplux_core.dir/engine/FlowExecutionService.cpp.o`
+与 `[ 14%] Linking CXX shared library ../../lib/libdeeplux_core.so`。
+脚本运行期出现 7 条 `touch: setting times ... Operation not permitted`（沙箱拦截改
+mtime），但 `git checkout -f` 写文件本身已更新 mtime，重编确实发生；行为随源码状态
+变化（NF 基线 30/2 → 缺陷态红 → 恢复态 32/0）也独立佐证。**该噪声如实记录，未隐藏。**
+
+**如实记录的异常信号**：上述三个修复态套件各有 **6 条**
+`QWARN : ...testShutdownMustWaitForActiveReclaimBorrowBeforeDeleting() QThread::wait: Thread tried to wait on itself`。
+成因见 §18.2（预热/退出屏障时序下的 Qt 自等待告警），Qt 告警后继续，用例仍 `PASS`、
+套件 `SUITE_rc=0`。不隐藏、不因告警宣告失败、也不因全绿而忽略。
+
+### 19.10 全量门禁（工作区外全新目录）
+
+**执行位置**：构建目录 `/var/tmp/t25r9-gate`（全新、`CONFIGURE_rc=0`）、
+源码 `/var/tmp/t25r9-wt`（detach `293d69b`，`SRC_DIRTY_LINES=0`）、
+脚本 `/var/tmp/deeplux-r9-backup/iso_gate.sh`、结果 `iso_gate_result.log`。
+
+| 步骤 | 命令 | 结果 |
+|---|---|---|
+| STEP 0 源码身份 | `git rev-parse HEAD` / `git status --short` | `293d69b5ec1d9116b20c80e1f15d03cd57d62942`、`SRC_DIRTY_LINES=0` |
+| STEP 1 全量构建 | `TMPDIR=/var/tmp/t25r9-gate/tmp make -j8` | **`BUILD_ALL_rc=0`**、`ERROR_COUNT=0` |
+| STEP 2 清单 | `ctest -N` | **`CTEST_N_rc=0`**、`Total Tests: 97` |
+| STEP 3 全量 CTest | `unset DISPLAY; QT_QPA_PLATFORM=offscreen; TMPDIR=<大容量>; ctest --output-on-failure` | **`CTEST_rc=0`**、`100% tests passed, 0 tests failed out of 97`、`304.19 sec` |
+| STEP 4 格式 | `clang-format --dry-run --Werror` 三个源文件 | **`FMT_rc=0`** |
+| STEP 4 差异 | `git diff --check` | **`DIFFCHECK_rc=0`** |
+
+```text
+18/97 Test #18: test_flowexecutionservice ............   Passed   36.47 sec
+The following tests FAILED: (none)
+```
+
+**§19.7 那 4 个失败的最终判定**：`4 - test_mainwindow`、`38 - test_imagerefreshcoalescer`、
+`39 - test_flowidentitycontract`、`46 - test_agentactor (SEGFAULT)` 在全新目录**完整构建后
+全部消失**（97/97）。据此确认它们是交付树旧 `build/` 在 `BUILD_ALL_rc=2` 中断后、
+`libdeeplux_core.so` 与未重编旧测试二进制半更新造成的连锁，**不是本轮源码回归**。
+该结论由全新目录的完整 CTest 给出，不是「在旧目录重试到绿」。
+
+**「97 项」口径**：新增用例 `testSecondShutdownMustNotReleaseFirstShutdownGuard`
+落在既有可执行文件 `test_flowexecutionservice` 内，故 `ctest -N` 仍是 97；
+服务套件**用例数由 31 增至 32**（`Totals: 32 passed`），两者须同时给出，
+不得以「97 项」断言没有新增测试。
+
+**本轮未做的整批项**：十轮连续门禁、`git revert` 抽查属 R2 整批验收，仍留待整批，
+本轮不宣称完成。
+
+### 19.11 状态
+
+| 项 | 状态 |
+|---|---|
+| P1 第二次 `shutdown()` 提前解除第一次关闭的保护 | **真实缺陷**：reentry 缺陷态 5/5 `rc=1`（`secondShutdownOk=3 restartAccepted=3 runsDuringGuard=3`）复现；`b2bfbec` 排他关闭权修复；修复态 5/5 绿 + 全量 97/97 |
+| P2 测试提交 `45369b5` 不能独立编译 | **已整改**：`c60f76e` 先落地 hook infra，`2ef8011` 单独检出 `BUILD_rc=0` / `NF_BUILD_MISSING_METHODS=0`，NF 红灯来自 `QVERIFY2` 运行断言（`30 passed, 2 failed`） |
+| P3 `reclaimReturned` 恒 false 固定约 15s 死等 | **已整改**：恢复完成通知仅作 join 兜底、删恒真诊断；修复态套件 34–38s、`32 passed` |
+| 新增用例格式违规 | **已整改**：`293d69b` 独立 style 提交，`FMT_rc=0` |
+| 门禁环境事故 | **如实留档且不重试到绿**；全新目录 `BUILD_ALL_rc=0` + 97/97 复绿，4 个失败确认为构建不完整连锁 |
+| 借用用例判别性（新链重验） | **双向成立**：borrow 缺陷态 5/5 `rc=134`（signal 11）、门控关闭 5/5 绿 + 全套件 32/32 |
+| 6 条 `QThread::wait: Thread tried to wait on itself` QWARN | **如实记录**，Qt 告警后用例 `PASS`、套件 `SUITE_rc=0`；不隐藏、不据此宣告失败 |
+| T2.5 | **仍待评审收口，不自行宣告** |
+| T2.8 / T2.9 | 按既定契约口径可收口；本轮未改动，收口记录另案 |
+| T2.7 | 继续隔离（`be90921` 非 HEAD 祖先） |
+| R2 整批 | **尚未完成**（十轮连续门禁、`git revert` 抽查留待整批） |
+
+**证据文件清单**（`/var/tmp/deeplux-r9-backup/`）：
+`iso_configure.log`、`iso_gate_result.log`、`iso_build_all.log`、`iso_ctest_N.log`、
+`iso_ctest.log`、`iso_fmt.log`、`iso_diffcheck.log`、`delivery_gate_result.log`、
+`delivery_build_all.log`、`delivery_ctest.log`、`delivery_fmt.log`、
+`iso_experiments_result.log`、`iso_nf_{checkout,build,suite,target_1..3}.log`、
+`iso_defect_{derive,build}.log`、`iso_defect_reentry_on_{1..5}.log`、
+`iso_defect_borrow_on_{1..5}.log`、`iso_spec_*.log`、`iso_defect_off_{1..5}.log`、
+`iso_defect_off_suite.log`、`iso_restore*.log`、`iso_probe_{build,suite,result}.log`、
+`CH19_part{1..4}.md`、五份提交快照与 `OLD_SHA_MAP.txt`。
