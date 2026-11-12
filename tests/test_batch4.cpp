@@ -246,7 +246,7 @@ private slots:
         QVERIFY(source.hasCoordinateProvenance());
         const ImageCoordinateProvenance sourceProvenance = source.coordinateProvenance();
 
-        crop.setParams(cropParams(QJsonArray{rect(20, 30, 10, 10, 0)}));
+        crop.setParams(cropParams(QJsonArray{QJsonValue(rect(20, 30, 10, 10, 0))}));
         ImageData firstOutput;
         QVERIFY(crop.execute(source, firstOutput));
         QCOMPARE(firstOutput.coordinateProvenance().sourceImageId, sourceProvenance.sourceImageId);
@@ -260,7 +260,7 @@ private slots:
         QVERIFY(firstMapped);
         QCOMPARE(*firstMapped, QPointF(29, 39));
 
-        crop.setParams(cropParams(QJsonArray{rect(5, 6, 2, 3, 0)}));
+        crop.setParams(cropParams(QJsonArray{QJsonValue(rect(5, 6, 2, 3, 0))}));
         ImageData secondOutput;
         QVERIFY(crop.execute(firstCrop, secondOutput));
         QCOMPARE(secondOutput.coordinateProvenance().localOriginInSource, QPointF(13, 23));
@@ -470,7 +470,7 @@ private slots:
 
         CropImagePlugin crop;
         QVERIFY(crop.initialize());
-        crop.setParams(cropParams(QJsonArray{rect(74, 84, 64, 64, 0)}));
+        crop.setParams(cropParams(QJsonArray{QJsonValue(rect(74, 84, 64, 64, 0))}));
         ImageData cropOutput;
         QVERIFY(crop.execute(ImageData(makePatternImage(256, 256)), cropOutput));
         const ImageData input = cropOutput.data(QStringLiteral("crop_images"))
@@ -494,7 +494,7 @@ private slots:
         verifyMapped(affineOutput, QPointF(50.0, 80.0), QPointF(30.0, 40.0));
         verifyMapped(affineOutput, QPointF(90.0, 110.0), QPointF(50.0, 50.0));
 
-        crop.setParams(cropParams(QJsonArray{rect(64, 64, 20, 10, 0)}));
+        crop.setParams(cropParams(QJsonArray{QJsonValue(rect(64, 64, 20, 10, 0))}));
         ImageData postCalibrationCropOutput;
         QVERIFY(crop.execute(affineOutput, postCalibrationCropOutput));
         const ImageData postCalibrationCrop = postCalibrationCropOutput.data(QStringLiteral("crop_images"))

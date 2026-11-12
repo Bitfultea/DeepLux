@@ -2412,7 +2412,7 @@ private slots:
         QVERIFY(!preview.isNull());
         QCOMPARE(preview.pixelColor(0, 0), QColor(85, 35, 50));
 
-        const QJsonArray outsideRectangles{QJsonArray{200, 200, 5, 5, 0}};
+        const QJsonArray outsideRectangles{QJsonValue(QJsonArray{200, 200, 5, 5, 0})};
         QCOMPARE(setParams(actor, cropId,
                            QJsonObject{{QStringLiteral("rectangles"), outsideRectangles},
                                        {QStringLiteral("outputFirstAsImage"), true}})

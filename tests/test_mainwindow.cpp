@@ -14579,7 +14579,7 @@ void TestMainWindow::testG4AdvancedConfigRejectsCrossSourceConflictAtomically() 
     ModuleInstance crop;
     crop.id = QStringLiteral("config_interleave");
     crop.moduleId = QStringLiteral("CropImage");
-    const QJsonArray originalRectangles{QJsonArray{0, 0, 1, 1, 0}};
+    const QJsonArray originalRectangles{QJsonValue(QJsonArray{0, 0, 1, 1, 0})};
     crop.params =
         QJsonObject{{QStringLiteral("rectangles"), originalRectangles}, {QStringLiteral("outputFirstAsImage"), true}};
     project->addModule(crop);

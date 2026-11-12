@@ -611,7 +611,7 @@ void TestSamAnnotatorDialog::guiPromptPredictionSessionRoundTripAndLabelMeExport
     QCOMPARE(server.requestLog.count(QStringLiteral("POST /predict")), 1);
     const QJsonObject predictBody = server.lastPredictBody;
     QCOMPARE(predictBody.value(QStringLiteral("embedding_id")).toString(), client->currentEmbeddingId());
-    const QJsonArray expectedPositiveRequest{QJsonArray{40.0, 35.0}};
+    const QJsonArray expectedPositiveRequest{QJsonValue(QJsonArray{40.0, 35.0})};
     QCOMPARE(predictBody.value(QStringLiteral("points_pos")).toArray(), expectedPositiveRequest);
     QCOMPARE(predictBody.value(QStringLiteral("points_neg")).toArray(), QJsonArray{});
     QVERIFY(!predictBody.contains(QStringLiteral("box")));
