@@ -1107,7 +1107,12 @@ void TestSamAnnotatorDialog::environmentSetupOnlyStatusIsSanitizedAndCapturesGui
         QVERIFY(configFile.open(QIODevice::ReadOnly));
         configBytesBefore = configFile.readAll();
     }
+#ifdef Q_OS_WIN
+    // Windows 以扩展名判定可执行文件，测试桩必须带 .exe 才会被环境检查视为有效外部 Python。
+    const QString pythonPath = temp.filePath(QStringLiteral("python.exe"));
+#else
     const QString pythonPath = temp.filePath(QStringLiteral("python"));
+#endif
     QFile python(pythonPath);
     QVERIFY(python.open(QIODevice::WriteOnly));
     python.write("#!/bin/sh\nexit 0\n");
