@@ -34,8 +34,17 @@ jobs:
       - name: Build
         run: cmake --build build -j$(nproc)
 
+      - name: Isolate plugin data directory
+        run: |
+          APP_DATA_DIR="$RUNNER_TEMP/deeplux-appdata-qt5"
+          rm -rf "$APP_DATA_DIR/plugins"
+          echo "DEEPLUX_APP_DATA_DIR=$APP_DATA_DIR" >> "$GITHUB_ENV"
+
       - name: Sync plugins
         run: cmake --build build --target sync-plugins
+
+      - name: Verify isolated plugin sync
+        run: cmp build/lib/libFitCirclePlugin.so "$DEEPLUX_APP_DATA_DIR/plugins/FitCircle/libFitCirclePlugin.so"
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
@@ -84,8 +93,26 @@ jobs:
         run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DBUILD_TESTS=OFF -DDEEPLUX_NATIVE_SAM=OFF
       - name: Build
         run: cmake --build build --config Release -j
+      - name: Isolate plugin data directory
+        shell: pwsh
+        run: |
+          $appDataDir = Join-Path $env:RUNNER_TEMP "deeplux-appdata-windows"
+          Remove-Item (Join-Path $appDataDir "plugins") -Recurse -Force -ErrorAction SilentlyContinue
+          Add-Content -Path $env:GITHUB_ENV -Value "DEEPLUX_APP_DATA_DIR=$appDataDir"
       - name: Sync plugins
         run: cmake --build build --config Release --target sync-plugins
+      - name: Verify isolated plugin sync
+        shell: pwsh
+        run: |
+          $built = Get-ChildItem "build/bin", "build/lib" -Filter "FitCirclePlugin.dll" -File -Recurse |
+            Select-Object -First 1
+          $synced = Get-ChildItem (Join-Path $env:DEEPLUX_APP_DATA_DIR "plugins") -Filter "FitCirclePlugin.dll" -File -Recurse |
+            Select-Object -First 1
+          if (-not $built -or -not $synced) { throw "FitCirclePlugin.dll missing from build or isolated plugin tree" }
+          if ((Get-FileHash $built.FullName -Algorithm SHA256).Hash -ne
+              (Get-FileHash $synced.FullName -Algorithm SHA256).Hash) {
+            throw "isolated FitCirclePlugin.dll differs from the build artifact"
+          }
       - name: Deploy runtime and run CLI smoke test
         run: cmake --build build --config Release --target deploy-windows
 
@@ -107,8 +134,17 @@ jobs:
       - name: Build
         run: cmake --build build -j$(nproc)
 
+      - name: Isolate plugin data directory
+        run: |
+          APP_DATA_DIR="$RUNNER_TEMP/deeplux-appdata-qt6"
+          rm -rf "$APP_DATA_DIR/plugins"
+          echo "DEEPLUX_APP_DATA_DIR=$APP_DATA_DIR" >> "$GITHUB_ENV"
+
       - name: Sync plugins
         run: cmake --build build --target sync-plugins
+
+      - name: Verify isolated plugin sync
+        run: cmp build/lib/libFitCirclePlugin.so "$DEEPLUX_APP_DATA_DIR/plugins/FitCircle/libFitCirclePlugin.so"
 
       - name: Test
         run: xvfb-run -a ctest --test-dir build --output-on-failure
