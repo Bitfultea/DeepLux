@@ -97,6 +97,7 @@ private slots:
     // T2.8（2026-11-10 评审裁定）：token 借用的生命周期契约。
     void testCancellationTokenDetachedAfterExecute();
     void testCancellationTokenDtorLeavesNoDanglingBorrow();
+    void testCancellationTokenDtorDetachesAllBorrowers();
     // T2.8（2026-11-11 复核 P2 整改）：输入校验早退路径也必须摘除借用。
     void testCancellationTokenDetachedOnMissingRequiredInput();
     void testCancellationTokenDetachedOnTypeMismatch();
@@ -304,6 +305,26 @@ void TestModuleBase::testCancellationTokenDtorLeavesNoDanglingBorrow() {
              "keeps a dangling pointer");
     QVERIFY2(!module.cancellationRequestedForTest(),
              "querying cancellation after the token died must be safe and report false");
+}
+
+void TestModuleBase::testCancellationTokenDtorDetachesAllBorrowers() {
+    TestModule firstModule;
+    TestModule secondModule;
+    QVERIFY(firstModule.initialize());
+    QVERIFY(secondModule.initialize());
+
+    {
+        CancellationToken token;
+        firstModule.setCancellationToken(&token);
+        secondModule.setCancellationToken(&token);
+        QCOMPARE(firstModule.cancellationToken(), &token);
+        QCOMPARE(secondModule.cancellationToken(), &token);
+    }
+
+    QVERIFY(firstModule.cancellationToken() == nullptr);
+    QVERIFY(secondModule.cancellationToken() == nullptr);
+    QVERIFY(!firstModule.cancellationRequestedForTest());
+    QVERIFY(!secondModule.cancellationRequestedForTest());
 }
 
 // T2.8（2026-11-11 复核 P2 整改）：输入校验**早退**路径的借用清理。
