@@ -2805,3 +2805,167 @@ The following tests FAILED: (none)
 `iso_defect_borrow_on_{1..5}.log`、`iso_spec_*.log`、`iso_defect_off_{1..5}.log`、
 `iso_defect_off_suite.log`、`iso_restore*.log`、`iso_probe_{build,suite,result}.log`、
 `CH19_part{1..4}.md`、五份提交快照与 `OLD_SHA_MAP.txt`。
+
+---
+
+## 20. R2 整批验收门禁（2026-11-12：十轮连续 CTest + `git revert` 抽查）
+
+本章记录 R2 **批次级验收门禁**的完整执行。此前各章状态表中反复出现的「R2 整批尚未完成（十轮连续门禁、`git revert` 抽查留待整批）」由本章闭合；**历史章节原文一律保留、不改写**，状态以本章为准。
+
+### 20.1 门禁定义与执行位置
+
+主仓计划文档 `docs/superpowers/plans/2026-11-05-review-hardening.md:159` 原文：
+
+> **R2 批次验收门禁（阻塞）：** §负验证纪律三步（测试/修复分提交版本）全部留痕；全量 CTest 连续 10 次通过（以 R0 固定的基线数为准，当前 96 项 / NATIVE_SAM=ON）；`test_executionaffinity`/`test_flowexecutionservice`/`test_mainwindow` 在 `-j4` 下稳定；无 watchdog 触发；`git revert`（仅修复提交）抽查任一任务，对应 NF 用例复败于同一断言。
+
+| 项 | 位置 |
+|---|---|
+| 隔离工作树 | `/var/tmp/t25r9-wt`（detached `d799ff1`）；**交付工作树全程不切换缺陷态/撤销态** |
+| 构建目录 | `/var/tmp/t25r9-gate`（工作区外全新目录，`CMAKE_HOME_DIRECTORY:INTERNAL=/var/tmp/t25r9-wt`） |
+| 十轮脚本 | `/var/tmp/r2-batch-gate/r2_gate10.sh`（自含全部命令） |
+| revert 脚本 | `/var/tmp/r2-batch-gate/r2_revert_spotcheck.sh`（自含全部命令） |
+| 结果目录 | `/var/tmp/r2-batch-gate/`：`gate10_result.log`、`summary.tsv`、`run-{1..10}.log`、`revert_result.log`、`revert_nf_{1..3}.log`、`revert_suite.log`、`restore_*.log`、`probe_*.log` |
+| 环境探针（**不计入十轮**） | `probe_checkout.log` / `probe_build.log` / `probe_ctest.log`：`CHECKOUT_rc=0`、`WT_HEAD=d799ff1…`、`BUILD_rc=0 ERROR_COUNT=0`、`PROBE_CTEST_rc=0`、`100% tests passed, 0 tests failed out of 97`、188s、三个关键套件全 `Passed` |
+
+脚本对 §19.7 记录的口径缺陷作了修正：`grep -c` 无匹配时以 `|| true` 归一为 `0`（不把退出码 1 当失败）；关键套件用 `grep -E 'test_...' | grep -c 'Passed'` 匹配，规避 CTest `Test  #` 双空格与 `Test #` 单空格混用。
+
+### 20.2 固定环境与前置门禁
+
+固定环境（脚本内逐条 `export`，十轮与 revert 抽查一致）：
+
+```text
+unset DISPLAY
+export QT_QPA_PLATFORM=offscreen
+export TMPDIR=/var/tmp/t25r9-gate/tmp      # 构建目录私有大容量 TMPDIR；/tmp 为 10M tmpfs
+ulimit -c 0
+```
+
+构建目录 `CMakeCache.txt` 实测：`CMAKE_BUILD_TYPE=Debug`、`USE_QT6:BOOL=ON`、`DEEPLUX_NATIVE_SAM:BOOL=ON`、`Qt 5.15.3`、`OpenCV 4.8.1`、`ONNXRUNTIME_DIR=/home/charles/Data/onnxruntime`、`OpenCV_DIR=/usr/local/lib/cmake/opencv4`、`CMAKE_CXX_COMPILER=/usr/bin/c++`。配置结论沿用 §19.10（`CONFIGURE_rc=0`）。
+
+| 前置门禁 | 命令 | 结果 |
+|---|---|---|
+| 源码身份 | `git -C /var/tmp/t25r9-wt rev-parse HEAD` vs 交付树 | `WT_HEAD=SRC_HEAD=d799ff1ed957a08743572aa149a3ac257b81ac9f`；`WT_DIRTY_LINES=0`、`SRC_DIRTY_LINES=0` |
+| 三份关键源码逐字节 | `sha256sum` 对齐隔离工作树与交付树 | `SRC_MATCH_COUNT=3/3`：`FlowExecutionService.cpp`=`1766e089…`、`FlowExecutionService.h`=`2581e71a…`、`test_flowexecutionservice.cpp`=`472db8d7…` |
+| 构建源目录 | `grep '^CMAKE_HOME_DIRECTORY' CMakeCache.txt` | `/var/tmp/t25r9-wt`（与隔离工作树一致） |
+| 全量构建 | `( cd $BLD && make -j8 )` | `BUILD_ALL_rc=0 ERROR_COUNT=0` |
+| 格式 | `clang-format --dry-run --Werror` 于两个生产文件 + 测试文件 | `FMT_rc=0` |
+| 差异检查 | `git diff --check` | `DIFFCHECK_rc=0` |
+| 枚举 | `ctest --test-dir $BLD -N` | `CTEST_N_rc=0`、`LISTED=97`；`Test  #4: test_mainwindow`、`Test #14: test_executionaffinity`、`Test #18: test_flowexecutionservice` 均在列 |
+
+### 20.3 基线数 96 → 97 的核对
+
+计划文档 `:90` / `:159` 记载「撰写本文时枚举 96 项 / NATIVE_SAM=ON」，并要求「`ctest -N` 枚举数与实跑通过数一致并记录」。本次实测 **97 项**，逐项核对如下：
+
+```text
+OLD_COUNT 96 NEW_COUNT 97
+ADDED ['test_flowidentitycontract']
+REMOVED []
+```
+
+- 对比方法：Python 正则 `Test\s+#?(\d+):\s+(\S+)` 分别提取 `/var/tmp/t21-gate10/run-1.log`（§5.6 历史十轮，96 项）与本次 `ctest -N -N` 全量枚举（97 项）的测试名集合，取差集。
+- 差异来源：`git log --oneline -S 'test_flowidentitycontract' -- tests/CMakeLists.txt` → `42ed898 test: add T2.6 frame-identity behavior-contract regressions`（T2.6 帧身份契约，见第 9 节），**无移除项**。
+- `ctest -N` 枚举数 97 = 十轮每轮实跑通过数 97，符合 R0 `:90` 口径。另按既有口径说明：T2.5 第九次整改新增的 `testSecondShutdownMustNotReleaseFirstShutdownGuard` 落在**既有** `test_flowexecutionservice` 可执行文件内，服务套件用例数由 31 → 32，但**不增加 CTest 项数**；「97 项 CTest」不等于「无新测试」。
+
+### 20.4 十轮连续全量 CTest（**10/10 全通过**）
+
+命令（每轮独立完整执行，**未加 `-R`/`-E`、未设置跳过、未放宽严格比较强度、未重试**）：
+
+```bash
+ctest --test-dir /var/tmp/t25r9-gate -j4 --output-on-failure
+```
+
+| 轮次 | rc | failed | passed_line | affinity | service | mainwindow | notrun | watchdog_hit | watchdog_any | secs |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 0 | 0 | `100% tests passed, 0 tests failed out of 97` | 1 | 1 | 1 | 0 | 0 | 0 | 182 |
+| 2 | 0 | 0 | 同 | 1 | 1 | 1 | 0 | 0 | 0 | 175 |
+| 3 | 0 | 0 | 同 | 1 | 1 | 1 | 0 | 0 | 0 | 172 |
+| 4 | 0 | 0 | 同 | 1 | 1 | 1 | 0 | 0 | 0 | 150 |
+| 5 | 0 | 0 | 同 | 1 | 1 | 1 | 0 | 0 | 0 | 126 |
+| 6 | 0 | 0 | 同 | 1 | 1 | 1 | 0 | 0 | 0 | 99 |
+| 7 | 0 | 0 | 同 | 1 | 1 | 1 | 0 | 0 | 0 | 87 |
+| 8 | 0 | 0 | 同 | 1 | 1 | 1 | 0 | 0 | 0 | 87 |
+| 9 | 0 | 0 | 同 | 1 | 1 | 1 | 0 | 0 | 0 | 84 |
+| 10 | 0 | 0 | 同 | 1 | 1 | 1 | 0 | 0 | 0 | 85 |
+
+- 汇总：`NONZERO_RUNS=0`、`NOTRUN_TOTAL=0`、`WATCHDOG_HIT_TOTAL=0`；脚本 `GATE10_DONE 2026-11-12T14:36:22+08:00`，全程 21m41s。
+- **逐轮日志完整性扫描**（10 份 `run-*.log`）：每轮 `100% tests passed, 0 tests failed out of 97` 命中 1 次；`FAIL!`=0、`Not Run`=0、`(Disabled)`=0、`skipped`=0，**10 轮合计 0**。
+- **三套件在 `-j4` 下稳定**：`test_executionaffinity` / `test_flowexecutionservice` / `test_mainwindow` 每轮各 `Passed` 1 次，10/10 轮无缺项。
+- **无 watchdog 触发**：窄口径 `watchdog.*(timeout|trigger|fired|hit|expired)` 与宽口径任意 `watchdog` 字样，10 轮均为 **0**。
+- **QWARN 口径如实说明**：十轮 CTest 汇总日志用 `--output-on-failure`，通过的用例不转发 Qt 输出，故 10 份日志 `QWARN=0`；§19.9 记录的服务套件**直跑** 6 条 `QThread::wait: Thread tried to wait on itself` 告警属于通过用例的 Qt 输出，二者口径不同，**本轮未隐藏、未消失、也未据此宣告失败**（Qt 告警后用例 `PASS`、套件 `SUITE_rc=0`）。
+
+### 20.5 `git revert` 抽查（仅修复提交 `b2bfbec`）
+
+**抽查对象选择**：最终链 `199bbfb → c60f76e → 2ef8011 → b2bfbec → 293d69b → d799ff1` 中，`b2bfbec` 是**唯一的行为修复提交**（`293d69b` 仅改测试文件格式、`d799ff1` 仅改文档，均不重叠），符合计划文档「`git revert`（仅修复提交）抽查任一任务」。对应 NF 用例为 `testStartDuringShutdownMustBeRejected` 与 `testSecondShutdownMustNotReleaseFirstShutdownGuard`（§19.8 已建立可编译 NF 基线）。
+
+| 步骤 | 命令 | 结果 |
+|---|---|---|
+| 1 撤销 | `git -C /var/tmp/t25r9-wt revert --no-commit b2bfbec` | `REVERT_rc=0`，**干净应用**；`git status --short` 仅 `M src/core/engine/FlowExecutionService.cpp`、`M src/core/engine/FlowExecutionService.h` |
+| 1 前置断言 | `grep -c m_shutdownInProgress` / `grep -c ForTest` / 两个用例名 | `FIX_MARKER_IN_CPP=0`、`FIX_MARKER_IN_H=0`（修复已撤销）；`HOOK_INFRA_DECLS=21`、`NF_CASE_1=1`、`NF_CASE_2=1`（**钩子与用例完整保留**） |
+| 2 重编 | `make test_flowexecutionservice -j8` | `REVERT_BUILD_rc=0 ERROR_COUNT=0`，日志含 `[ 14%] Linking CXX shared library ../../lib/libdeeplux_core.so`、`[100%] Built target test_flowexecutionservice` —— **可编译的测试失败，不是编译错误** |
+| 3 NF ×3 | `$TST testStartDuringShutdownMustBeRejected testSecondShutdownMustNotReleaseFirstShutdownGuard` | **3/3 `rc=2`、`FAILS=2`**，`Totals: 2 passed, 2 failed, 0 skipped, 0 blacklisted` |
+| 3 全服务套件 | `$TST` | `REVERT_SUITE_rc=2`，`Totals: 30 passed, 2 failed, 0 skipped, 0 blacklisted, 36994ms` |
+| 4 恢复 | `git revert --quit` + `git reset --hard d799ff1` | `RESTORE_rc=0`、`RESTORE_HEAD=d799ff1…`、`RESTORE_DIRTY_LINES=0`、`RESTORE_FIX_MARKER_IN_CPP=8` |
+| 4 恢复重编 | `make test_flowexecutionservice -j8` | `RESTORE_BUILD_rc=0 ERROR_COUNT=0`，日志含 `[  7%] Building CXX object .../FlowExecutionService.cpp.o` 与 `[ 14%] Linking CXX shared library ../../lib/libdeeplux_core.so`（证明恢复态真实重编） |
+| 4 恢复复验 | `$TST` / `ctest -j4 --output-on-failure` | `RESTORE_SUITE_rc=0`、`32 passed, 0 failed`；`RESTORE_CTEST_rc=0`、`100% tests passed, 0 tests failed out of 97` |
+| 4 收尾 | `git rev-parse HEAD` / `git status --short` | `WT_FINAL_HEAD=d799ff1…`、`WT_FINAL_DIRTY_LINES=0` |
+
+**复败于同一断言**（`revert_nf_1.log` 原文）：
+
+```text
+FAIL!  : TestFlowExecutionService::testStartDuringShutdownMustBeRejected()
+         'startedDuringClose.load() == 0' returned FALSE. (accepted=3/3 ...)
+         Loc: [/var/tmp/t25r9-wt/tests/test_flowexecutionservice.cpp(2606)]
+FAIL!  : TestFlowExecutionService::testSecondShutdownMustNotReleaseFirstShutdownGuard()
+         'secondShutdownOk.load() == 0' returned FALSE. (secondShutdownOk=3/3)
+         Loc: [.../test_flowexecutionservice.cpp(2804)]
+```
+
+与 §19.8 的 NF 基线 `(2606)` / `(2805)` 对比：第一条行号完全相同；第二条 `(2804)` 比 `(2805)` 少 1，正是 `293d69b` 删去一行所致（§19.9 已记录同一现象），**两次构建用的是不同 commit 的源码，断言本身一致**。全套件 `30 passed, 2 failed` 亦与 §19.8 基线一致。**判定：满足「对应 NF 用例复败于同一断言」。**
+
+### 20.6 NF 三步留痕汇总（计划文档 `:159` 第 1 项）
+
+| 任务 | 测试提交 / 修复提交 | 第①步 红灯 | 第②步 全绿 | 第③步 revert 复败 |
+|---|---|---|---|---|
+| T2.1 | `e92fcd4` / `c262d73`（在位修复） | 断言 `'service.shutdownDeadlineHitCountForTest() >= 1' returned FALSE`（:388） | §5.6 十轮 10/10 | `git revert --no-commit c262d73` 干净应用、10/10 复败于同一断言（§1、§5.5） |
+| T2.3 / T2.4 | 行为契约／回归保护（§6、§7） | **按裁定不制造 NF 红灯**：缺陷前提不成立、基线已绿 | 行为契约用例与 40/40 探针 | 无生产修复提交，按 §0 纪律不适用 |
+| T2.6 | `42ed898` 帧身份契约（§9） | 同上，按裁定不新增信号参数、不制造 NF 红灯 | 三批 97/97、专项 80/80 | 同上 |
+| T2.5（最终链） | `2ef8011` / `b2bfbec` | `BUILD_rc=0` + `30 passed, 2 failed`，FAIL 来自 `QVERIFY2`（§19.8） | §19.10 全量门禁 97/97、§20.4 十轮 10/10 | **§20.5 本轮**：`revert --no-commit b2bfbec` 3/3 `rc=2` 复败于同一断言 |
+| T2.8 / T2.9 | `463d6b7` / `b50b653`（§13 行为契约／预防性加固） | 按契约口径，撤销态验证见 §13（`/var/tmp/t28-revert-wt` 等） | 服务套件与全量门禁 | 同章留痕；收口记录另案 |
+| T2.7 | `be90921` WIP（§3、计划文档 `:152`） | **预防性重构，不可制造 NF 红灯**；未合入、不作硬前置 | — | — |
+
+§0 纪律第 11 行与 §6/§7/§9 裁定一致：**预防性重构／行为契约类任务不得制造 NF 红灯，须注明契约性质**。上表不把「无红灯」写成缺陷，也不把行为契约冒充真实 NF。
+
+### 20.7 五项批次门禁逐条判定
+
+| # | 门禁项（计划文档 `:159`） | 判据 | 本轮结果 |
+|---|---|---|---|
+| 1 | 负验证纪律三步全部留痕 | 各任务测试/修复分提交、撤销修复复败 | **达成**：§20.6 汇总 + §20.5 本轮批次级抽查 |
+| 2 | 全量 CTest 连续 10 次通过（NATIVE_SAM=ON） | 10 次独立完整执行、`0 tests failed` | **达成**：§20.4 `NONZERO_RUNS=0`，10/10 每轮 `0 tests failed out of 97` |
+| 3 | 三套件在 `-j4` 下稳定 | 每轮 `test_executionaffinity` / `test_flowexecutionservice` / `test_mainwindow` 均 `Passed` | **达成**：10/10 轮各 1 次 `Passed`，无缺项 |
+| 4 | 无 watchdog 触发 | 窄/宽口径命中数 | **达成**：`WATCHDOG_HIT_TOTAL=0`、`watchdog_any` 10 轮全 0 |
+| 5 | `git revert`（仅修复提交）抽查任一任务，NF 用例复败于同一断言 | 干净应用、可编译、同一 `QVERIFY2` 与行号 | **达成**：§20.5 `b2bfbec` 抽查 3/3 `rc=2`、全套件 `30 passed, 2 failed` |
+
+### 20.8 与历史门禁记录的关系及纪律核对
+
+- §4.2 的 **8/10**（2 轮 `test_workerpluginconsistency` 图像签名非确定性）与 §4.4 的结论**原样保留、不改写**；#5 最小修复后 §5.6 的 10/10（96 项）是 #5 局部收口的重新执行，同样不改写。
+- 本章的 10/10（97 项）是 **R2 整批验收**，在最终交付态 `d799ff1` 上独立执行，与上述历史记录分开记录、不互相替代。
+- 纪律核对：**未靠重试到绿**（10 轮一次连续执行，无补跑）、**未排除测试**（无 `-R`/`-E`、无 `Not Run`/`Disabled`/`skipped`）、**未放宽严格比较强度**、**未授予门禁豁免**、**未在交付工作树切换缺陷态/撤销态**（全部在 `/var/tmp/t25r9-wt` + `/var/tmp/t25r9-gate`）、**缺陷态/撤销态用完即恢复**（`WT_FINAL_DIRTY_LINES=0`）。
+- 与 §19.7 的门禁环境事故分开：本轮前置大容量 `TMPDIR`（构建目录私有）+ `-j8` 构建 / `-j4` CTest，`BUILD_ALL_rc=0`，无构建中断连锁。
+
+### 20.9 状态
+
+| 项 | 状态 |
+|---|---|
+| R2 批次验收门禁（五项） | **全部达成**（§20.7）。这是批次级客观门禁结果，**不是收口裁定** |
+| T2.5 | **仍待评审收口，不自行宣告**（§19.11 口径不变） |
+| T2.8 / T2.9 | 按既定契约口径可收口；本轮未改动，收口记录另案 |
+| T2.7 | 继续隔离（`be90921` 非 HEAD 祖先、不作硬前置） |
+| 本轮交付改动 | **仅本章文档**，零生产代码改动、零测试改动 |
+| 交付工作树 | 提交后 `git status --short` 为 0 行；提交哈希与最终状态见汇报 |
+
+### 20.10 证据文件清单（`/var/tmp/r2-batch-gate/`）
+
+脚本 `r2_gate10.sh`、`r2_revert_spotcheck.sh`；
+十轮 `gate10_result.log`、`summary.tsv`、`run-{1..10}.log`、`ctest_N.log`、`build_all.log`、`fmt.log`、`diffcheck.log`、`checkout.log`；
+探针 `probe_checkout.log`、`probe_build.log`、`probe_ctest.log`；
+revert `revert_result.log`、`revert_apply.log`、`revert_checkout_base.log`、`revert_build.log`、`revert_nf_{1..3}.log`、`revert_suite.log`、`restore.log`、`restore_build.log`、`restore_suite.log`、`restore_ctest.log`。
