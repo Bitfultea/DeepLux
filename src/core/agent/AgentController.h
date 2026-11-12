@@ -164,8 +164,10 @@ DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& r
     int flowSummaryThreshold() const;    // agent/flowSummaryThreshold 默认 24，clamp [1,1000]
     int flowSummaryPreviewCount() const; // agent/flowSummaryPreviewCount 默认 24，clamp [1,200]
     /// 测试用固定上限（-1 = 沿用配置；避免依赖 ConfigManager 初始化时序）
+#ifdef DEEPLUX_BUILD_TESTS
     DEEPLUX_TEST_VISIBILITY : void setContextLimitsForTest(int budgetTokens, int toolResultMaxChars,
                                                            int summaryThreshold, int summaryPreviewCount);
+#endif
 
 public:
     /// 保首尾的 tool 结果截断（设计 §7.4；maxChars 会 clamp 到 [1000,64000]）
@@ -177,8 +179,10 @@ public:
     }
     int turnDeadlineMs() const; // agent/turnDeadlineMs 默认 600000，clamp [10000,3600000]
     // 绕过 clamp，仅用于触发超时。
+#ifdef DEEPLUX_BUILD_TESTS
     DEEPLUX_TEST_VISIBILITY : void setTurnDeadlineMsForTest(int ms);
     DEEPLUX_TEST_VISIBILITY : void setTurnDeadlineConfigForTest(int ms); // 模拟配置值（走 clamp）
+#endif
     DEEPLUX_TEST_VISIBILITY : bool turnDeadlineExceeded() const;
     DEEPLUX_TEST_VISIBILITY : void endTurnWithReason(const QString& responseText, const QString& errorText,
                                                      bool suppressClientError);
@@ -217,8 +221,10 @@ public:
     // ---- R1/L9：最近一次响应 reasoning + 单轮 deadline 状态 ----
     QString m_lastResponseReasoning;
     QElapsedTimer m_turnTimer;
+#ifdef DEEPLUX_BUILD_TESTS
     int m_turnDeadlineOverride = -1;       // 测试触发值（绕过 clamp）
     int m_turnDeadlineConfigOverride = -1; // 模拟配置值（走 clamp）
+#endif
 
     // ---- 工程会话身份/版本（B2：确认有效期；内部递增，不以指针/路径为唯一身份）----
     quint64 m_projectSessionId = 0;
@@ -228,10 +234,12 @@ public:
     QList<QMetaObject::Connection> m_projectConnections;
 
     // ---- 上下文治理（设计 §7）：测试覆盖值（-1 = 沿用配置）----
+#ifdef DEEPLUX_BUILD_TESTS
     int m_contextBudgetOverride = -1;
     int m_toolResultMaxCharsOverride = -1;
     int m_summaryThresholdOverride = -1;
     int m_summaryPreviewOverride = -1;
+#endif
 
     // ---- 权限/确认有效期（集成收口 B2）----
     void bindProjectSignals(Project* project);

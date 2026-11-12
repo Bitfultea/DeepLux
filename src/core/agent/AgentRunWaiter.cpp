@@ -10,7 +10,9 @@
 #include <QSet>
 #include <QThread>
 #include <QTimer>
+#ifdef DEEPLUX_BUILD_TESTS
 #include <optional>
+#endif
 
 namespace DeepLux {
 
@@ -18,8 +20,10 @@ namespace {
 QMutex g_waiterMutex;
 QSet<const QThread*> g_waitingThreads;
 
+#ifdef DEEPLUX_BUILD_TESTS
 // 测试注入：仅测试构建可写；生产构建该符号不可达（DEEPLUX_TEST_VISIBILITY=private）
 std::optional<AgentRunWaiter::Outcome> g_nextOutcomeForTest;
+#endif
 
 /// waitForRun 退出时（含异常路径）把当前线程移出等待表
 class WaitingThreadGuard {
@@ -37,6 +41,7 @@ public:
 };
 } // namespace
 
+#ifdef DEEPLUX_BUILD_TESTS
 void AgentRunWaiter::setNextOutcomeForTest(const Outcome& outcome) {
     g_nextOutcomeForTest = outcome;
 }
@@ -44,6 +49,7 @@ void AgentRunWaiter::setNextOutcomeForTest(const Outcome& outcome) {
 void AgentRunWaiter::clearOutcomeForTest() {
     g_nextOutcomeForTest.reset();
 }
+#endif
 
 AgentRunWaiter::AgentRunWaiter(QObject* parent) : QObject(parent) {}
 
@@ -71,6 +77,7 @@ void AgentRunWaiter::quitLoop() {
 AgentRunWaiter::Outcome AgentRunWaiter::waitForRun(RunEngine& engine, int timeoutMs,
                                                    const std::function<bool()>& start) {
     Outcome outcome;
+#ifdef DEEPLUX_BUILD_TESTS
     // L1 测试注入：直接返回调用方指定的 OutCome，不启动/等待运行
     if (g_nextOutcomeForTest) {
         outcome = *g_nextOutcomeForTest;
@@ -93,6 +100,7 @@ AgentRunWaiter::Outcome AgentRunWaiter::waitForRun(RunEngine& engine, int timeou
             m_lastReason = QStringLiteral("finished");
         return outcome;
     }
+#endif
     if (!start) {
         outcome.rejectedStart = true;
         m_lastReason = QStringLiteral("rejected");

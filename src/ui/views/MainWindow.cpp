@@ -5320,6 +5320,7 @@ void MainWindow::markModuleDirty(const QString& instanceId) {
     }
 }
 
+#ifdef DEEPLUX_BUILD_TESTS
 void MainWindow::registerFlowModule(const QString& instanceId, IModule* module) {
     m_flowModules.insert(instanceId, module);
 }
@@ -5330,6 +5331,7 @@ void MainWindow::resetInspectorClosed() {
         m_inspectorPanel->setVisible(true);
     }
 }
+#endif
 
 void MainWindow::selectModule(const QString& instanceId, bool revealInspector, bool force) {
     // 如果检查器已固定且 instanceId 不同，不切换
@@ -6534,6 +6536,7 @@ void MainWindow::onImportImage() {
 
 // ========== B3：流程树拖动、事务刷新与跨栈撤销失效 ==========
 
+#ifdef DEEPLUX_BUILD_TESTS
 QString MainWindow::lastStructureError() const {
     return m_lastStructureError;
 }
@@ -6545,6 +6548,7 @@ void MainWindow::setInvalidateNextReorderForTest(bool enabled) {
 QString MainWindow::reorderProcessTreeForTest(int sourceRow, int insertRow) {
     return handleProcessTreeReorder(sourceRow, insertRow);
 }
+#endif
 
 void MainWindow::reportStructureEditError(const QString& error) {
     m_lastStructureError = error;
@@ -6833,6 +6837,7 @@ QString MainWindow::handleProcessTreeReorder(int sourceRow, int insertRow) {
                                                   afterPlan, project->sessionToken(), beforeFingerprint,
                                                   afterFingerprint, &firstRedoCommitted);
 
+#ifdef DEEPLUX_BUILD_TESTS
     // 测试注入：模拟 push 之前发生的外部结构编辑（仅交换连接声明顺序即可改变指纹），
     // 使 redo() 的 session + 指纹校验失败，命令 obsolete 且零残留。
     if (m_invalidateNextReorderForTest) {
@@ -6843,6 +6848,7 @@ QString MainWindow::handleProcessTreeReorder(int sourceRow, int insertRow) {
             project->setConnections(rotated);
         }
     }
+#endif
 
     m_paramUndoStack->push(command); // 首次 redo() 是唯一的事务提交
     if (!firstRedoCommitted) {

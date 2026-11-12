@@ -63,6 +63,7 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
 
+#ifdef DEEPLUX_BUILD_TESTS
     // 测试辅助：直接注册运行时模块到 m_flowModules
     Q_INVOKABLE void registerFlowModule(const QString& instanceId, IModule* module);
 
@@ -90,6 +91,7 @@ public:
     void clearSelectionForCapture() {
         selectModule(QString(), false);
     }
+#endif
 
 private slots:
     void onNewSolution();
@@ -388,7 +390,9 @@ private:
 
     bool m_refreshingStructure = false;
     QString m_lastStructureError;
+#ifdef DEEPLUX_BUILD_TESTS
     bool m_invalidateNextReorderForTest = false;
+#endif
 };
 
 /**

@@ -35,7 +35,8 @@ public:
     void append(const AgentActionLogEntry& entry);
     void flush();
 
-    // ---- 测试/诊断可见 ----
+#ifdef DEEPLUX_BUILD_TESTS
+    // ---- 测试可见 ----
     DEEPLUX_TEST_VISIBILITY : void setEnabledForTest(bool enabled);
     void setLogDirForTest(const QString& dir);
     void setNowForTest(const QDateTime& now);
@@ -43,12 +44,15 @@ public:
     void setMaxFileBytesForTest(int bytes);
     void setRetentionDaysForTest(int days);
     void resetForTest();
+#endif
 
 public:
     QString currentFilePath() const;
+#ifdef DEEPLUX_BUILD_TESTS
     DEEPLUX_TEST_VISIBILITY : int droppedRecords() const {
         return m_droppedRecords;
     }
+#endif
 
 private:
     AgentAuditLog() = default;
@@ -78,12 +82,14 @@ private:
     int m_consecutiveFailures = 0;
     int m_droppedRecords = 0;
 
-    // 测试注入（生产为无效/默认）
+#ifdef DEEPLUX_BUILD_TESTS
+    // 测试注入
     QString m_logDirOverride;
     QDateTime m_nowOverride;
     int m_enabledOverride = -1; // -1 = 跟随配置
     int m_maxFileBytesOverride = -1;
     int m_retentionDaysOverride = -1;
+#endif
 };
 
 } // namespace DeepLux

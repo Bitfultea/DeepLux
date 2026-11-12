@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - name: Test ABI export scanner
+        run: python3 scripts/test_plugin_abi_exports.py
       - name: Test affinity scanner
         run: python3 scripts/test_plugin_affinity.py
       - name: Check worker plugin execution paths
@@ -97,7 +99,7 @@ jobs:
       - name: Build
         run: cmake --build build --config Release -j
       - name: Verify plugin ABI exports
-        run: python scripts/check_plugin_abi_exports.py --build-dir build
+        run: python scripts/check_plugin_abi_exports.py --build-dir build --check-release-no-test-hooks
       - name: Isolate plugin data directory
         shell: pwsh
         run: |
