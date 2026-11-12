@@ -134,6 +134,8 @@ set_target_properties(deeplux_agent_resources PROPERTIES POSITION_INDEPENDENT_CO
 add_library(deeplux_core SHARED ${CORE_SOURCES} ${CORE_HEADERS})
 
 target_compile_definitions(deeplux_core PRIVATE DEEPLUX_CORE_EXPORT)
+file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/tools/sam_server" DEEPLUX_SAM_SERVER_SOURCE_DIR)
+target_compile_definitions(deeplux_core PRIVATE DEEPLUX_SAM_SERVER_SOURCE_DIR="${DEEPLUX_SAM_SERVER_SOURCE_DIR}")
 
 # ========== 阶段2：原生 SAM 推理（onnxruntime，可选）==========
 option(DEEPLUX_NATIVE_SAM "Enable native SAM ONNX inference (requires onnxruntime)" ON)
@@ -142,7 +144,10 @@ if(DEEPLUX_NATIVE_SAM)
         set(ONNXRUNTIME_DIR "$ENV{ONNXRUNTIME_DIR}" CACHE PATH "onnxruntime install dir")
     endif()
     if(NOT EXISTS "${ONNXRUNTIME_DIR}/include/onnxruntime_c_api.h")
-        message(FATAL_ERROR "DEEPLUX_NATIVE_SAM=ON 需要 -DONNXRUNTIME_DIR=<SDK 目录>（缺少 include/onnxruntime_c_api.h）")
+        message(FATAL_ERROR
+            "Native SAM is enabled by default and requires the ONNX Runtime SDK.\n"
+            "Set -DONNXRUNTIME_DIR=<SDK directory> (missing include/onnxruntime_c_api.h), or explicitly opt out with "
+            "-DDEEPLUX_NATIVE_SAM=OFF.")
     endif()
     target_sources(deeplux_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inference/SamOnnxInference.cpp

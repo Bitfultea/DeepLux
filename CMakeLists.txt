@@ -64,9 +64,11 @@ if(USE_QT6)
 endif()
 
 if(NOT Qt6_FOUND)
-    message(STATUS "Qt6 not found, trying Qt5...")
     find_package(Qt5 REQUIRED COMPONENTS ${QT_CORE_COMPONENTS})
     set(QT_VERSION_MAJOR 5)
+    if(USE_QT6)
+        message(WARNING "Qt6 was requested but not found; using Qt5 ${Qt5_VERSION} from ${Qt5_DIR}.")
+    endif()
 else()
     set(QT_VERSION_MAJOR 6)
 endif()
@@ -90,17 +92,20 @@ if(QT_VERSION_MAJOR EQUAL 5 AND OPENSSL_FOUND)
     endif()
 endif()
 
-# 运行期 SSL 可用性检查（编译小测试程序验证）
-if(QT_VERSION_MAJOR EQUAL 5)
-    set(_qt_network_lib Qt5::Network)
+# 运行期 SSL 可用性检查（编译小测试程序验证）；交叉编译不能执行目标程序。
+if(CMAKE_CROSSCOMPILING)
+    message(STATUS "Skipping Qt SSL runtime probe while cross-compiling; verify SSL support on the target system.")
 else()
-    set(_qt_network_lib Qt6::Network)
-endif()
+    if(QT_VERSION_MAJOR EQUAL 5)
+        set(_qt_network_lib Qt5::Network)
+    else()
+        set(_qt_network_lib Qt6::Network)
+    endif()
 
-set(CMAKE_REQUIRED_INCLUDES ${Qt${QT_VERSION_MAJOR}Network_INCLUDE_DIRS})
-set(CMAKE_REQUIRED_LIBRARIES ${_qt_network_lib})
-include(CheckCXXSourceRuns)
-check_cxx_source_runs("
+    set(CMAKE_REQUIRED_INCLUDES ${Qt${QT_VERSION_MAJOR}Network_INCLUDE_DIRS})
+    set(CMAKE_REQUIRED_LIBRARIES ${_qt_network_lib})
+    include(CheckCXXSourceRuns)
+    check_cxx_source_runs("
 #include <QSslSocket>
 #include <QCoreApplication>
 int main(int argc, char** argv) {
@@ -109,14 +114,15 @@ int main(int argc, char** argv) {
 }
 " QT_SSL_WORKS)
 
-if(NOT QT_SSL_WORKS)
-    message(WARNING
-        "Qt SSL backend is not available at runtime.\n"
-        "HTTPS requests (Agent Chat, etc.) will fail with 'SSL handshake failed'.\n"
-        "Common causes:\n"
-        "  - Qt was built against a different OpenSSL version than the one installed\n"
-        "  - LD_LIBRARY_PATH points to an incompatible Qt installation\n"
-        "  - Missing libssl/libcrypto development packages\n")
+    if(NOT QT_SSL_WORKS)
+        message(WARNING
+            "Qt SSL backend is not available at runtime.\n"
+            "HTTPS requests (Agent Chat, etc.) will fail with 'SSL handshake failed'.\n"
+            "Common causes:\n"
+            "  - Qt was built against a different OpenSSL version than the one installed\n"
+            "  - LD_LIBRARY_PATH points to an incompatible Qt installation\n"
+            "  - Missing libssl/libcrypto development packages\n")
+    endif()
 endif()
 
 # ========== 查找 OpenCV ==========
@@ -238,15 +244,13 @@ endforeach()
 set(DEEPLUX_SAM_SERVER_SOURCE_DIR ${CMAKE_SOURCE_DIR}/tools/sam_server)
 set(DEEPLUX_SAM_SERVER_BUILD_DIR ${CMAKE_BINARY_DIR}/tools/sam_server)
 
-add_custom_target(stage-sam-server ALL
+add_custom_target(stage-sam-server
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${DEEPLUX_SAM_SERVER_SOURCE_DIR}
             ${DEEPLUX_SAM_SERVER_BUILD_DIR}
     COMMENT "Staging SAM server runtime files"
     VERBATIM
 )
-add_dependencies(DeepLux stage-sam-server)
-
 # ========== SAM 性能基线工具（原生推理计划·阶段0）==========
 add_subdirectory(tools/sam_bench)
 
