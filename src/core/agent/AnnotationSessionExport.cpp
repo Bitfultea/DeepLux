@@ -547,19 +547,21 @@ bool AnnotationSessionExport::publishSessionBytesNoReplace(const QString& output
             *errorCode = QStringLiteral("FILE_WRITE_FAILED");
         return false;
     }
-    QTemporaryFile temporary(QDir(stagingDirectory.path()).filePath(QStringLiteral("session-XXXXXX")));
-    if (!temporary.open() || temporary.write(bytes) != bytes.size() || !temporary.flush()) {
+    QFile temporary(QDir(stagingDirectory.path()).filePath(QStringLiteral("session-") +
+                                                          QUuid::createUuid().toString(QUuid::WithoutBraces)));
+    if (!temporary.open(QIODevice::ReadWrite) || temporary.write(bytes) != bytes.size() || !temporary.flush()) {
         if (errorCode)
             *errorCode = QStringLiteral("FILE_WRITE_FAILED");
         return false;
     }
+    // Windows 上 QTemporaryFile 未释放的共享句柄会让发布路径的 delete 访问失败；先关闭再发布。
+    temporary.close();
     const QString temporaryPath = temporary.fileName();
     const QString targetPath =
         QDir(canonicalParent).filePath(current.value(QStringLiteral("outputFileName")).toString());
     if (!publishPreparedFileNoReplace(temporaryPath, targetPath,
                                       current.value(QStringLiteral("outputParentIdentity")).toString(), errorCode))
         return false;
-    temporary.close();
     QFile::remove(temporaryPath);
     return true;
 }
