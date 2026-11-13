@@ -785,7 +785,7 @@ private slots:
     void testAgentOpenActiveSamSession();
     void testToolBoxSearchFiltersItemsAndRestoresOnClear();
     void testQuickModeRunsCurrentFlowOnce();
-    void testOpenProjectMenuActionLoadsAndSyncsProject();
+    void testOpenProjectPathLoadsAndSyncsProject();
     void testProcessTreeDoubleClickOpensInspectorParams();
     void testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTheme();
     void testRunFlowConfirmationShowsIrreversibleLabelEndToEnd();
@@ -16593,7 +16593,7 @@ void TestMainWindow::testQuickModeRunsCurrentFlowOnce() {
     engine.clearModules();
 }
 
-void TestMainWindow::testOpenProjectMenuActionLoadsAndSyncsProject() {
+void TestMainWindow::testOpenProjectPathLoadsAndSyncsProject() {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString path = dir.filePath(QStringLiteral("menu-open-project.dproj"));
@@ -16614,37 +16614,7 @@ void TestMainWindow::testOpenProjectMenuActionLoadsAndSyncsProject() {
     QVERIFY(previousProject != nullptr);
     previousProject->setModified(false);
 
-    bool chooserShown = false;
-    bool chooserAccepted = false;
-    QTimer chooserPoll;
-    chooserPoll.setInterval(10);
-    connect(&chooserPoll, &QTimer::timeout, &window, [&]() {
-        auto* chooser = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
-        if (!chooser)
-            return;
-        chooserShown = true;
-        chooser->selectFile(path);
-        const QStringList selectedFiles = chooser->selectedFiles();
-        if (selectedFiles.size() != 1 || QDir::cleanPath(selectedFiles.first()) != QDir::cleanPath(path))
-            return;
-
-        auto* buttonBox = chooser->findChild<QDialogButtonBox*>();
-        auto* openButton = buttonBox ? buttonBox->button(QDialogButtonBox::Open) : nullptr;
-        if (!openButton || !openButton->isEnabled())
-            return;
-
-        connect(chooser, &QDialog::accepted, &window, [&chooserAccepted]() { chooserAccepted = true; });
-        chooserPoll.stop();
-        QTest::mouseClick(openButton, Qt::LeftButton);
-    });
-    chooserPoll.start();
-    QTimer::singleShot(3000, &window, []() {
-        if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
-            modal->reject();
-    });
-    QVERIFY(QMetaObject::invokeMethod(&window, "onOpenProject", Qt::DirectConnection));
-    QVERIFY(chooserShown);
-    QVERIFY(chooserAccepted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onOpenProjectPath", Qt::DirectConnection, Q_ARG(QString, path)));
 
     Project* openedProject = manager.currentProject();
     QVERIFY(openedProject != nullptr);

@@ -105,6 +105,7 @@ private slots:
     void onNewSolution();
     void onSolutionList();
     void onOpenProject();
+    void onOpenProjectPath(const QString& filePath);
     void onSaveProject();
     void onQuickMode();
     void onQuickMeasure();

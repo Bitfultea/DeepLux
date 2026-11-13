@@ -8531,17 +8531,28 @@ void MainWindow::onOpenProject() {
     if (rejectBusyFlowEdit(tr("切换工程")))
         return;
     QString filePath = QFileDialog::getOpenFileName(this, tr("打开工程"), QString(), tr("工程文件 (*.dproj)"));
-    if (!filePath.isEmpty()) {
-        TerminalBridge::instance().onGuiAction("open-project", filePath);
-        // 阶段1 §3 + 复审2 R2：未保存工程切换保护;打开失败时原工程保留（先验证后替换）
-        ProjectManager::UnsavedPolicy policy;
-        if (!prepareUnsavedSwitch(this, tr("打开工程"), &policy))
-            return; // 取消另存为或保存失败：中止,当前工程保留
-        QString errorCode, errorMessage;
-        if (!ProjectManager::instance().openProjectChecked(filePath, policy, &errorCode, &errorMessage) &&
-            errorCode == QLatin1String("SAVE_FAILED")) {
-            QMessageBox::critical(this, tr("打开工程"), errorMessage);
-        }
+    onOpenProjectPath(filePath);
+}
+
+void MainWindow::onOpenProjectPath(const QString& filePath) {
+    if (filePath.isEmpty())
+        return;
+    if (!guiUserHasPermission(QStringLiteral("Open"))) {
+        showGuiPermissionDenied(this, tr("打开工程"));
+        return;
+    }
+    if (rejectBusyFlowEdit(tr("切换工程")))
+        return;
+
+    TerminalBridge::instance().onGuiAction("open-project", filePath);
+    // 阶段1 §3 + 复审2 R2：未保存工程切换保护;打开失败时原工程保留（先验证后替换）
+    ProjectManager::UnsavedPolicy policy;
+    if (!prepareUnsavedSwitch(this, tr("打开工程"), &policy))
+        return; // 取消另存为或保存失败：中止,当前工程保留
+    QString errorCode, errorMessage;
+    if (!ProjectManager::instance().openProjectChecked(filePath, policy, &errorCode, &errorMessage) &&
+        errorCode == QLatin1String("SAVE_FAILED")) {
+        QMessageBox::critical(this, tr("打开工程"), errorMessage);
     }
 }
 
