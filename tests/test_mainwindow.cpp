@@ -16582,16 +16582,6 @@ void TestMainWindow::testQuickModeRunsCurrentFlowOnce() {
 }
 
 void TestMainWindow::testOpenProjectMenuActionLoadsAndSyncsProject() {
-    struct NativeDialogGuard {
-        NativeDialogGuard() : wasEnabled(QApplication::testAttribute(Qt::AA_DontUseNativeDialogs)) {
-            QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
-        }
-        ~NativeDialogGuard() {
-            QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, wasEnabled);
-        }
-        bool wasEnabled;
-    };
-    [[maybe_unused]] const NativeDialogGuard nativeDialogGuard;
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString path = dir.filePath(QStringLiteral("menu-open-project.dproj"));
@@ -20727,5 +20717,10 @@ void TestMainWindow::testControlFlowLoopBackEdgeMarkersUseCanonicalKey() {
     QVERIFY(canvas.nodeItem(QStringLiteral("body"))->branchLabel().isEmpty());
 }
 
-QTEST_MAIN(TestMainWindow)
+int main(int argc, char* argv[]) {
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+    QApplication app(argc, argv);
+    TestMainWindow testObject;
+    return QTest::qExec(&testObject, argc, argv);
+}
 #include "test_mainwindow.moc"
