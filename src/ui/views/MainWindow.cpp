@@ -1152,7 +1152,8 @@ MainWindow::~MainWindow() {
     }
     TerminalBridge::instance().shutdown();
     if (m_splashScreen) {
-        m_splashScreen->deleteLater();
+        delete m_splashScreen;
+        m_splashScreen = nullptr;
     }
     QObject::disconnect(m_toolBoxDock, nullptr, this, nullptr);
     QObject::disconnect(m_logDock, nullptr, this, nullptr);
@@ -1174,7 +1175,7 @@ void MainWindow::hideSplashScreen() {
         QTimer::singleShot(300, this, [this]() {
             if (m_splashScreen) {
                 m_splashScreen->close();
-                m_splashScreen->deleteLater();
+                delete m_splashScreen;
                 m_splashScreen = nullptr;
             }
             // splash 关闭后显示主窗口
