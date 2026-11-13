@@ -5312,7 +5312,14 @@ void TestMainWindow::testG6MeasurementInputCancelsImageChangeAndLateRelease() {
     QVERIFY(QMetaObject::invokeMethod(&window, "onStop", Qt::DirectConnection));
     QTest::mouseRelease(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(250, 178));
     QCoreApplication::processEvents();
-    QCOMPARE(project->toJson(), afterFirstPick);
+    const QJsonObject projectAfterLateRelease = project->toJson();
+    if (projectAfterLateRelease != afterFirstPick) {
+        qWarning().noquote() << "G6 project after late release:"
+                             << QJsonDocument(projectAfterLateRelease).toJson(QJsonDocument::Compact);
+        qWarning().noquote() << "G6 project after first pick:"
+                             << QJsonDocument(afterFirstPick).toJson(QJsonDocument::Compact);
+    }
+    QCOMPARE(projectAfterLateRelease, afterFirstPick);
     QCOMPARE(sourcePickSpy.size(), 1);
     QCOMPARE(runStartedSpy.count(), 0);
     QCOMPARE(runFinishedSpy.count(), 0);
