@@ -90,7 +90,7 @@ public:
                                 socket->flush();
                             }
                         });
-                        QObject::connect(socket, &QObject::destroyed, m_worker, [buffer] { delete buffer; });
+                        QObject::connect(socket, &QObject::destroyed, [buffer] { delete buffer; });
                     }
                 });
                 listening = m_server->listen(QHostAddress::LocalHost, 0);
