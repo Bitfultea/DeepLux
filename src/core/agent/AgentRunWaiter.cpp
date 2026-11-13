@@ -10,6 +10,7 @@
 #include <QSet>
 #include <QThread>
 #include <QTimer>
+#include <memory>
 #ifdef DEEPLUX_BUILD_TESTS
 #include <optional>
 #endif
@@ -147,24 +148,40 @@ AgentRunWaiter::Outcome AgentRunWaiter::waitForRun(RunEngine& engine, int timeou
     m_moduleFailures = 0;
     m_lastReason.clear();
 
+    const auto waitActive = std::make_shared<bool>(true);
+    const auto expectedRunId = std::make_shared<QString>();
+    const auto earlyResult = std::make_shared<RunResult>();
     const QMetaObject::Connection finishedConn =
-        connect(&engine, &RunEngine::runFinished, this, [this](const RunResult& result) {
-            m_result = result;
-            m_finished = true;
-            quitLoop();
-        });
-    const QMetaObject::Connection moduleConn = connect(&engine, &RunEngine::moduleFinished, this,
-                                                       [this](const QString& moduleId, bool success, int elapsedMs) {
-                                                           Q_UNUSED(elapsedMs)
-                                                           if (!success) {
-                                                               if (m_failedModule.isEmpty())
-                                                                   m_failedModule = moduleId;
-                                                               ++m_moduleFailures;
-                                                           }
-                                                       });
+        connect(&engine, &RunEngine::runFinished, this,
+                [this, waitActive, expectedRunId, earlyResult](const RunResult& result) {
+                    if (!*waitActive || !m_active)
+                        return;
+                    if (expectedRunId->isEmpty()) {
+                        if (!result.runId.isEmpty())
+                            *earlyResult = result;
+                        return;
+                    }
+                    if (result.runId != *expectedRunId)
+                        return;
+                    m_result = result;
+                    m_finished = true;
+                    quitLoop();
+                });
+    const QMetaObject::Connection moduleConn =
+        connect(&engine, &RunEngine::moduleFinished, this,
+                [this, waitActive](const QString& moduleId, bool success, int elapsedMs) {
+                    Q_UNUSED(elapsedMs)
+                    if (*waitActive && m_active && !success) {
+                        if (m_failedModule.isEmpty())
+                            m_failedModule = moduleId;
+                        ++m_moduleFailures;
+                    }
+                });
     const QMetaObject::Connection breakpointConn =
-        connect(&engine, &RunEngine::breakpointHit, this, [this](const QString& moduleId) {
+        connect(&engine, &RunEngine::breakpointHit, this, [this, waitActive](const QString& moduleId) {
             Q_UNUSED(moduleId)
+            if (!*waitActive || !m_active)
+                return;
             m_pausedAtBreakpoint = true;
             quitLoop();
         });
@@ -174,53 +191,64 @@ AgentRunWaiter::Outcome AgentRunWaiter::waitForRun(RunEngine& engine, int timeou
     // 兜底收尾）、pauseHit(User)（用户暂停同样结束等待）。全部 Auto/Queued 投递到 GUI 线程。
     // 用 job 序号过滤上一次 job 尚在队列中的信号，避免误认本次等待已完成。
     FlowExecutionService& service = FlowExecutionService::instance();
-    quint64 expectedSerial = 0;
-    const QMetaObject::Connection serviceFinishedConn =
-        connect(&service, &FlowExecutionService::jobFinished, this,
-                [this, &expectedSerial, &service](FlowExecutionService::JobType job, bool stopped) {
-                    Q_UNUSED(stopped)
-                    if (job != FlowExecutionService::JobType::Single || !m_active || expectedSerial == 0 ||
-                        service.lastFinishedJobSerial() != expectedSerial) {
+    const auto expectedSerial = std::make_shared<quint64>(0);
+    const QMetaObject::Connection serviceFinishedConn = connect(
+        &service, &FlowExecutionService::jobFinished, this,
+        [this, waitActive, expectedSerial, expectedRunId, &service, &engine](FlowExecutionService::JobType job,
+                                                                             bool stopped) {
+            Q_UNUSED(stopped)
+            if (!*waitActive || job != FlowExecutionService::JobType::Single || !m_active || *expectedSerial == 0 ||
+                service.currentJobSerial() != *expectedSerial || service.lastFinishedJobSerial() != *expectedSerial) {
+                return;
+            }
+            // jobFinished is a fallback; let an already-posted runFinished result arrive first.
+            QMetaObject::invokeMethod(
+                this,
+                [this, waitActive, expectedSerial, expectedRunId, &service, &engine]() {
+                    if (!*waitActive || !m_active || *expectedSerial == 0 ||
+                        service.currentJobSerial() != *expectedSerial ||
+                        service.lastFinishedJobSerial() != *expectedSerial) {
                         return;
                     }
                     if (!m_finished) {
                         // 没有 runFinished 的收尾（启动窗口内被停止等）：按失败运行处理。
+                        const RunObservation observation = engine.runObservation(*expectedRunId);
+                        if (observation.finished && observation.runId == *expectedRunId) {
+                            m_result = observation.result;
+                            m_failedModule = observation.result.failedModule;
+                        } else {
+                            m_result.runId = *expectedRunId;
+                            m_result.errorMessage = QStringLiteral("Run finished without a result");
+                        }
                         m_finished = true;
                     }
                     quitLoop();
-                });
-    const QMetaObject::Connection serviceFailedConn =
-        connect(&service, &FlowExecutionService::jobFailed, this,
-                [this, &expectedSerial, &service](FlowExecutionService::JobType job, const QString& error) {
-                    if (job != FlowExecutionService::JobType::Single || !m_active || expectedSerial == 0 ||
-                        service.lastFailedJobSerial() != expectedSerial) {
-                        return;
-                    }
-                    m_startFailed = true;
-                    m_startError = error;
-                    quitLoop();
-                });
+                },
+                Qt::QueuedConnection);
+        });
+    const QMetaObject::Connection serviceFailedConn = connect(
+        &service, &FlowExecutionService::jobFailed, this,
+        [this, waitActive, expectedSerial, &service](FlowExecutionService::JobType job, const QString& error) {
+            if (!*waitActive || job != FlowExecutionService::JobType::Single || !m_active || *expectedSerial == 0 ||
+                service.currentJobSerial() != *expectedSerial || service.lastFailedJobSerial() != *expectedSerial) {
+                return;
+            }
+            m_startFailed = true;
+            m_startError = error;
+            quitLoop();
+        });
     const QMetaObject::Connection userPauseConn =
-        connect(&engine, &RunEngine::pauseHit, this, [this](const QString& moduleId, PauseReason reason) {
+        connect(&engine, &RunEngine::pauseHit, this, [this, waitActive](const QString& moduleId, PauseReason reason) {
             Q_UNUSED(moduleId)
-            if (reason != PauseReason::User || !m_active) {
+            if (!*waitActive || reason != PauseReason::User || !m_active) {
                 return;
             }
             m_pausedByUser = true;
             quitLoop();
         });
 
-    // 先连接、先装事件循环与超时，再启动运行：
-    // 若 runFinished 在 start() 内/紧随其后同步到达，m_finished 已置位，exec() 前会跳过等待，
-    // 不会出现"quit 已发生但事件循环还没启动 → 永久挂到超时"的丢失信号竞态。
-    QEventLoop loop;
-    m_loop = &loop;
-    QTimer::singleShot(clampTimeoutMs(timeoutMs), &loop, [this]() {
-        m_timedOut = true;
-        quitLoop();
-    });
-
-    if (!start()) {
+    const auto cleanupWait = [&]() {
+        *waitActive = false;
         m_loop = nullptr;
         disconnect(finishedConn);
         disconnect(moduleConn);
@@ -229,26 +257,45 @@ AgentRunWaiter::Outcome AgentRunWaiter::waitForRun(RunEngine& engine, int timeou
         disconnect(serviceFailedConn);
         disconnect(userPauseConn);
         m_active = false;
+    };
+
+    // 先连接、先装事件循环与超时，再启动运行：
+    // 若 runFinished 在 start() 内/紧随其后同步到达，m_finished 已置位，exec() 前会跳过等待，
+    // 不会出现"quit 已发生但事件循环还没启动 → 永久挂到超时"的丢失信号竞态。
+    QEventLoop loop;
+    m_loop = &loop;
+    QTimer::singleShot(clampTimeoutMs(timeoutMs), &loop, [this, waitActive]() {
+        if (!*waitActive || !m_active)
+            return;
+        m_timedOut = true;
+        quitLoop();
+    });
+
+    bool started = false;
+    try {
+        started = start();
+    } catch (...) {
+        cleanupWait();
+        throw;
+    }
+    if (!started) {
+        cleanupWait();
         outcome.rejectedStart = true;
         m_lastReason = QStringLiteral("rejected");
         return outcome;
     }
 
     // 本次等待对应的 job 序号：仅接受该序号 job 的完成/失败信号（排队中的旧信号被忽略）。
-    expectedSerial = service.currentJobSerial();
+    *expectedSerial = service.currentJobSerial();
+    *expectedRunId = engine.runObservation().runId;
+    if (!earlyResult->runId.isEmpty() && earlyResult->runId == *expectedRunId) {
+        m_result = *earlyResult;
+        m_finished = true;
+    }
 
     if (!m_finished && !m_aborted && !m_pausedAtBreakpoint && !m_pausedByUser && !m_startFailed && !m_timedOut)
         loop.exec();
-    m_loop = nullptr;
-
-    disconnect(finishedConn);
-    disconnect(moduleConn);
-    disconnect(breakpointConn);
-    disconnect(serviceFinishedConn);
-    disconnect(serviceFailedConn);
-    disconnect(userPauseConn);
-
-    m_active = false;
+    cleanupWait();
     outcome.finished = m_finished;
     outcome.timedOut = m_timedOut;
     outcome.aborted = m_aborted;

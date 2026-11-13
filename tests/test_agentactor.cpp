@@ -37,6 +37,7 @@
 #include <atomic>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <thread>
 
 using namespace DeepLux;
@@ -5069,6 +5070,32 @@ private slots:
         QVERIFY(cycle.value("note").toString().contains(QStringLiteral("cycle")));
         RunEngine::instance().stop();
         QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
+    }
+
+    void testAgentRunWaiterCleansUpThrownStartAndCapturesSynchronousFinish() {
+        AgentRunWaiter waiter;
+        bool caught = false;
+        try {
+            waiter.waitForRun(RunEngine::instance(), 1000, []() -> bool { throw std::runtime_error("start failed"); });
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
+        QVERIFY(caught);
+        QVERIFY(!waiter.isActive());
+        waiter.abort();
+
+        const AgentRunWaiter::Outcome aborted = waiter.waitForRun(RunEngine::instance(), 1000, []() { return true; });
+        QVERIFY(aborted.aborted);
+
+        BlockingAgentModule module(1);
+        QVERIFY(module.initialize());
+        RunEngine::instance().addModule(&module);
+        QString error;
+        const AgentRunWaiter::Outcome completed = waiter.waitForRun(
+            RunEngine::instance(), 1000, [&]() { return RunEngine::instance().runOnceChecked(&error); });
+        QVERIFY2(completed.finished, qPrintable(error));
+        QVERIFY(completed.result.success);
+        QCOMPARE(completed.result.runId, RunEngine::instance().runObservation().runId);
     }
 
     void testRunFlowWaitTimeoutStopsFlow() {
