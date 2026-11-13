@@ -16603,6 +16603,7 @@ void TestMainWindow::testOpenProjectMenuActionLoadsAndSyncsProject() {
     previousProject->setModified(false);
 
     bool chooserShown = false;
+    bool chooserAccepted = false;
     QTimer chooserPoll;
     chooserPoll.setInterval(10);
     connect(&chooserPoll, &QTimer::timeout, &window, [&]() {
@@ -16612,11 +16613,17 @@ void TestMainWindow::testOpenProjectMenuActionLoadsAndSyncsProject() {
         chooserPoll.stop();
         chooserShown = true;
         chooser->selectFile(path);
-        QVERIFY(QMetaObject::invokeMethod(chooser, "accept", Qt::DirectConnection));
+        chooserAccepted =
+            QMetaObject::invokeMethod(chooser, "done", Qt::DirectConnection, Q_ARG(int, QDialog::Accepted));
     });
     chooserPoll.start();
+    QTimer::singleShot(3000, &window, []() {
+        if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+            modal->reject();
+    });
     QVERIFY(QMetaObject::invokeMethod(&window, "onOpenProject", Qt::DirectConnection));
     QVERIFY(chooserShown);
+    QVERIFY(chooserAccepted);
 
     Project* openedProject = manager.currentProject();
     QVERIFY(openedProject != nullptr);
