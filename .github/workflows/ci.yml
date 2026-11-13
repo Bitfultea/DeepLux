@@ -194,6 +194,14 @@ jobs:
       - name: Check skipped tests
         if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
         run: python scripts/check_ctest_skips.py build/Testing/Temporary/LastTest.log
+      - name: Upload Windows CTest diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ctest-diagnostics
+          path: build/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
 
   linux-asan-ubsan:
     runs-on: ubuntu-24.04
@@ -234,6 +242,14 @@ jobs:
       - name: Check skipped tests
         if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
         run: python3 scripts/check_ctest_skips.py build/Testing/Temporary/LastTest.log
+      - name: Upload ASan/UBSan CTest diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-asan-ubsan-ctest-diagnostics
+          path: build/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
 
   linux-tsan:
     continue-on-error: true
