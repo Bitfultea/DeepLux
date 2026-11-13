@@ -82,6 +82,11 @@ endif()
 
 add_executable(deeplux-mcp-bridge mcp/main.cpp)
 target_link_libraries(deeplux-mcp-bridge PRIVATE deeplux_mcp)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set_target_properties(deeplux-mcp-bridge PROPERTIES
+        INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}"
+    )
+endif()
 
 install(TARGETS deeplux-mcp-bridge
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
