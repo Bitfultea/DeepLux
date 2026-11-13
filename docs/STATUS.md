@@ -1,7 +1,7 @@
 # Current Project Status
 
 - Date: 2026-11-13 (Asia/Shanghai)
-- Source revision: delivery branch `feature/review-hardening-pr`, last committed revision `9f8148a` based on remote main `4eb3b6a`; the latest OpenCV header-portability correction is locally verified but not yet committed or pushed.
+- Source revision: delivery branch `feature/review-hardening-pr`, latest committed revision `e6389a5` based on remote main `4eb3b6a`; its OpenCV header-portability correction is under hosted verification.
 - Verification: current isolated full CTest passed 134/134 in 138.18s; QSKIP gate passed with 9 documented skips. The final CTest log hash and R4 checks are recorded in the [R4 evidence](superpowers/plans/2026-11-13-r4-evidence.md). `BUILD_TESTS=OFF` production build passed; ABI export check 67/67 passed.
 - Evidence: [background execution acceptance](reports/background-execution-acceptance.md), [R2 negative-test evidence](superpowers/plans/2026-11-05-r2-nf-evidence.md), [R3 worker and plugin-isolation evidence](superpowers/plans/2026-11-13-r3-evidence.md), [R4 local evidence](superpowers/plans/2026-11-13-r4-evidence.md).
 - OPEN-BE-01: OPEN — the representative module window was about 153 ms, below the design's >500 ms requirement; see the acceptance report §13.3.
