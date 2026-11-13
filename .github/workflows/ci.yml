@@ -6,11 +6,24 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   plugin-affinity-lint:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install workflow test dependency
+        run: python3 -m pip install --disable-pip-version-check PyYAML==6.0.3
+      - name: Test plugin-sync isolation configuration
+        run: python3 scripts/test_ci_plugin_isolation.py
+      - name: Test plugin-sync verifier
+        run: python3 scripts/test_ci_plugin_sync_verifier.py
+      - name: Test plugin isolation configuration
+        run: python3 scripts/test_ci_plugin_isolation_config.py
       - name: Test ABI export scanner
         run: python3 scripts/test_plugin_abi_exports.py
       - name: Test affinity scanner
@@ -26,6 +39,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Qt5 dependencies
         run: |
@@ -44,16 +59,13 @@ jobs:
         run: python3 scripts/check_plugin_abi_exports.py --build-dir build
 
       - name: Isolate plugin data directory
-        run: |
-          HOME_DIR="$RUNNER_TEMP/deeplux-home-qt5"
-          mkdir -p "$HOME_DIR"
-          echo "HOME=$HOME_DIR" >> "$GITHUB_ENV"
+        run: python3 scripts/configure_ci_plugin_isolation.py --name qt5
 
       - name: Sync plugins
         run: cmake --build build --target sync-plugins
 
       - name: Verify isolated plugin sync
-        run: cmp build/lib/libFitCirclePlugin.so "$HOME/.deeplux/plugins/FitCircle/libFitCirclePlugin.so"
+        run: python3 scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
@@ -70,6 +82,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Install clang-format
         run: sudo apt-get update && sudo apt-get install -y clang-format
       - name: clang-format check (changed files only)
@@ -95,6 +108,11 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
       - name: Install Qt6 (+SerialPort)
         uses: jurplel/install-qt-action@v4
         with:
@@ -110,25 +128,11 @@ jobs:
       - name: Verify plugin ABI exports
         run: python scripts/check_plugin_abi_exports.py --build-dir build --check-release-no-test-hooks
       - name: Isolate plugin data directory
-        shell: pwsh
-        run: |
-          $appDataDir = Join-Path $env:RUNNER_TEMP "deeplux-appdata-windows"
-          Remove-Item (Join-Path $appDataDir "plugins") -Recurse -Force -ErrorAction SilentlyContinue
-          Add-Content -Path $env:GITHUB_ENV -Value "DEEPLUX_APP_DATA_DIR=$appDataDir"
+        run: python scripts/configure_ci_plugin_isolation.py --name windows
       - name: Sync plugins
         run: cmake --build build --config Release --target sync-plugins
       - name: Verify isolated plugin sync
-        shell: pwsh
-        run: |
-          $built = Get-ChildItem "build/bin", "build/lib" -Filter "FitCirclePlugin.dll" -File -Recurse |
-            Select-Object -First 1
-          $synced = Get-ChildItem (Join-Path $env:DEEPLUX_APP_DATA_DIR "plugins") -Filter "FitCirclePlugin.dll" -File -Recurse |
-            Select-Object -First 1
-          if (-not $built -or -not $synced) { throw "FitCirclePlugin.dll missing from build or isolated plugin tree" }
-          if ((Get-FileHash $built.FullName -Algorithm SHA256).Hash -ne
-              (Get-FileHash $synced.FullName -Algorithm SHA256).Hash) {
-            throw "isolated FitCirclePlugin.dll differs from the build artifact"
-          }
+        run: python scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
       - name: Deploy runtime and run CLI smoke test
         run: cmake --build build --config Release --target deploy-windows
 
@@ -138,6 +142,11 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
       - name: Install Qt6 (+SerialPort)
         uses: jurplel/install-qt-action@v4
         with:
@@ -153,8 +162,12 @@ jobs:
         run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DBUILD_TESTS=ON -DDEEPLUX_NATIVE_SAM=OFF -DDEEPLUX_TEST_QPA_PLATFORM=offscreen
       - name: Build
         run: cmake --build build --config Release --parallel
-      - name: Sync plugins to ephemeral runner profile
+      - name: Isolate plugin data directory
+        run: python scripts/configure_ci_plugin_isolation.py --name windows-ctest
+      - name: Sync plugins
         run: cmake --build build --config Release --target sync-plugins
+      - name: Verify isolated plugin sync
+        run: python scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
       - name: Test
         env:
           QT_QPA_PLATFORM: offscreen
@@ -167,6 +180,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install Qt6 and build dependencies
         run: |
           sudo apt-get update
@@ -182,12 +197,11 @@ jobs:
       - name: Build
         run: cmake --build build -j2
       - name: Isolate plugin data directory
-        run: |
-          HOME_DIR="$RUNNER_TEMP/deeplux-home-asan"
-          mkdir -p "$HOME_DIR"
-          echo "HOME=$HOME_DIR" >> "$GITHUB_ENV"
+        run: python3 scripts/configure_ci_plugin_isolation.py --name asan
       - name: Sync plugins
         run: cmake --build build --target sync-plugins
+      - name: Verify isolated plugin sync
+        run: python3 scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
       - name: Test
         env:
           QT_QPA_PLATFORM: xcb
@@ -206,6 +220,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install Qt5 and build dependencies
         run: |
           sudo apt-get update
@@ -223,13 +239,12 @@ jobs:
         id: build-tsan
         run: cmake --build build -j2
       - name: Isolate plugin data directory
-        run: |
-          HOME_DIR="$RUNNER_TEMP/deeplux-home-tsan"
-          mkdir -p "$HOME_DIR"
-          echo "HOME=$HOME_DIR" >> "$GITHUB_ENV"
+        run: python3 scripts/configure_ci_plugin_isolation.py --name tsan
       - name: Sync plugins
         id: sync-tsan
         run: cmake --build build --target sync-plugins
+      - name: Verify isolated plugin sync
+        run: python3 scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
       - name: Run concurrency suites and preserve raw output
         id: run-tsan
         run: |
@@ -276,6 +291,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Qt6 dependencies
         run: |
@@ -294,16 +311,13 @@ jobs:
         run: python3 scripts/check_plugin_abi_exports.py --build-dir build
 
       - name: Isolate plugin data directory
-        run: |
-          HOME_DIR="$RUNNER_TEMP/deeplux-home-qt6"
-          mkdir -p "$HOME_DIR"
-          echo "HOME=$HOME_DIR" >> "$GITHUB_ENV"
+        run: python3 scripts/configure_ci_plugin_isolation.py --name qt6
 
       - name: Sync plugins
         run: cmake --build build --target sync-plugins
 
       - name: Verify isolated plugin sync
-        run: cmp build/lib/libFitCirclePlugin.so "$HOME/.deeplux/plugins/FitCircle/libFitCirclePlugin.so"
+        run: python3 scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
 
       - name: Test
         run: xvfb-run -a ctest --test-dir build --output-on-failure
