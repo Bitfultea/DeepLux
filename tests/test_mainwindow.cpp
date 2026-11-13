@@ -16582,6 +16582,16 @@ void TestMainWindow::testQuickModeRunsCurrentFlowOnce() {
 }
 
 void TestMainWindow::testOpenProjectMenuActionLoadsAndSyncsProject() {
+    struct NativeDialogGuard {
+        NativeDialogGuard() : wasEnabled(QApplication::testAttribute(Qt::AA_DontUseNativeDialogs)) {
+            QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+        }
+        ~NativeDialogGuard() {
+            QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, wasEnabled);
+        }
+        bool wasEnabled;
+    };
+    [[maybe_unused]] const NativeDialogGuard nativeDialogGuard;
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString path = dir.filePath(QStringLiteral("menu-open-project.dproj"));
@@ -16603,14 +16613,18 @@ void TestMainWindow::testOpenProjectMenuActionLoadsAndSyncsProject() {
     previousProject->setModified(false);
 
     bool chooserShown = false;
-    QTimer::singleShot(0, &window, [&]() {
+    QTimer chooserPoll;
+    chooserPoll.setInterval(10);
+    connect(&chooserPoll, &QTimer::timeout, &window, [&]() {
         auto* chooser = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
         if (!chooser)
             return;
+        chooserPoll.stop();
         chooserShown = true;
         chooser->selectFile(path);
         QVERIFY(QMetaObject::invokeMethod(chooser, "accept", Qt::DirectConnection));
     });
+    chooserPoll.start();
     QVERIFY(QMetaObject::invokeMethod(&window, "onOpenProject", Qt::DirectConnection));
     QVERIFY(chooserShown);
 
