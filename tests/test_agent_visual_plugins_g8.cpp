@@ -20,7 +20,10 @@
 #include <QUuid>
 #include <QtTest/QtTest>
 #include <algorithm>
+#if __has_include(<opencv2/cvconfig.h>)
 #include <opencv2/cvconfig.h>
+#define DEEPLUX_OPENCV_CVCONFIG_AVAILABLE
+#endif
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/objdetect.hpp>
@@ -687,7 +690,9 @@ private slots:
         const QString blankPath = QDir(m_appDataDir.path()).filePath(QStringLiteral("g8-blank.png"));
         const QString expectedQr = createQrFixture(qrPath);
         QVERIFY(!expectedQr.isEmpty());
-#ifndef HAVE_QUIRC
+#ifndef DEEPLUX_OPENCV_CVCONFIG_AVAILABLE
+        QSKIP("OpenCV package does not install cvconfig.h; QUIRC capability cannot be verified");
+#elif !defined(HAVE_QUIRC)
         QSKIP("OpenCV was built without QUIRC QR decoding support");
 #endif
         cv::QRCodeDetector qrCapabilityProbe;

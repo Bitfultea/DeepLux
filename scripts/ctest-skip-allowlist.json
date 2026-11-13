@@ -1,6 +1,7 @@
 {
   "TestAgentVisualPluginsG8::testAgentLoadsDecodesAndDisplaysRealImageOutput": {
     "reason_contains": [
+      "OpenCV package does not install cvconfig.h; QUIRC capability cannot be verified",
       "OpenCV was built without QUIRC QR decoding support"
     ],
     "why": "The test requires OpenCV QUIRC support; when present, failure to decode its fixture is a test failure."
