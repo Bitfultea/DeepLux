@@ -151,6 +151,9 @@ set(_deeplux_registered_test_sources
     test_agent_variable_plugins_g8.cpp
     test_agent_plugin_g5.cpp
 )
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND _deeplux_registered_test_sources test_v4l2discovery.cpp)
+endif()
 if(DEEPLUX_NATIVE_SAM)
     list(APPEND _deeplux_registered_test_sources test_sam_onnx_inference.cpp)
 endif()

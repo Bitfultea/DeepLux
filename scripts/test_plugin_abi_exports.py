@@ -5,10 +5,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from check_plugin_abi_exports import plugin_binaries, release_binaries
+from check_plugin_abi_exports import is_test_hook, plugin_binaries, release_binaries
 
 
 class PluginAbiExportScannerTests(unittest.TestCase):
+    def test_test_hook_marker_does_not_match_for_testing_dependency_symbols(self):
+        self.assertTrue(is_test_hook("setNowForTestERK9QDateTime"))
+        self.assertTrue(is_test_hook("setNowForTest(QDateTime const&)"))
+        self.assertFalse(is_test_hook("PeekCleanupListForTesting(void)"))
+
     def test_build_under_tests_parent_is_scanned(self):
         suffix = ".dll" if os.name == "nt" else ".so"
         with tempfile.TemporaryDirectory() as temporary:

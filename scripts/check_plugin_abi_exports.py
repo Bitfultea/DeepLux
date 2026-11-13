@@ -3,6 +3,7 @@
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from pathlib import Path
 
 SYMBOLS = {"deeplux_plugin_abi_version", "deeplux_plugin_abi_fingerprint"}
 TEST_HOOK_MARKERS = ("ForTest", "faultInjection", "FaultInjection", "HandshakeHook")
+FOR_TEST_BOUNDARY = re.compile(r"ForTest(?:E|\(|@|$)")
 
 
 def has_library_suffix(path, suffixes):
@@ -75,6 +77,10 @@ def exports(binary, tool):
     return {name.lstrip("_") for name in names} if sys.platform == "darwin" else names
 
 
+def is_test_hook(name):
+    return any(marker in name for marker in TEST_HOOK_MARKERS[1:]) or FOR_TEST_BOUNDARY.search(name) is not None
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--build-dir", type=Path, required=True)
@@ -106,7 +112,7 @@ def main():
             return 1
         for binary in candidates:
             test_hooks = sorted(
-                name for name in exports(binary, tool) if any(marker in name for marker in TEST_HOOK_MARKERS)
+                name for name in exports(binary, tool) if is_test_hook(name)
             )
             if test_hooks:
                 for symbol in test_hooks:
