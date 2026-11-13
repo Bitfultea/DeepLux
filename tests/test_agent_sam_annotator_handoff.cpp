@@ -372,6 +372,7 @@ private slots:
 
         const QJsonObject pending = controller.handleToolCall(QStringLiteral("open_active_annotation_session"),
                                                               {{QStringLiteral("sessionPath"), sessionPath}});
+        qDebug().noquote() << "[debug] open_active pending:" << QJsonDocument(pending).toJson(QJsonDocument::Compact);
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString confirmationId = controller.pendingConfirmationId();
         QVERIFY(!confirmationId.isEmpty());

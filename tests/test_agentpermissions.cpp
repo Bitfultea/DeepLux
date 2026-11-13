@@ -702,12 +702,13 @@ private slots:
         QSignalSpy responseSpy(&controller, &AgentController::llmResponseReceived);
         QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
         const QString sessionPath = dir.filePath(QStringLiteral("must-not-be-created.deeplux-anno.json"));
-        const QJsonObject params{{QStringLiteral("imagePath"), imagePath},
-                                 {QStringLiteral("sessionPath"), sessionPath},
-                                 {QStringLiteral("serverUrl"), QStringLiteral("http://127.0.0.1:8990")},
-                                 {QStringLiteral("timeoutMs"), 1000},
-                                 {QStringLiteral("items"),
-                                  QJsonArray{QJsonObject{{QStringLiteral("points"), QJsonArray{QJsonArray{2, 3}}}}}}};
+        const QJsonObject params{
+            {QStringLiteral("imagePath"), imagePath},
+            {QStringLiteral("sessionPath"), sessionPath},
+            {QStringLiteral("serverUrl"), QStringLiteral("http://127.0.0.1:8990")},
+            {QStringLiteral("timeoutMs"), 1000},
+            {QStringLiteral("items"),
+             QJsonArray{QJsonObject{{QStringLiteral("points"), QJsonArray{QJsonValue(QJsonArray{2, 3})}}}}}};
         const QJsonObject pending = controller.handleToolCall(QStringLiteral("sam_annotate"), params);
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
         const QString confirmationId = controller.pendingConfirmationId();
@@ -749,7 +750,7 @@ private slots:
         QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
         const QJsonObject pending = controller.handleToolCall(
             QStringLiteral("sam_predict"), {{QStringLiteral("imagePath"), imagePath},
-                                            {QStringLiteral("points"), QJsonArray{QJsonArray{2, 3}}},
+                                            {QStringLiteral("points"), QJsonArray{QJsonValue(QJsonArray{2, 3})}},
                                             {QStringLiteral("serverUrl"), QStringLiteral("http://127.0.0.1:8990")},
                                             {QStringLiteral("timeoutMs"), 1000}});
         QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
@@ -842,7 +843,7 @@ private slots:
         const QList<QPair<QString, QJsonObject>> activeReadTools = {
             {QStringLiteral("sam_predict"),
              {{QStringLiteral("imagePath"), QStringLiteral("source.png")},
-              {QStringLiteral("points"), QJsonArray{QJsonArray{1, 2}}}}},
+              {QStringLiteral("points"), QJsonArray{QJsonValue(QJsonArray{1, 2})}}}},
             {QStringLiteral("list_active_annotation_objects"), {}},
             {QStringLiteral("list_active_annotation_categories"), {}},
             {QStringLiteral("get_active_annotation_prompt_status"), {}}};
@@ -862,7 +863,7 @@ private slots:
              {{QStringLiteral("imagePath"), "source.png"},
               {QStringLiteral("sessionPath"), dir.filePath("sam.deeplux-anno.json")},
               {QStringLiteral("items"),
-               QJsonArray{QJsonObject{{QStringLiteral("points"), QJsonArray{QJsonArray{1, 2}}}}}}}},
+               QJsonArray{QJsonObject{{QStringLiteral("points"), QJsonArray{QJsonValue(QJsonArray{1, 2})}}}}}}},
             {QStringLiteral("export_annotation_session"),
              {{QStringLiteral("sessionPath"), sessionPath},
               {QStringLiteral("format"), "labelme"},

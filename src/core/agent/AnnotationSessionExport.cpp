@@ -343,11 +343,38 @@ bool publishNoReplace(const QString& temporaryPath, const QString& outputPath, c
         return false;
     }
 
-    const HANDLE sourceHandle =
-        CreateFileW(reinterpret_cast<LPCWSTR>(temporaryPath.utf16()), DELETE | GENERIC_READ | FILE_READ_ATTRIBUTES,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                    FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    HANDLE sourceHandle = INVALID_HANDLE_VALUE;
+    DWORD sourceOpenError = ERROR_SUCCESS;
+    // Windows 上刚关闭的临时文件可能短暂被索引/杀毒等进程以“不共享删除”方式打开，
+    // 对共享冲突做有限重试，避免把可成功发布误判为 FILE_WRITE_FAILED。
+    for (int attempt = 0; attempt < 200; ++attempt) {
+        sourceHandle =
+            CreateFileW(reinterpret_cast<LPCWSTR>(temporaryPath.utf16()), DELETE | GENERIC_READ | FILE_READ_ATTRIBUTES,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                        FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (sourceHandle != INVALID_HANDLE_VALUE)
+            break;
+        sourceOpenError = GetLastError();
+        if (sourceOpenError != ERROR_SHARING_VIOLATION && sourceOpenError != ERROR_ACCESS_DENIED)
+            break;
+        Sleep(25);
+    }
     if (sourceHandle == INVALID_HANDLE_VALUE) {
+        // 若源文件仍被其他进程以“不共享删除”方式占用，退化为同一卷上的原子重命名：
+        // 不指定 REPLACE_EXISTING，目标已存在时 MoveFileExW 以原子方式失败。
+        if (sourceOpenError == ERROR_SHARING_VIOLATION || sourceOpenError == ERROR_ACCESS_DENIED) {
+            if (MoveFileExW(reinterpret_cast<LPCWSTR>(temporaryPath.utf16()),
+                            reinterpret_cast<LPCWSTR>(outputPath.utf16()), MOVEFILE_WRITE_THROUGH)) {
+                CloseHandle(parentHandle);
+                return true;
+            }
+            const DWORD moveError = GetLastError();
+            CloseHandle(parentHandle);
+            *errorCode = (moveError == ERROR_ALREADY_EXISTS || moveError == ERROR_FILE_EXISTS)
+                             ? QStringLiteral("OUTPUT_EXISTS")
+                             : QStringLiteral("FILE_WRITE_FAILED:move:%1").arg(moveError);
+            return false;
+        }
         CloseHandle(parentHandle);
         *errorCode = QStringLiteral("FILE_WRITE_FAILED");
         return false;
@@ -520,20 +547,21 @@ bool AnnotationSessionExport::publishSessionBytesNoReplace(const QString& output
             *errorCode = QStringLiteral("FILE_WRITE_FAILED");
         return false;
     }
-    QTemporaryFile temporary(QDir(stagingDirectory.path()).filePath(QStringLiteral("session-XXXXXX")));
-    temporary.setAutoRemove(true);
-    if (!temporary.open() || temporary.write(bytes) != bytes.size() || !temporary.flush()) {
+    QFile temporary(QDir(stagingDirectory.path())
+                        .filePath(QStringLiteral("session-") + QUuid::createUuid().toString(QUuid::WithoutBraces)));
+    if (!temporary.open(QIODevice::ReadWrite) || temporary.write(bytes) != bytes.size() || !temporary.flush()) {
         if (errorCode)
             *errorCode = QStringLiteral("FILE_WRITE_FAILED");
         return false;
     }
+    // Windows 上 QTemporaryFile 未释放的共享句柄会让发布路径的 delete 访问失败；先关闭再发布。
+    temporary.close();
     const QString temporaryPath = temporary.fileName();
     const QString targetPath =
         QDir(canonicalParent).filePath(current.value(QStringLiteral("outputFileName")).toString());
     if (!publishPreparedFileNoReplace(temporaryPath, targetPath,
                                       current.value(QStringLiteral("outputParentIdentity")).toString(), errorCode))
         return false;
-    temporary.close();
     QFile::remove(temporaryPath);
     return true;
 }
@@ -683,11 +711,15 @@ QJsonObject AnnotationSessionExport::execute(const QJsonObject& params, const QJ
     if (!stagingDirectory.isValid())
         return toolError(QStringLiteral("Could not create a private staging directory"),
                          QStringLiteral("FILE_WRITE_FAILED"));
-    QTemporaryFile temporary(QDir(stagingDirectory.path()).filePath(QStringLiteral("payload-XXXXXX")));
-    temporary.setAutoRemove(true);
-    if (!temporary.open() || temporary.write(outputBytes) != outputBytes.size() || !temporary.flush())
+    QFile temporary(QDir(stagingDirectory.path())
+                        .filePath(QStringLiteral("payload-") + QUuid::createUuid().toString(QUuid::WithoutBraces)));
+    if (!temporary.open(QIODevice::ReadWrite) || temporary.write(outputBytes) != outputBytes.size() ||
+        !temporary.flush())
         return toolError(QStringLiteral("Could not write complete annotation export"),
                          QStringLiteral("FILE_WRITE_FAILED"));
+    // Windows 上硬链接发布需要对源文件持有 DELETE 权限的句柄；先关闭 Qt 临时文件句柄，
+    // 否则 Qt 的共享模式会让发布路径的 CreateFileW(DELETE) 因共享冲突失败。
+    temporary.close();
     const QString temporaryPath = temporary.fileName();
     QString publishError;
     if (!publishPreparedFileNoReplace(temporaryPath, outputPath,

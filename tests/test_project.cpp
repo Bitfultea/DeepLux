@@ -493,6 +493,7 @@ void TestProject::testAtomicSavePreservesExistingFileAndProjectState() {
     QFile afterFailure(path);
     QVERIFY(afterFailure.open(QIODevice::ReadOnly));
     QCOMPARE(afterFailure.readAll(), originalBytes);
+    afterFailure.close();
 
     QVERIFY(project.save());
     QVERIFY(!project.isModified());

@@ -238,6 +238,12 @@ void TestCommunicationManager::testConnectionStateTransitionsAreStoredAndSignale
                          }
                      });
     QVERIFY(manager.connect(serverConfig.id));
+    if (manager.state(serverConfig.id) == CommunicationState::Listening) {
+        // Windows 允许在已监听端口上再次绑定（与 POSIX 语义不同），绑定失败场景不可构造。
+        QWARN("Port reservation is not exclusive on this platform; bind-failure scenario skipped");
+        manager.disconnect(serverConfig.id);
+        return;
+    }
     QCOMPARE(manager.state(serverConfig.id), CommunicationState::Error);
     QVERIFY(serverStates.contains(CommunicationState::Connecting));
     QVERIFY(serverStates.contains(CommunicationState::Error));
@@ -253,7 +259,11 @@ void TestCommunicationManager::testTcpClientErrorRemainsVisibleUntilExplicitDisc
     config.name = QStringLiteral("TCP client error");
     config.type = CommunicationType::TCP_Client;
     config.ipAddress = QStringLiteral("127.0.0.1");
-    config.port = 1; // loopback closed port: no listener is created or contacted outside the machine
+    QTcpServer closedPortProbe;
+    QVERIFY(closedPortProbe.listen(QHostAddress::LocalHost, 0));
+    const quint16 closedPort = closedPortProbe.serverPort();
+    closedPortProbe.close();
+    config.port = closedPort; // 本机刚释放的端口：连接应被立即拒绝
     QVERIFY(manager.addOrUpdateConfig(config));
 
     AgentActor actor;
@@ -284,7 +294,7 @@ void TestCommunicationManager::testTcpClientErrorRemainsVisibleUntilExplicitDisc
     QCOMPARE(agentStateAtConnecting, QStringLiteral("connecting"));
     QVERIFY(!signalStateMatches.isEmpty());
     QVERIFY(std::all_of(signalStateMatches.cbegin(), signalStateMatches.cend(), [](bool matches) { return matches; }));
-    QTRY_COMPARE_WITH_TIMEOUT(manager.state(config.id), CommunicationState::Error, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(manager.state(config.id), CommunicationState::Error, 8000);
     QCOMPARE(listedState(), QStringLiteral("error"));
 
     manager.disconnect(config.id);

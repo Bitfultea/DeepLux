@@ -936,8 +936,8 @@ void TestPluginParameterContracts::testG2ComplexConfigRoundTrip() {
                                                         {"inputVariables", QJsonArray{"${batch}", "001"}},
                                                         {"outputVariable", "formatted_report"}}},
         {QStringLiteral("PLCWritePlugin"), QJsonObject{{"startAddress", 42}, {"values", QJsonArray{0, 65535}}}},
-        {QStringLiteral("SamPredict"), QJsonObject{{"points", QJsonArray{QJsonArray{1.0, 2.0}}},
-                                                   {"negativePoints", QJsonArray{QJsonArray{3.0, 4.0}}},
+        {QStringLiteral("SamPredict"), QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{1.0, 2.0})}},
+                                                   {"negativePoints", QJsonArray{QJsonValue(QJsonArray{3.0, 4.0})}},
                                                    {"box", QJsonArray{0.0, 0.0, 20.0, 30.0}}}}};
 
     Project* project = ProjectManager::instance().newProject();
@@ -1040,8 +1040,9 @@ void TestPluginParameterContracts::testG2ComplexConfigRoundTrip() {
     }
 
     const QList<QPair<QString, QJsonObject>> invalidCases{
-        {QStringLiteral("MeasurementInput"), QJsonObject{{"points", QJsonArray{QJsonArray{1.0, "bad"}}}}},
-        {QStringLiteral("CropImage"), QJsonObject{{"rectangles", QJsonArray{QJsonArray{10, 20, -1, 4, 0}}}}},
+        {QStringLiteral("MeasurementInput"), QJsonObject{{"points", QJsonArray{QJsonValue(QJsonArray{1.0, "bad"})}}}},
+        {QStringLiteral("CropImage"),
+         QJsonObject{{"rectangles", QJsonArray{QJsonValue(QJsonArray{10, 20, -1, 4, 0})}}}},
         {QStringLiteral("StrFormatPlugin"), QJsonObject{{"inputVariables", QJsonArray{1, "valid"}}}},
         {QStringLiteral("PLCWritePlugin"), QJsonObject{{"values", QJsonArray{-1, 2}}}},
         {QStringLiteral("PLCWritePlugin"), QJsonObject{{"port", 0}}},

@@ -5914,7 +5914,17 @@ QString knowledgePathForId(const QString& documentId) {
 bool isWithinKnowledgeDirectory(const QString& path) {
     const QString root = QFileInfo(AgentActor::userKnowledgeDir()).canonicalFilePath();
     const QString resolved = QFileInfo(path).canonicalFilePath();
-    return !root.isEmpty() && !resolved.isEmpty() && resolved.startsWith(root + QDir::separator());
+    if (root.isEmpty() || resolved.isEmpty() || resolved.size() <= root.size())
+        return false;
+#ifdef Q_OS_WIN
+    constexpr Qt::CaseSensitivity kCase = Qt::CaseInsensitive;
+#else
+    constexpr Qt::CaseSensitivity kCase = Qt::CaseSensitive;
+#endif
+    if (!resolved.startsWith(root, kCase))
+        return false;
+    const QChar boundary = resolved.at(root.size());
+    return boundary == QLatin1Char('/') || boundary == QLatin1Char('\\');
 }
 
 QMutex& knowledgeImportMutex() {

@@ -1302,7 +1302,7 @@ void TestAcceptanceFlows::testAgentFindCircleMapsCircleThroughCrop() {
     crop.id = QStringLiteral("crop");
     crop.moduleId = QStringLiteral("CropImage");
     crop.name = QStringLiteral("nonzero-origin crop");
-    crop.params = QJsonObject{{QStringLiteral("rectangles"), QJsonArray{QJsonArray{320, 240, 150, 150, 0}}},
+    crop.params = QJsonObject{{QStringLiteral("rectangles"), QJsonArray{QJsonValue(QJsonArray{320, 240, 150, 150, 0})}},
                               {QStringLiteral("outputFirstAsImage"), true}};
     project->addModule(crop);
     project->removeConnection(QStringLiteral("grab"), QStringLiteral("findcircle"));
@@ -1419,8 +1419,9 @@ void TestAcceptanceFlows::testAgentEdgeDefectDeviationUnitsRequireImageLocalPoin
         ModuleInstance crop;
         crop.id = QStringLiteral("crop");
         crop.moduleId = QStringLiteral("CropImage");
-        crop.params = QJsonObject{{QStringLiteral("rectangles"), QJsonArray{QJsonArray{320, 240, 150, 150, 0}}},
-                                  {QStringLiteral("outputFirstAsImage"), true}};
+        crop.params =
+            QJsonObject{{QStringLiteral("rectangles"), QJsonArray{QJsonValue(QJsonArray{320, 240, 150, 150, 0})}},
+                        {QStringLiteral("outputFirstAsImage"), true}};
         project->addModule(crop);
         ModuleInstance input;
         input.id = QStringLiteral("input");
@@ -2394,8 +2395,8 @@ void TestAcceptanceFlows::testAgentRunFlowPreservesDisabledImageBypass() {
     crop.id = QStringLiteral("disabled_crop");
     crop.moduleId = QStringLiteral("CropImage");
     crop.name = QStringLiteral("disabled crop");
-    crop.params =
-        QJsonObject{{"rectangles", QJsonArray{QJsonArray{320, 240, 100, 100, 0}}}, {"outputFirstAsImage", true}};
+    crop.params = QJsonObject{{"rectangles", QJsonArray{QJsonValue(QJsonArray{320, 240, 100, 100, 0})}},
+                              {"outputFirstAsImage", true}};
     project->addModule(crop, 1);
     project->removeConnection(QStringLiteral("grab"), QStringLiteral("blob"));
     ModuleConnection sourceToCrop;
@@ -2474,8 +2475,8 @@ void TestAcceptanceFlows::testAgentBlobLargestDetectionMapsThroughCropOrigin() {
     crop.id = QStringLiteral("crop_blob");
     crop.moduleId = QStringLiteral("CropImage");
     crop.name = QStringLiteral("crop before blob");
-    crop.params =
-        QJsonObject{{"rectangles", QJsonArray{QJsonArray{150, 110, 120, 90, 0}}}, {"outputFirstAsImage", true}};
+    crop.params = QJsonObject{{"rectangles", QJsonArray{QJsonValue(QJsonArray{150, 110, 120, 90, 0})}},
+                              {"outputFirstAsImage", true}};
     project->addModule(crop, 1);
     project->removeConnection(QStringLiteral("grab"), QStringLiteral("blob"));
     ModuleConnection grabToCrop;
@@ -2818,8 +2819,8 @@ void TestAcceptanceFlows::testAgentColorRecognitionCenterMapsThroughCropOrigin()
         crop.id = QStringLiteral("crop");
         crop.moduleId = QStringLiteral("CropImage");
         crop.name = QStringLiteral("nonzero-origin crop");
-        crop.params =
-            QJsonObject{{"rectangles", QJsonArray{QJsonArray{180, 130, 100, 70, 0}}}, {"outputFirstAsImage", true}};
+        crop.params = QJsonObject{{"rectangles", QJsonArray{QJsonValue(QJsonArray{180, 130, 100, 70, 0})}},
+                                  {"outputFirstAsImage", true}};
         project->addModule(crop, 1);
 
         ModuleInstance color;
@@ -3074,8 +3075,8 @@ void TestAcceptanceFlows::testAgentJiErHanDefectRegionMapsThroughCropOrigin() {
         crop.id = QStringLiteral("crop");
         crop.moduleId = QStringLiteral("CropImage");
         crop.name = QStringLiteral("nonzero-origin crop");
-        crop.params =
-            QJsonObject{{"rectangles", QJsonArray{QJsonArray{200, 150, 160, 120, 0}}}, {"outputFirstAsImage", true}};
+        crop.params = QJsonObject{{"rectangles", QJsonArray{QJsonValue(QJsonArray{200, 150, 160, 120, 0})}},
+                                  {"outputFirstAsImage", true}};
         project->addModule(crop, 1);
 
         ModuleInstance defect;
@@ -3293,7 +3294,8 @@ void TestAcceptanceFlows::testAgentMatchingScalarsDeclareLocalPixelUnits() {
     crop.id = QStringLiteral("crop");
     crop.moduleId = QStringLiteral("CropImage");
     crop.name = QStringLiteral("nonzero-origin crop");
-    crop.params = QJsonObject{{"rectangles", QJsonArray{QJsonArray{120, 90, 80, 60, 0}}}, {"outputFirstAsImage", true}};
+    crop.params = QJsonObject{{"rectangles", QJsonArray{QJsonValue(QJsonArray{120, 90, 80, 60, 0})}},
+                              {"outputFirstAsImage", true}};
     project->addModule(crop, 1);
     ModuleInstance matching;
     matching.id = QStringLiteral("matching");
@@ -6727,7 +6729,8 @@ void TestAcceptanceFlows::testFitEllipseTypedOutputAndSourceCenter() {
     ModuleBase* inputInstance = engine.getModule(QStringLiteral("input"));
     QVERIFY(fitInstance);
     QVERIFY(inputInstance);
-    inputInstance->setParams(QJsonObject{{"mode", "point_set"}, {"points", QJsonArray{QJsonArray{13.0, 25.0}}}});
+    inputInstance->setParams(
+        QJsonObject{{"mode", "point_set"}, {"points", QJsonArray{QJsonValue(QJsonArray{13.0, 25.0})}}});
     QString failedRunId;
     QVERIFY(engine.runOnceAsync(&failedRunId));
     QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(failedRunId).finished, 10000);

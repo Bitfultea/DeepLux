@@ -611,7 +611,7 @@ void TestSamAnnotatorDialog::guiPromptPredictionSessionRoundTripAndLabelMeExport
     QCOMPARE(server.requestLog.count(QStringLiteral("POST /predict")), 1);
     const QJsonObject predictBody = server.lastPredictBody;
     QCOMPARE(predictBody.value(QStringLiteral("embedding_id")).toString(), client->currentEmbeddingId());
-    const QJsonArray expectedPositiveRequest{QJsonArray{40.0, 35.0}};
+    const QJsonArray expectedPositiveRequest{QJsonValue(QJsonArray{40.0, 35.0})};
     QCOMPARE(predictBody.value(QStringLiteral("points_pos")).toArray(), expectedPositiveRequest);
     QCOMPARE(predictBody.value(QStringLiteral("points_neg")).toArray(), QJsonArray{});
     QVERIFY(!predictBody.contains(QStringLiteral("box")));
@@ -1107,7 +1107,12 @@ void TestSamAnnotatorDialog::environmentSetupOnlyStatusIsSanitizedAndCapturesGui
         QVERIFY(configFile.open(QIODevice::ReadOnly));
         configBytesBefore = configFile.readAll();
     }
+#ifdef Q_OS_WIN
+    // Windows 以扩展名判定可执行文件，测试桩必须带 .exe 才会被环境检查视为有效外部 Python。
+    const QString pythonPath = temp.filePath(QStringLiteral("python.exe"));
+#else
     const QString pythonPath = temp.filePath(QStringLiteral("python"));
+#endif
     QFile python(pythonPath);
     QVERIFY(python.open(QIODevice::WriteOnly));
     python.write("#!/bin/sh\nexit 0\n");
@@ -2088,9 +2093,9 @@ void TestSamAnnotatorDialog::agentMaskOperationsValidateAndUndo() {
     const QJsonObject wrongRadiusType =
         edit(QStringLiteral("dilate"), firstObject, {{QStringLiteral("radiusPx"), QStringLiteral("2")}});
     QCOMPARE(wrongRadiusType.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
-    const QJsonObject badStroke =
-        edit(QStringLiteral("erase_stroke"), firstObject,
-             {{QStringLiteral("radiusPx"), 2}, {QStringLiteral("strokePoints"), QJsonArray{QJsonArray{-1, 25}}}});
+    const QJsonObject badStroke = edit(QStringLiteral("erase_stroke"), firstObject,
+                                       {{QStringLiteral("radiusPx"), 2},
+                                        {QStringLiteral("strokePoints"), QJsonArray{QJsonValue(QJsonArray{-1, 25})}}});
     QCOMPARE(badStroke.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
     QCOMPARE(edit(QStringLiteral("merge"), QJsonArray{firstId, firstId}).value(QStringLiteral("errorCode")).toString(),
              QStringLiteral("INVALID_PARAM"));
@@ -2104,9 +2109,9 @@ void TestSamAnnotatorDialog::agentMaskOperationsValidateAndUndo() {
     const QJsonObject nonIntegerRadius =
         edit(QStringLiteral("dilate"), firstObject, {{QStringLiteral("radiusPx"), 1.5}});
     QCOMPARE(nonIntegerRadius.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
-    const QJsonObject malformedPoint =
-        edit(QStringLiteral("erase_stroke"), firstObject,
-             {{QStringLiteral("radiusPx"), 2}, {QStringLiteral("strokePoints"), QJsonArray{QJsonArray{25}}}});
+    const QJsonObject malformedPoint = edit(
+        QStringLiteral("erase_stroke"), firstObject,
+        {{QStringLiteral("radiusPx"), 2}, {QStringLiteral("strokePoints"), QJsonArray{QJsonValue(QJsonArray{25})}}});
     QCOMPARE(malformedPoint.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
     const QJsonObject emptyStroke =
         edit(QStringLiteral("erase_stroke"), firstObject,
@@ -2135,7 +2140,7 @@ void TestSamAnnotatorDialog::agentMaskOperationsValidateAndUndo() {
                     {QStringLiteral("objectIds"), firstObject},
                     {QStringLiteral("radiusPx"), 2},
                     {QStringLiteral("strokePoints"),
-                     QJsonArray{QJsonArray{QJsonValue(std::numeric_limits<double>::quiet_NaN()), 25}}}},
+                     QJsonArray{QJsonValue(QJsonArray{QJsonValue(std::numeric_limits<double>::quiet_NaN()), 25})}}},
         true);
     QCOMPARE(nonFiniteStroke.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
     const QJsonObject infiniteStroke = dlg.applyAgentMaskEdit(
@@ -2143,7 +2148,7 @@ void TestSamAnnotatorDialog::agentMaskOperationsValidateAndUndo() {
                     {QStringLiteral("objectIds"), firstObject},
                     {QStringLiteral("radiusPx"), 2},
                     {QStringLiteral("strokePoints"),
-                     QJsonArray{QJsonArray{QJsonValue(std::numeric_limits<double>::infinity()), 25}}}},
+                     QJsonArray{QJsonValue(QJsonArray{QJsonValue(std::numeric_limits<double>::infinity()), 25})}}},
         true);
     QCOMPARE(infiniteStroke.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
     QCOMPARE(dlg.session().annotations.size(), beforeRejected.annotations.size());
@@ -3578,7 +3583,7 @@ void TestSamAnnotatorDialog::agentOpenSessionCancelsOldPredictionAndPinsNewImage
                 qunsetenv("DEEPLUX_SAM_MODEL");
         }
     } environmentRestore{previousServerPython, hadServerPython, previousSamModel, hadSamModel};
-    qputenv("SAM_SERVER_PYTHON", QByteArray("/bin/true"));
+    qputenv("SAM_SERVER_PYTHON", QCoreApplication::applicationFilePath().toLocal8Bit());
     qputenv("DEEPLUX_SAM_MODEL", modelPath.toLocal8Bit());
 
     AnnotationSession openedSession;
@@ -3714,7 +3719,7 @@ void TestSamAnnotatorDialog::agentOpenSessionReplacesCancelledEmbeddingRetry() {
                 qunsetenv("DEEPLUX_SAM_MODEL");
         }
     } environmentRestore{oldServerPython, hadServerPython, oldSamModel, hadSamModel};
-    qputenv("SAM_SERVER_PYTHON", QByteArray("/bin/true"));
+    qputenv("SAM_SERVER_PYTHON", QCoreApplication::applicationFilePath().toLocal8Bit());
     qputenv("DEEPLUX_SAM_MODEL", modelPath.toLocal8Bit());
 
     server.delayMs.remove(QStringLiteral("/set_image"));

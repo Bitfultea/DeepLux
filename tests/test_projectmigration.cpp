@@ -345,9 +345,11 @@ void TestProjectMigration::testBackupAndProjectSaveFailuresPreserveOriginalFiles
     QFile sourceAfterBackupFailure(path);
     QVERIFY(sourceAfterBackupFailure.open(QIODevice::ReadOnly));
     QCOMPARE(sourceAfterBackupFailure.readAll(), originalSource);
+    sourceAfterBackupFailure.close();
     QFile backupAfterFailure(backupPath);
     QVERIFY(backupAfterFailure.open(QIODevice::ReadOnly));
     QCOMPARE(backupAfterFailure.readAll(), originalBackup);
+    backupAfterFailure.close();
 
     QVERIFY(ProjectMigrator::saveWithBackup(migrated, path));
     QFile committedBackup(backupPath);

@@ -841,7 +841,7 @@ private slots:
         ModuleInstance crop;
         crop.id = QStringLiteral("crop");
         crop.moduleId = QStringLiteral("CropImage");
-        crop.params[QStringLiteral("rectangles")] = QJsonArray{QJsonArray{280, 220, 200, 150, 0}};
+        crop.params[QStringLiteral("rectangles")] = QJsonArray{QJsonValue(QJsonArray{280, 220, 200, 150, 0})};
         crop.params[QStringLiteral("outputFirstAsImage")] = true;
         project->addModule(crop);
 
@@ -975,7 +975,7 @@ private slots:
         QCOMPARE(server.requestLog.count(QStringLiteral("POST /predict")), 1);
         QCOMPARE(server.lastPredictBody.value(QStringLiteral("embedding_id")).toString(), QStringLiteral("emb-1"));
         QCOMPARE(server.lastPredictBody.value(QStringLiteral("points_pos")).toArray(),
-                 (QJsonArray{QJsonArray{320, 240}}));
+                 (QJsonArray{QJsonValue(QJsonArray{320, 240})}));
         QCOMPARE(server.lastPredictBody.value(QStringLiteral("points_neg")).toArray(), QJsonArray{});
 
         const ImageCoordinateProvenance provenance = grabOutput.coordinateProvenance();

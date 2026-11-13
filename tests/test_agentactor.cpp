@@ -1051,7 +1051,8 @@ private slots:
         QCOMPARE(secondPolygon.value(QStringLiteral("offset")).toInt(), 2);
         QCOMPARE(secondPolygon.value(QStringLiteral("limit")).toInt(), 2);
         QVERIFY(!secondPolygon.value(QStringLiteral("truncated")).toBool());
-        QCOMPARE(secondPolygon.value(QStringLiteral("points")).toArray(), QJsonArray({QJsonArray({3.0, 5.0})}));
+        QCOMPARE(secondPolygon.value(QStringLiteral("points")).toArray(),
+                 QJsonArray({QJsonValue(QJsonArray({3.0, 5.0}))}));
         const QJsonObject emptyPolygonPage =
             queryPolygonPage(runId, QStringLiteral("region"), 3, 2).value(QStringLiteral("polygonPage")).toObject();
         QVERIFY(emptyPolygonPage.value(QStringLiteral("points")).toArray().isEmpty());
@@ -1801,11 +1802,13 @@ private slots:
         QFile sourceAfter(sourcePath);
         QVERIFY(sourceAfter.open(QIODevice::ReadOnly));
         QCOMPARE(sourceAfter.readAll(), sourceBytes);
+        sourceAfter.close();
         const QJsonObject duplicate = AgentActor::addKnowledgeDocument(sourcePath);
         QCOMPARE(duplicate.value(QStringLiteral("errorCode")).toString(), QStringLiteral("KNOWLEDGE_DOCUMENT_EXISTS"));
         QFile preserved(QDir(userDir).filePath(QStringLiteral("AgentRecipe.md")));
         QVERIFY(preserved.open(QIODevice::ReadOnly));
         QCOMPARE(preserved.readAll(), sourceBytes);
+        preserved.close();
 
         const QJsonObject listing = actor.executeTool(QStringLiteral("list_knowledge_documents"), {});
         QVERIFY(listing.value(QStringLiteral("total")).toInt() > 0);
@@ -1880,13 +1883,18 @@ private slots:
         }
         const QString symlinkSourcePath = QDir(sourceDir).filePath(QStringLiteral("SourceLink.md"));
         QVERIFY(QFile::link(sourcePath, symlinkSourcePath));
-        const QJsonObject rejectedSourceSymlink = AgentActor::addKnowledgeDocument(symlinkSourcePath);
-        QCOMPARE(rejectedSourceSymlink.value(QStringLiteral("errorCode")).toString(),
-                 QStringLiteral("KNOWLEDGE_DOCUMENT_SOURCE_INVALID"));
-        QVERIFY(!QFileInfo::exists(QDir(userDir).filePath(QStringLiteral("SourceLink.md"))));
+        if (QFileInfo(symlinkSourcePath).isSymLink()) {
+            const QJsonObject rejectedSourceSymlink = AgentActor::addKnowledgeDocument(symlinkSourcePath);
+            QCOMPARE(rejectedSourceSymlink.value(QStringLiteral("errorCode")).toString(),
+                     QStringLiteral("KNOWLEDGE_DOCUMENT_SOURCE_INVALID"));
+            QVERIFY(!QFileInfo::exists(QDir(userDir).filePath(QStringLiteral("SourceLink.md"))));
+        } else {
+            QWARN("Link creation yields a hard link on this platform; source symlink rejection is not observable");
+        }
+        QFile::remove(symlinkSourcePath);
         const QString linkPath = QDir(userDir).filePath(QStringLiteral("OutsideLink.txt"));
         QVERIFY(QFile::link(externalPath, linkPath));
-        {
+        if (QFileInfo(linkPath).isSymLink()) {
             bool symlinkListed = false;
             const QJsonArray listedDocuments = actor.executeTool(QStringLiteral("list_knowledge_documents"), {})
                                                    .value(QStringLiteral("documents"))
@@ -1908,8 +1916,10 @@ private slots:
             QFile externalAfter(externalPath);
             QVERIFY(externalAfter.open(QIODevice::ReadOnly));
             QCOMPARE(externalAfter.readAll(), QByteArray("outside secret UniqueSymlinkSentinel"));
-            QVERIFY(QFile::remove(linkPath));
+        } else {
+            QWARN("Link creation yields a hard link on this platform; symlink exclusion is not observable");
         }
+        QFile::remove(linkPath);
 
         const QJsonObject builtinRemove =
             actor.executeTool(QStringLiteral("remove_knowledge_document"),
@@ -2733,7 +2743,7 @@ private slots:
         project->addModule(inst);
         const int undoBefore = actor.undoStack()->count();
 
-        const QJsonObject badPoint{{"mode", "point_set"}, {"points", QJsonArray{QJsonArray{1, "bad"}}}};
+        const QJsonObject badPoint{{"mode", "point_set"}, {"points", QJsonArray{QJsonValue(QJsonArray{1, "bad"})}}};
         const QJsonObject rejected =
             actor.executeTool("set_module_params", QJsonObject{{"instanceId", "measure"}, {"values", badPoint}});
         QCOMPARE(rejected.value("errorCode").toString(), QStringLiteral("VALIDATION_FAILED"));
@@ -2755,7 +2765,7 @@ private slots:
         QVERIFY(nonFinite.contains("error"));
         QCOMPARE(actor.undoStack()->count(), undoBefore);
 
-        const QJsonObject valid{{"mode", "point_set"}, {"points", QJsonArray{QJsonArray{1.0, 2.0}}}};
+        const QJsonObject valid{{"mode", "point_set"}, {"points", QJsonArray{QJsonValue(QJsonArray{1.0, 2.0})}}};
         const QJsonObject accepted =
             actor.executeTool("set_module_params", QJsonObject{{"instanceId", "measure"}, {"values", valid}});
         QCOMPARE(accepted.value("status").toString(), QStringLiteral("params_set"));

@@ -417,6 +417,7 @@ private slots:
         QFile outputFile(outputPath);
         QVERIFY(outputFile.open(QIODevice::ReadOnly | QIODevice::Text));
         QCOMPARE(QString::fromUtf8(outputFile.readAll()), outputText + QLatin1Char('\n'));
+        outputFile.close();
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().action, QStringLiteral("run_flow"));
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("success"));
         QVERIFY(!audit.last().at(0).value<AgentActionLogEntry>().undoable);
@@ -1226,6 +1227,7 @@ private slots:
         QVERIFY(outputFile.open(QIODevice::ReadOnly));
         QJsonParseError parseError;
         const QJsonDocument savedDocument = QJsonDocument::fromJson(outputFile.readAll(), &parseError);
+        outputFile.close();
         QCOMPARE(parseError.error, QJsonParseError::NoError);
         QVERIFY(savedDocument.isObject());
         QCOMPARE(audit.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("success"));
