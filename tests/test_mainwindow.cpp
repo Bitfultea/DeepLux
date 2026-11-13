@@ -16622,11 +16622,20 @@ void TestMainWindow::testOpenProjectMenuActionLoadsAndSyncsProject() {
         auto* chooser = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
         if (!chooser)
             return;
-        chooserPoll.stop();
         chooserShown = true;
         chooser->selectFile(path);
-        chooserAccepted =
-            QMetaObject::invokeMethod(chooser, "done", Qt::DirectConnection, Q_ARG(int, QDialog::Accepted));
+        const QStringList selectedFiles = chooser->selectedFiles();
+        if (selectedFiles.size() != 1 || QDir::cleanPath(selectedFiles.first()) != QDir::cleanPath(path))
+            return;
+
+        auto* buttonBox = chooser->findChild<QDialogButtonBox*>();
+        auto* openButton = buttonBox ? buttonBox->button(QDialogButtonBox::Open) : nullptr;
+        if (!openButton || !openButton->isEnabled())
+            return;
+
+        connect(chooser, &QDialog::accepted, &window, [&chooserAccepted]() { chooserAccepted = true; });
+        chooserPoll.stop();
+        QTest::mouseClick(openButton, Qt::LeftButton);
     });
     chooserPoll.start();
     QTimer::singleShot(3000, &window, []() {
