@@ -3,32 +3,21 @@
 #include "core/common/Logger.h"
 
 #include <QComboBox>
+#include <QElapsedTimer>
 #include <QFormLayout>
 #include <QLineEdit>
 #include <QSpinBox>
+#include <QTcpSocket>
+#include <QThread>
 #include <QVBoxLayout>
 
 namespace DeepLux {
 
-TCPClientPlugin::TCPClientPlugin(QObject* parent)
-    : ModuleBase(parent), m_socket(new QTcpSocket(this)), m_timeoutTimer(new QTimer(this)), m_connectLoop(nullptr),
-      m_readLoop(nullptr) {
+TCPClientPlugin::TCPClientPlugin(QObject* parent) : ModuleBase(parent) {
     m_defaultParams = QJsonObject{
         {"host", "127.0.0.1"},     {"port", 8080}, {"timeout", 3000}, {"writeData", ""}, {"readVariable", "tcp_data"},
         {"operation", "WriteRead"}};
     m_params = m_defaultParams;
-
-    // Timeout timer fires only once per use; we recreate it per-operation
-    m_timeoutTimer->setSingleShot(true);
-
-    connect(m_socket, &QTcpSocket::connected, this, &TCPClientPlugin::onConnected);
-    connect(m_socket, &QTcpSocket::disconnected, this, &TCPClientPlugin::onDisconnected);
-    connect(m_socket, &QTcpSocket::errorOccurred, this, &TCPClientPlugin::onError);
-    connect(m_socket, &QTcpSocket::readyRead, this, &TCPClientPlugin::onReadyRead);
-}
-
-TCPClientPlugin::~TCPClientPlugin() {
-    disconnectFromServer();
 }
 
 bool TCPClientPlugin::initialize() {
@@ -39,185 +28,96 @@ bool TCPClientPlugin::initialize() {
     return true;
 }
 
-void TCPClientPlugin::onConnected() {
-    Logger::instance().debug("TCPClient: Connected to server", "Communication");
-    if (m_connectLoop) {
-        m_connectLoop->quit();
+ExecutionResult TCPClientPlugin::execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) {
+    m_writeMayHaveOccurred = false;
+    m_lastFailureMessage.clear();
+    const ExecutionResult result = ModuleBase::execute(inputs, outputs, context);
+    if (!result.success && m_writeMayHaveOccurred) {
+        const QString message = m_lastFailureMessage.isEmpty()
+                                    ? tr("TCP 写入结果无法确认：请求字节已提交但未收到有效响应")
+                                    : m_lastFailureMessage;
+        return ExecutionResult::fail(ExecError::SideEffectUncertain, message, result.diagnostics);
     }
-}
-
-void TCPClientPlugin::onDisconnected() {
-    Logger::instance().debug("TCPClient: Disconnected from server", "Communication");
-}
-
-void TCPClientPlugin::onError(QAbstractSocket::SocketError error) {
-    Q_UNUSED(error);
-    emit errorOccurred(tr("TCP错误: %1").arg(m_socket->errorString()));
-    // Quit any running event loops so we don't stay stuck
-    if (m_connectLoop && m_connectLoop->isRunning()) {
-        m_connectLoop->quit();
-    }
-    if (m_readLoop && m_readLoop->isRunning()) {
-        m_readLoop->quit();
-    }
-}
-
-void TCPClientPlugin::onReadyRead() {
-    m_readBuffer += m_socket->readAll();
-    if (m_readLoop) {
-        m_readLoop->quit();
-    }
-}
-
-void TCPClientPlugin::onConnectTimeout() {
-    if (m_socket->state() != QAbstractSocket::ConnectedState) {
-        m_socket->abort();
-        emit errorOccurred(tr("连接到 %1:%2 超时 (%3ms)").arg(m_host).arg(m_port).arg(m_timeout));
-    }
-    if (m_connectLoop) {
-        m_connectLoop->quit();
-    }
-}
-
-void TCPClientPlugin::onReadTimeout() {
-    m_readTimedOut = true;
-    m_socket->disconnectFromHost();
-    if (m_readLoop) {
-        m_readLoop->quit();
-    }
-}
-
-bool TCPClientPlugin::connectToServerAsync() {
-    if (m_socket->state() == QAbstractSocket::ConnectedState) {
-        m_socket->disconnectFromHost();
-        m_socket->waitForDisconnected(100);
-    }
-
-    m_socket->connectToHost(m_host, m_port);
-
-    QEventLoop loop;
-    m_connectLoop = &loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    timer.start(m_timeout);
-    connect(&timer, &QTimer::timeout, this, &TCPClientPlugin::onConnectTimeout);
-
-    loop.exec();
-
-    m_connectLoop = nullptr;
-    m_lastWaitMs = m_timeout - timer.remainingTime();
-
-    if (m_socket->state() != QAbstractSocket::ConnectedState) {
-        return false;
-    }
-
-    Logger::instance().info(QString("TCPClient: Connected to %1:%2").arg(m_host).arg(m_port), "Communication");
-    return true;
-}
-
-void TCPClientPlugin::disconnectFromServer() {
-    if (m_socket->state() == QAbstractSocket::ConnectedState || m_socket->state() == QAbstractSocket::ConnectingState) {
-        m_socket->abort();
-    }
-}
-
-QString TCPClientPlugin::readFromServerAsync() {
-    m_readBuffer.clear();
-    m_readTimedOut = false;
-
-    // If data already available, read it
-    if (m_socket->bytesAvailable() > 0) {
-        m_readBuffer = m_socket->readAll();
-        return QString::fromUtf8(m_readBuffer);
-    }
-
-    QEventLoop loop;
-    m_readLoop = &loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    timer.start(m_timeout);
-    connect(&timer, &QTimer::timeout, this, &TCPClientPlugin::onReadTimeout);
-
-    loop.exec();
-
-    m_readLoop = nullptr;
-    m_lastWaitMs = m_timeout - timer.remainingTime();
-
-    // Drain any accumulated data
-    if (!m_readTimedOut && m_socket->state() == QAbstractSocket::ConnectedState) {
-        m_readBuffer += m_socket->readAll();
-    }
-
-    return QString::fromUtf8(m_readBuffer);
-}
-
-bool TCPClientPlugin::writeToServer(const QString& data) {
-    if (m_socket->state() != QAbstractSocket::ConnectedState) {
-        emit errorOccurred(tr("未连接到服务器"));
-        return false;
-    }
-
-    QByteArray bytes = data.toUtf8();
-    qint64 written = m_socket->write(bytes);
-    if (written != bytes.size()) {
-        emit errorOccurred(tr("写入数据失败"));
-        return false;
-    }
-
-    m_socket->flush();
-    return true;
+    return result;
 }
 
 bool TCPClientPlugin::process(const ImageData& input, ImageData& output) {
     output = input;
 
-    QJsonObject params = currentParams();
-    m_host = params["host"].toString();
-    m_port = params["port"].toInt(8080);
-    m_timeout = params["timeout"].toInt(3000);
-    m_writeData = params["writeData"].toString();
-    m_readVariable = params["readVariable"].toString("tcp_data");
-    QString operation = params["operation"].toString("WriteRead");
+    const QJsonObject params = currentParams();
+    const QString host = params["host"].toString();
+    const quint16 port = static_cast<quint16>(params["port"].toInt(8080));
+    const int timeout = params["timeout"].toInt(3000);
+    const QString writeData = params["writeData"].toString();
+    const QString readVariable = params["readVariable"].toString("tcp_data");
+    const QString operation = params["operation"].toString("WriteRead");
 
-    if (m_host.isEmpty()) {
+    if (host.isEmpty()) {
         emit errorOccurred(tr("主机地址不能为空"));
         return false;
     }
 
-    if (!connectToServerAsync()) {
+    QTcpSocket socket;
+    Q_ASSERT_X(socket.thread() == QThread::currentThread(), "TCPClientPlugin::process",
+               "The TCP socket must be created and used in the module execution thread");
+    QElapsedTimer waitTimer;
+    socket.connectToHost(host, port);
+    waitTimer.start();
+    if (!socket.waitForConnected(timeout)) {
+        m_lastWaitMs = static_cast<int>(waitTimer.elapsed());
+        if (socket.error() == QAbstractSocket::SocketTimeoutError) {
+            m_lastFailureMessage = tr("连接到 %1:%2 超时 (%3ms)").arg(host).arg(port).arg(timeout);
+            emit errorOccurred(m_lastFailureMessage);
+        } else {
+            m_lastFailureMessage =
+                tr("TCP错误: %1 (目标 %2:%3, timeout=%4ms)").arg(socket.errorString(), host).arg(port).arg(timeout);
+            emit errorOccurred(m_lastFailureMessage);
+        }
         return false;
     }
+    m_lastWaitMs = static_cast<int>(waitTimer.elapsed());
+    Logger::instance().info(QString("TCPClient: Connected to %1:%2").arg(host).arg(port), "Communication");
 
     bool success = true;
 
     if (operation == "Write" || operation == "WriteRead") {
-        QString dataToWrite = m_writeData;
+        QString dataToWrite = writeData;
         if (dataToWrite.isEmpty()) {
             dataToWrite = input.data("send_data").toString();
         }
         if (!dataToWrite.isEmpty()) {
-            success = writeToServer(dataToWrite);
+            const QByteArray bytes = dataToWrite.toUtf8();
+            const qint64 acceptedBytes = socket.write(bytes);
+            m_writeMayHaveOccurred = acceptedBytes > 0;
+            success = acceptedBytes == bytes.size();
             if (success) {
+                socket.flush();
                 Logger::instance().debug(QString("TCPClient: Wrote '%1'").arg(dataToWrite), "Communication");
+            } else {
+                m_lastFailureMessage = tr("写入数据失败（目标 %1:%2）").arg(host).arg(port);
+                emit errorOccurred(m_lastFailureMessage);
             }
         }
     }
 
     if (success && (operation == "Read" || operation == "WriteRead")) {
-        QString readData = readFromServerAsync();
-        if (m_readTimedOut) {
-            emit errorOccurred(tr("读取数据超时"));
-            disconnectFromServer();
+        waitTimer.restart();
+        if (socket.bytesAvailable() == 0 && !socket.waitForReadyRead(timeout)) {
+            m_lastWaitMs = static_cast<int>(waitTimer.elapsed());
+            m_lastFailureMessage = tr("读取 %1:%2 响应超时 (%3ms)").arg(host).arg(port).arg(timeout);
+            emit errorOccurred(m_lastFailureMessage);
             return false;
         }
+        m_lastWaitMs = static_cast<int>(waitTimer.elapsed());
+        const QString readData = QString::fromUtf8(socket.readAll());
         if (!readData.isEmpty()) {
-            output.setData(m_readVariable, readData);
-            output.setData(m_readVariable + "_bytes", readData.toUtf8().size());
+            output.setData(readVariable, readData);
+            output.setData(readVariable + "_bytes", readData.toUtf8().size());
             Logger::instance().debug(QString("TCPClient: Read '%1'").arg(readData), "Communication");
         }
     }
 
-    disconnectFromServer();
+    socket.disconnectFromHost();
     return success;
 }
 

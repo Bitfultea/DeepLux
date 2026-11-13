@@ -66,6 +66,13 @@
                 "multiple": false
             },
             {
+                "id": "line",
+                "displayName": "拟合直线",
+                "type": "Line2D",
+                "required": false,
+                "multiple": false
+            },
+            {
                 "id": "line_row1",
                 "displayName": "线行1",
                 "type": "Number",

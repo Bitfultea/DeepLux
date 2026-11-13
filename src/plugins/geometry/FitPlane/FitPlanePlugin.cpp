@@ -300,7 +300,7 @@ bool FitPlanePlugin::process(const ImageData& input, ImageData& output) {
         emit errorOccurred(tr("平面拟合失败：有效像素共线或严重病态"));
         return false;
     }
-    // z = α·u + β·v + γ（去质心后 γ = z̄ 精确成立），还原物理系数 z = aX+bY+c
+    // z = α·u + β·v + γ（去质心后 γ = z̄ 精确成立），还原缩放坐标系数 z = aX+bY+c
     const double suz = sxz / s;
     const double svz = syz / s;
     const double alpha = (gvv * suz - guv * svz) / detG;
@@ -317,7 +317,7 @@ bool FitPlanePlugin::process(const ImageData& input, ImageData& output) {
     const double nz = 1.0 / nLen;
     const double planeD = -c / nLen;
 
-    // Z 向残差统计（mm，最小二乘基准；平面度 = 最大偏差 - 最小偏差）
+    // Z 向残差统计（缩放坐标数值尺度，最小二乘基准；平面度 = 最大偏差 - 最小偏差）
     // Pass 3：逐像素重算残差（O(1) 内存），每行响应取消
     double maxRes = -std::numeric_limits<double>::infinity();
     double minRes = std::numeric_limits<double>::infinity();
@@ -342,7 +342,7 @@ bool FitPlanePlugin::process(const ImageData& input, ImageData& output) {
 
     // Plane3D 契约输出：拟合平面上 3 个非共线点 [x1,y1,z1, x2,y2,z2, x3,y3,z3]
     // （u=(1,0,a)/|..| 与 v=(0,1,b)/|..| 为平面内两个线性无关方向，步长取点云
-    // RMS 展布且不小于 1mm，保证下游 parsePlane3D 的共线防护通过）
+    // RMS 展布且不小于一个缩放坐标数值单位，保证下游 parsePlane3D 的共线防护通过）
     const double zm = gamma; // 质心处拟合值（最小二乘残差均值为 0，等于 z̄）
     const double step = qMax(1.0, s);
     const double uLen = std::sqrt(1.0 + a * a);

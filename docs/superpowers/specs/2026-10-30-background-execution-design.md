@@ -52,7 +52,7 @@
 - `ModuleBase::isThreadSafe()` 仅表示并行批次可并发，不等于可离开 GUI 线程。
 - `GrabImagePlugin` 构造时创建 `QTimer`，`process()` 内启动/停止；相机路径调用 `processEvents()`。
 - TCP/PLC 插件在 `process()` 内使用 `QEventLoop::exec()`；串口/TCP 成员对象在创建线程有亲和性。
-- `Delay` 标记 `threadSafe=true`，但 `process()` 调用 `QCoreApplication::processEvents()`，不能作为“后台安全”依据。
+- `Delay` 是同步等待模块，不属于并行批次资格；即使等待可取消，也不能因其代码没有共享写入就标记为并行安全。
 - 相机/通讯/显示类模块必须保持 GUI 线程亲和性。
 
 ### 3.3 图像链路

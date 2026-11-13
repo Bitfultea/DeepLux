@@ -3,11 +3,25 @@
 #include "../common/VarModel.h"
 #include "../platform/Platform.h"
 
+#include <QJsonObject>
 #include <QMutex>
 #include <QObject>
+#include <QVariant>
 #include <QWaitCondition>
 
 namespace DeepLux {
+
+struct GlobalVariableSnapshot {
+    bool exists = false;
+    QString name;
+    VarDataType type = VarDataType::None;
+    QVariant value;
+    QString expression;
+    QString note;
+    bool isLinked = false;
+    int index = 0;
+    quint64 identity = 0;
+};
 
 class DEEPLUX_API GlobalVarManager : public QObject {
     Q_OBJECT
@@ -25,6 +39,23 @@ public:
     Q_INVOKABLE QStringList getVariableNames(VarDataType type = VarDataType::None) const;
     Q_INVOKABLE QStringList getVariableNamesByType(const QString& typeName) const;
 
+    QList<GlobalVariableSnapshot> userVariableSnapshots(const QString& typeName = QString()) const;
+    GlobalVariableSnapshot userVariableSnapshot(const QString& name) const;
+    QJsonObject userVariableSnapshotJson(const QString& name) const;
+    bool userVariableSnapshotMatches(const QString& name, const QJsonObject& expected) const;
+    bool tryCreateUserVariable(const QString& name, VarDataType type, const QVariant& value,
+                               const QJsonObject& expected, GlobalVariableSnapshot* created, QString* errorCode);
+    bool trySetUserVariable(const QString& name, const QVariant& value, const QJsonObject& expected,
+                            GlobalVariableSnapshot* updated, QString* errorCode);
+    bool tryRemoveUserVariable(const QString& name, const QJsonObject& expected, QString* errorCode);
+
+    // Thread-neutral activity leases serialize GUI/Agent administrative writes with
+    // RunEngine execution. The lease may be released by a different worker thread.
+    bool beginUserMutationLease();
+    void endUserMutationLease();
+    bool beginExecutionLease();
+    void endExecutionLease();
+
     bool setVariableValue(const QString& name, const QVariant& value);
     QVariant getVariableValue(const QString& name) const;
 
@@ -39,12 +70,8 @@ public:
     Q_INVOKABLE void clearQueue(const QString& queueName);
     Q_INVOKABLE QStringList getQueueNames() const;
 
-    bool isEmpty() const {
-        return m_variables.isEmpty();
-    }
-    int count() const {
-        return m_variables.size();
-    }
+    bool isEmpty() const;
+    int count() const;
 
     void lock() {
         m_mutex.lock();
@@ -66,8 +93,18 @@ private:
 
     static GlobalVarManager* s_instance;
     QMap<QString, VarModel*> m_variables;
+    QMap<QString, quint64> m_variableIdentities;
+    quint64 m_nextVariableIdentity = 1;
     QMap<QString, QList<QVariant>> m_queues;
     mutable QMutex m_mutex;
+    mutable QMutex m_activityMutex;
+    QWaitCondition m_activityChanged;
+    bool m_userMutationLeaseHeld = false;
+    bool m_executionLeaseHeld = false;
+    bool m_executionLeaseWaiting = false;
+
+    GlobalVariableSnapshot snapshotLocked(const QString& name) const;
+    bool validateUserValue(VarDataType type, const QVariant& value) const;
 };
 
 } // namespace DeepLux

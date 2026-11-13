@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/base/ModuleBase.h"
+#include "core/deeplux/PayloadTypes.h"
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -52,6 +53,10 @@ private:
         double area;
         double perimeter;
         double circularity;
+        int bboxX;
+        int bboxY;
+        int bboxWidth;
+        int bboxHeight;
     };
 
     enum class ThresholdType { Fixed, Otsu, Adaptive };

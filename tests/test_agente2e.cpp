@@ -3,17 +3,18 @@
 #include "core/agent/GuiEvent.h"
 #include "core/agent/ILLMClient.h"
 #include "core/agent/ToolSchema.h"
+#include "core/common/UserManager.h"
 #include "core/engine/RunEngine.h"
 #include "core/manager/PluginManager.h"
 #include "core/manager/ProjectManager.h"
 #include "core/model/ImageData.h"
 #include "core/model/Project.h"
 
+#include <QRegularExpression>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QtTest/QtTest>
-#include <algorithm>
 #include <cmath>
 #include <optional>
 
@@ -25,7 +26,7 @@ QJsonObject makeToolCall(const QString& id, const QString& name, const QJsonObje
     return QJsonObject{{"id", id}, {"type", "function"}, {"name", name}, {"arguments", args}};
 }
 
-/// 阶段 5：确定性假 LLM——按固定脚本逐轮返回 tool_call，最终返回纯文本收尾。
+/// 确定性假 LLM——只按请求上下文返回脚本化 tool_call，不观察/等待 RunEngine。
 /// 不发起任何网络请求；每轮请求的完整上下文记录在 received 中供断言。
 class ScriptedLLMClient : public ILLMClient {
     Q_OBJECT
@@ -48,26 +49,48 @@ public:
         Q_UNUSED(tools);
         received.append(ctx);
         const int turn = received.size() - 1;
-        deliverTurn(turn);
-    }
-
-private:
-    void deliverTurn(int turn) {
-        const QJsonArray calls = scriptedTurns.value(turn);
-        const bool readsRunResult = std::any_of(calls.begin(), calls.end(), [](const QJsonValue& call) {
-            return call.toObject().value(QStringLiteral("name")).toString() == QStringLiteral("get_run_results");
-        });
-        if (readsRunResult && RunEngine::instance().isBusy()) {
-            QTimer::singleShot(5, this, [this, turn]() { deliverTurn(turn); });
-            return;
+        QJsonArray calls = scriptedTurns.value(turn);
+        if (turn == scriptedTurns.size()) {
+            // The model reads the runId from the tool result and asks the production
+            // controller to wait; the fake itself never polls RunEngine or sleeps.
+            for (auto it = ctx.messages.crbegin(); it != ctx.messages.crend(); ++it) {
+                if (it->role != QLatin1String("tool"))
+                    continue;
+                const QJsonObject toolResult = QJsonDocument::fromJson(it->content.toUtf8()).object();
+                const QString runId = toolResult.value(QStringLiteral("runId")).toString();
+                if (!runId.isEmpty()) {
+                    calls.append(makeToolCall(QStringLiteral("c7"), QStringLiteral("wait_for_run"),
+                                              QJsonObject{{QStringLiteral("runId"), runId}}));
+                    break;
+                }
+            }
+        } else if (turn == scriptedTurns.size() + 1) {
+            for (auto it = ctx.messages.crbegin(); it != ctx.messages.crend(); ++it) {
+                if (it->role != QLatin1String("tool") || it->toolCallId != QLatin1String("c7"))
+                    continue;
+                const QJsonObject waitResult = QJsonDocument::fromJson(it->content.toUtf8()).object();
+                calls.append(makeToolCall(
+                    QStringLiteral("c8"), QStringLiteral("get_module_output"),
+                    QJsonObject{{QStringLiteral("runId"), waitResult.value(QStringLiteral("runId")).toString()},
+                                {QStringLiteral("instanceId"), QStringLiteral("findcircle_1")},
+                                {QStringLiteral("key"), QStringLiteral("circle_radius")}}));
+                break;
+            }
         }
 
-        QTimer::singleShot(0, this, [this, turn]() {
+        QTimer::singleShot(0, this, [this, turn, calls, requestId = ctx.requestId]() {
             AgentResponse resp;
+            resp.requestId = requestId;
             resp.success = true;
             if (turn < scriptedTurns.size()) {
                 resp.content = QStringLiteral("脚本轮次 %1").arg(turn + 1);
-                resp.toolCalls = scriptedTurns.value(turn);
+                resp.toolCalls = calls;
+            } else if (turn == scriptedTurns.size()) {
+                resp.content = QStringLiteral("Waiting for the production run result.");
+                resp.toolCalls = calls;
+            } else if (turn == scriptedTurns.size() + 1) {
+                resp.content = QStringLiteral("Read the actual measured radius.");
+                resp.toolCalls = calls;
             } else {
                 resp.content = finalContent;
             }
@@ -116,6 +139,7 @@ private:
 };
 
 void TestAgentEndToEnd::initTestCase() {
+    UserManager::instance().login(QStringLiteral("developer"), QString());
     QVERIFY(m_tempDir.isValid());
     qputenv("DEEPLUX_APP_DATA_DIR", m_tempDir.filePath("appdata").toLocal8Bit());
 
@@ -180,7 +204,7 @@ bool TestAgentEndToEnd::installPlugin(const QString& pluginRoot, const QString& 
 }
 
 void TestAgentEndToEnd::testFakeLlmBuildsConnectsRunsAndReadsResult() {
-    // 阶段 5 验收：Agent 用确定性假 LLM 完成
+    // Agent 用确定性假 LLM 完成
     // “创建 GrabImage → FindCircle → 连接 → 运行 → 读取结果”完整闭环，不访问外部模型。
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project != nullptr);
@@ -210,10 +234,6 @@ void TestAgentEndToEnd::testFakeLlmBuildsConnectsRunsAndReadsResult() {
         QJsonArray{
             makeToolCall("c6", "run_flow", QJsonObject{{"mode", "once"}}),
         },
-        // 轮 5：读取运行结果
-        QJsonArray{
-            makeToolCall("c7", "get_run_results", QJsonObject{}),
-        },
     };
 
     AgentController& controller = AgentController::instance();
@@ -224,14 +244,23 @@ void TestAgentEndToEnd::testFakeLlmBuildsConnectsRunsAndReadsResult() {
     QSignalSpy logSpy(&controller, &AgentController::actionLogEntryAdded);
     QSignalSpy errorSpy(&controller, &AgentController::llmErrorOccurred);
     QSignalSpy runFinishedSpy(&RunEngine::instance(), &RunEngine::runFinished);
+    QSignalSpy responseSpy(&controller, &AgentController::llmResponseReceived);
+
+    // 阶段1 §5（F13）：run_flow 属执行入口，Autopilot 也必须确认——
+    // 脚本化测试模拟用户批准（本流程应恰好触发一次确认）
+    QSignalSpy confirmSpy(&controller, &AgentController::toolsPendingConfirmation);
+    QObject::connect(
+        &controller, &AgentController::toolsPendingConfirmation, &controller,
+        [&controller](const QJsonArray&) { controller.confirmPendingTools(controller.pendingConfirmationId()); });
 
     controller.sendUserMessage(QStringLiteral("创建找圆流程：GrabImage 供图给 FindCircle，运行一次并读取结果"));
 
-    // 闭环结束：5 轮工具 + 1 轮纯文本收尾 = 6 次 LLM 请求，状态回到 Idle
-    QTRY_VERIFY_WITH_TIMEOUT(controller.state() == AgentController::AgentState::Idle && fake.received.size() == 6,
+    // 闭环结束：创建/运行、等待、读取测量输出，再纯文本收尾。
+    QTRY_VERIFY_WITH_TIMEOUT(controller.state() == AgentController::AgentState::Idle && fake.received.size() == 7,
                              20000);
     QCOMPARE(errorSpy.count(), 0);
     QCOMPARE(runFinishedSpy.count(), 1);
+    QCOMPARE(confirmSpy.count(), 1); // 仅 run_flow 触发确认
 
     // 1) 流程结构由假 LLM 工具调用建立：2 模块 + 1 连接
     QVERIFY2(project->findModule("grab_1") != nullptr, "grab_1 must exist");
@@ -255,20 +284,63 @@ void TestAgentEndToEnd::testFakeLlmBuildsConnectsRunsAndReadsResult() {
     QVERIFY2(std::abs(out.data("circle_center_x").toDouble() - 320.0) < 3.0, "circle_center_x off");
     QVERIFY2(std::abs(out.data("circle_center_y").toDouble() - 240.0) < 3.0, "circle_center_y off");
 
-    // 4) 7 次工具调用全部真实执行（动作日志可审计）
-    QCOMPARE(logSpy.count(), 7);
+    // run_flow 默认等待单次运行结束，因此后续 wait_for_run 只有一次终态审计。
+    QCOMPARE(logSpy.count(), 8);
     QVERIFY(logSpy.first().first().canConvert<AgentActionLogEntry>());
     QCOMPARE(logSpy.first().first().value<AgentActionLogEntry>().action, QStringLiteral("add_module"));
+    QStringList waitAuditResults;
+    for (const QList<QVariant>& row : logSpy) {
+        const AgentActionLogEntry entry = qvariant_cast<AgentActionLogEntry>(row.first());
+        if (entry.action == QLatin1String("wait_for_run"))
+            waitAuditResults.append(entry.result);
+    }
+    QCOMPARE(waitAuditResults.size(), 1);
+    QCOMPARE(waitAuditResults.first(), QStringLiteral("success"));
 
-    // 5) get_run_results 的结果作为 tool 消息回传进对话，可读取成功统计
+    // 5) wait_for_run 由生产控制器等待，并将最终运行统计作为 tool 消息回传模型
     const AgentConversation& lastCtx = fake.received.last();
     QVERIFY(!lastCtx.messages.isEmpty());
-    const AgentMessage& lastMsg = lastCtx.messages.last();
-    QCOMPARE(lastMsg.role, QString("tool"));
-    const QJsonObject stats = QJsonDocument::fromJson(lastMsg.content.toUtf8()).object();
+    const AgentMessage* waitMessage = nullptr;
+    const AgentMessage* outputMessage = nullptr;
+    for (const AgentMessage& message : lastCtx.messages) {
+        if (message.role != QLatin1String("tool"))
+            continue;
+        if (message.toolCallId == QLatin1String("c7"))
+            waitMessage = &message;
+        else if (message.toolCallId == QLatin1String("c8"))
+            outputMessage = &message;
+    }
+    QVERIFY(waitMessage);
+    QVERIFY(outputMessage);
+    const QJsonObject stats = QJsonDocument::fromJson(waitMessage->content.toUtf8()).object();
+    QCOMPARE(stats.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+    QVERIFY(!stats.value(QStringLiteral("isBusy")).toBool());
     QVERIFY2(stats.value("successRuns").toInt() >= 1,
-             qPrintable(QString("get_run_results must report success, got: %1").arg(lastMsg.content)));
+             qPrintable(QString("wait_for_run must report success, got: %1").arg(waitMessage->content)));
     QCOMPARE(stats.value("failedRuns").toInt(), 0);
+    const QJsonObject measuredOutput = QJsonDocument::fromJson(outputMessage->content.toUtf8()).object();
+    QCOMPARE(measuredOutput.value(QStringLiteral("status")).toString(), QStringLiteral("available"));
+    QCOMPARE(measuredOutput.value(QStringLiteral("key")).toString(), QStringLiteral("circle_radius"));
+    QVERIFY(std::abs(measuredOutput.value(QStringLiteral("value")).toDouble() - 100.0) < 3.0);
+
+    QString finalReply;
+    for (const QList<QVariant>& row : responseSpy) {
+        const QString reply = row.first().toString();
+        if (reply.contains(QStringLiteral("get_module_output")))
+            finalReply = reply;
+    }
+    QVERIFY(!finalReply.isEmpty());
+    QVERIFY(finalReply.contains(QStringLiteral("get_module_output")));
+    QVERIFY(finalReply.contains(QStringLiteral("callId=c8")));
+    QVERIFY(finalReply.contains(QStringLiteral("findcircle_1")));
+    QVERIFY(finalReply.contains(QStringLiteral("circle_radius")));
+    const QRegularExpression valuePattern(QStringLiteral("\\\"value\\\":([0-9.eE+-]+)"));
+    const QRegularExpressionMatch valueMatch = valuePattern.match(finalReply);
+    QVERIFY2(valueMatch.hasMatch(), qPrintable(finalReply));
+    QVERIFY(std::abs(valueMatch.captured(1).toDouble() - measuredOutput.value(QStringLiteral("value")).toDouble()) <
+            1e-6);
+    QVERIFY(!controller.conversationHistory().isEmpty());
+    QCOMPARE(controller.conversationHistory().last().content, finalReply);
     // scopedClient 析构时自动恢复原 LLM 客户端与权限级别
 }
 

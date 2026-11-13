@@ -52,7 +52,7 @@ OpenAILLMClient::OpenAILLMClient(QObject* parent)
       m_streamIdleTimer(new QTimer(this)), m_streamDeadlineTimer(new QTimer(this)) {
     m_retryTimer->setSingleShot(true);
     connect(m_retryTimer, &QTimer::timeout, this, [this]() {
-        if (m_aborted)
+        if (m_aborted || m_retryGeneration != m_requestGeneration)
             return;
         qDebug() << "[OpenAILLMClient] retrying request, attempt" << (m_retryAttempt + 1);
         postRequestBody(m_requestStreaming);
@@ -335,10 +335,12 @@ QJsonObject OpenAILLMClient::buildRequestBody(const AgentConversation& ctx, cons
 
 void OpenAILLMClient::sendRequest(const AgentConversation& ctx, const QList<ToolDefinition>& tools) {
     // 中止上一个请求，防止信号串联（Agent 闭环中连续发请求时）
-    releaseCurrentReply();
+    abortRequest();
     // 新请求取消一切待触发的重试并重置重试状态
     m_retryTimer->stop();
     m_aborted = false;
+    m_activeRequestId = ctx.requestId;
+    ++m_requestGeneration;
     m_retryAttempt = 0;
     m_retryCategory = LLMErrorCategory::None;
     resetStreamStateForRequest();
@@ -373,16 +375,37 @@ void OpenAILLMClient::postRequestBody(bool streaming) {
              << "bytes=" << m_lastBody.size() << "tools=" << m_lastTools.size() << "stream=" << streaming;
 
     m_currentReply = m_networkManager->post(request, m_lastBody);
-    connect(m_currentReply, &QNetworkReply::finished, this, &OpenAILLMClient::onReplyFinished);
-    connect(m_currentReply, &QNetworkReply::errorOccurred, this, &OpenAILLMClient::onNetworkError);
+    QNetworkReply* const reply = m_currentReply;
+    const QString requestId = m_activeRequestId;
+    const quint64 generation = m_requestGeneration;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, requestId, generation]() {
+        if (m_currentReply != reply || m_activeRequestId != requestId || m_requestGeneration != generation)
+            return;
+        onReplyFinished();
+    });
+    connect(reply, &QNetworkReply::errorOccurred, this,
+            [this, reply, requestId, generation](QNetworkReply::NetworkError error) {
+                if (m_currentReply != reply || m_activeRequestId != requestId || m_requestGeneration != generation)
+                    return;
+                onNetworkError(error);
+            });
     if (streaming) {
-        connect(m_currentReply, &QNetworkReply::readyRead, this, &OpenAILLMClient::onStreamReadyRead);
+        connect(reply, &QNetworkReply::readyRead, this, [this, reply, requestId, generation]() {
+            if (m_currentReply != reply || m_activeRequestId != requestId || m_requestGeneration != generation)
+                return;
+            onStreamReadyRead();
+        });
         startStreamTimers();
     }
 }
 
+void OpenAILLMClient::cancelRequest() {
+    abortRequest();
+}
+
 void OpenAILLMClient::abortRequest() {
     m_aborted = true;
+    ++m_requestGeneration;
     // 主动中止：禁止迟到回调再发终态信号
     m_streamFinalized = true;
     if (m_retryTimer)
@@ -396,6 +419,7 @@ void OpenAILLMClient::abortRequest() {
     m_jsonBody.clear();
     m_contentTypeKnown = false;
     m_contentTypeIsSse = false;
+    m_activeRequestId.clear();
 }
 
 void OpenAILLMClient::releaseCurrentReply() {
@@ -452,7 +476,9 @@ void OpenAILLMClient::onReplyFinished() {
             m_jsonBody += data;
             if (!m_sawDelta && !m_streamFallbackUsed) {
                 m_streamFallbackUsed = true;
-                emit streamFallback(QStringLiteral("server returned non-stream body"));
+                const QString reason = QStringLiteral("server returned non-stream body");
+                emit streamFallback(reason);
+                emit streamFallbackForRequest(m_activeRequestId, reason);
             }
             m_streamFinalized = true;
             stopStreamTimers();
@@ -555,6 +581,7 @@ void OpenAILLMClient::handleFailure(const LLMErrorInfo& info) {
     if (failure.retryable && m_retryAttempt < maxRetries) {
         ++m_retryAttempt;
         m_retryCategory = info.category;
+        m_retryGeneration = m_requestGeneration;
         const int delayMs = retryDelayMs(info.category, m_retryAttempt);
         qWarning() << "[OpenAILLMClient] transient failure" << llmErrorCategoryName(info.category) << "retry"
                    << m_retryAttempt << "/" << maxRetries << "in" << delayMs << "ms";
@@ -573,8 +600,14 @@ void OpenAILLMClient::handleFailure(const LLMErrorInfo& info) {
         releaseCurrentReply();
     }
     recordFailedRequestIfNeeded(failure);
+    const QString failedRequestId = m_activeRequestId;
+    const quint64 failedGeneration = m_requestGeneration;
     emit errorOccurredClassified(failure);
+    emit errorOccurredClassifiedForRequest(failedRequestId, failure);
     emit errorOccurred(failure.message);
+    emit requestFailed(failedRequestId, failure.message);
+    if (m_requestGeneration == failedGeneration && m_activeRequestId == failedRequestId)
+        m_activeRequestId.clear();
 }
 
 void OpenAILLMClient::recordFailedRequestIfNeeded(const LLMErrorInfo& info) {
@@ -722,6 +755,7 @@ void OpenAILLMClient::handleStreamJson(const QJsonObject& obj) {
     if (!m_streamStartedEmitted) {
         m_streamStartedEmitted = true;
         emit streamStarted();
+        emit streamStartedForRequest(m_activeRequestId);
     }
 
     const QString content = delta.value(QStringLiteral("content")).toString();
@@ -729,6 +763,7 @@ void OpenAILLMClient::handleStreamJson(const QJsonObject& obj) {
         m_sawDelta = true;
         m_streamContent += content;
         emit streamContentDelta(content);
+        emit streamContentDeltaForRequest(m_activeRequestId, content);
     }
 
     QString reasoning;
@@ -745,12 +780,14 @@ void OpenAILLMClient::handleStreamJson(const QJsonObject& obj) {
         m_sawDelta = true;
         m_streamReasoning += reasoning;
         emit streamReasoningDelta(reasoning);
+        emit streamReasoningDeltaForRequest(m_activeRequestId, reasoning);
     }
 
     if (delta.contains(QStringLiteral("tool_calls"))) {
         m_sawDelta = true;
         accumulateToolCalls(delta.value(QStringLiteral("tool_calls")).toArray());
         emit streamToolCallsUpdated(m_toolCallAcc.size());
+        emit streamToolCallsUpdatedForRequest(m_activeRequestId, m_toolCallAcc.size());
     }
 
     const QJsonValue finishReason = choice.value(QStringLiteral("finish_reason"));
@@ -840,6 +877,7 @@ void OpenAILLMClient::finalizeStream() {
     stopStreamTimers();
 
     AgentResponse resp;
+    resp.requestId = m_activeRequestId;
     resp.success = true;
     resp.errorCategory = LLMErrorCategory::None;
     resp.content = m_streamContent;
@@ -850,7 +888,9 @@ void OpenAILLMClient::finalizeStream() {
     resp.truncatedByMaxTokens = m_finishReason == QStringLiteral("length");
 
     emit streamFinished();
+    emit streamFinishedForRequest(m_activeRequestId);
     emit responseReceived(resp);
+    m_activeRequestId.clear();
 }
 
 void OpenAILLMClient::failStream(const LLMErrorInfo& info) {
@@ -870,8 +910,12 @@ void OpenAILLMClient::failStream(const LLMErrorInfo& info) {
                << "httpStatus=" << info.httpStatus;
     recordFailedRequestIfNeeded(failure);
     emit streamFailed();
+    emit streamFailedForRequest(m_activeRequestId);
     emit errorOccurredClassified(failure);
+    emit errorOccurredClassifiedForRequest(m_activeRequestId, failure);
     emit errorOccurred(failure.message);
+    emit requestFailed(m_activeRequestId, failure.message);
+    m_activeRequestId.clear();
 }
 
 bool OpenAILLMClient::tryStreamFallback(const QString& reason) {
@@ -891,6 +935,7 @@ bool OpenAILLMClient::tryStreamFallback(const QString& reason) {
 
     qWarning() << "[OpenAILLMClient] falling back to non-stream request:" << reason;
     emit streamFallback(reason);
+    emit streamFallbackForRequest(m_activeRequestId, reason);
     m_requestStreaming = false;
     postRequestBody(false);
     return true;
@@ -988,6 +1033,7 @@ void OpenAILLMClient::parseResponse(const QByteArray& data) {
 
     QJsonObject message = choices[0].toObject()["message"].toObject();
     AgentResponse resp;
+    resp.requestId = m_activeRequestId;
     resp.success = true;
     resp.errorCategory = LLMErrorCategory::None;
     resp.content = message["content"].toString();
@@ -1010,6 +1056,7 @@ void OpenAILLMClient::parseResponse(const QByteArray& data) {
     resp.completionTokens = usage["completion_tokens"].toInt();
 
     emit responseReceived(resp);
+    m_activeRequestId.clear();
 }
 
 } // namespace DeepLux

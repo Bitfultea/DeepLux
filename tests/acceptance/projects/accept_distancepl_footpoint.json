@@ -1,0 +1,20 @@
+{
+  "version": "3.0",
+  "id": "accept-distancepl-footpoint-0001",
+  "name": "验收-DistancePL 垂足来源坐标流程",
+  "modules": [
+    {"id": "grab", "moduleId": "GrabImage", "name": "图像采集", "params": {"grabSource": "File", "filePath": "@ACCEPTANCE_DATA@/distancepl.png"}},
+    {"id": "crop", "moduleId": "CropImage", "name": "偏移裁剪", "params": {"rectangles": [[80, 60, 30, 20, 0]], "outputFirstAsImage": true}},
+    {"id": "input", "moduleId": "MeasurementInput", "name": "点线输入", "params": {"mode": "point_line", "point": [20, 10], "line": [5, 30, 45, 30], "pick_coordinate_frame": "ImageLocalPixel"}},
+    {"id": "distance", "moduleId": "DistancePL", "name": "点线距离"}
+  ],
+  "connections": [
+    {"fromModuleId": "grab", "toModuleId": "crop", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+    {"fromModuleId": "crop", "toModuleId": "input", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+    {"fromModuleId": "input", "toModuleId": "distance", "fromPort": "image", "toPort": "image", "edgeType": "data"},
+    {"fromModuleId": "input", "toModuleId": "distance", "fromPort": "point", "toPort": "point", "edgeType": "data"},
+    {"fromModuleId": "input", "toModuleId": "distance", "fromPort": "line", "toPort": "line", "edgeType": "data"}
+  ],
+  "flows": [{"id": "main", "name": "主流程", "nodes": ["grab", "crop", "input", "distance"]}],
+  "resources": {"cameras": [], "dataSources": []}
+}

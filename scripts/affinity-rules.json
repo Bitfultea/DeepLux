@@ -6,7 +6,11 @@
     "QPainter",
     "QOpenGLWidget",
     "QOpenGLContext",
-    "QEventLoop"
+    "QEventLoop",
+    "QTimer",
+    "QTcpSocket",
+    "QSerialPort",
+    "QProcess"
   ],
   "forbidden_calls": [
     "moveToThread",
@@ -29,6 +33,29 @@
     "clearOutputs",
     "runOnce",
     "stop"
+  ],
+  "global_mutating_methods": [
+    "append",
+    "assign",
+    "clear",
+    "emplace",
+    "emplace_back",
+    "emplace_front",
+    "erase",
+    "insert",
+    "pop_back",
+    "pop_front",
+    "prepend",
+    "push_back",
+    "push_front",
+    "remove",
+    "removeAll",
+    "removeAt",
+    "removeOne",
+    "reserve",
+    "resize",
+    "setValue",
+    "swap"
   ],
   "run_engine_read_allowlist": [
     {

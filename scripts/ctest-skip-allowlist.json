@@ -12,6 +12,12 @@
     ],
     "why": "The V4L2 camera fixture is Linux-only."
   },
+  "TestPluginManager::testAvailabilityDetectsMacOSPluginBinary": {
+    "reason_contains": [
+      "macOS binary discovery is only meaningful on macOS"
+    ],
+    "why": "The plugin availability probe targets macOS-specific binary formats."
+  },
   "TestSamOnnxInference::cudaProvider": {
     "reason_contains": ["设置 DEEPLUX_TEST_CUDA=1 后，在 CUDA 版 ONNX Runtime 构建中运行"],
     "why": "CUDA provider validation requires a CUDA ONNX Runtime package and GPU runner."

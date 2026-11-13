@@ -1,7 +1,7 @@
 # 执行顺序与页面布局统一设计
 
 - 日期：2026-11-02
-- 状态：设计已确认，待编写实施计划
+- 状态：已实施（B1–B5）；现状与验收证据见 [架构说明](../../architecture.md#执行顺序布局flowgraphanalyzer--floworderplan--flowlayoutcoordinator)、[实时状态](../../STATUS.md) 及 B5 验收报告。本文件保留原始设计，不作为当前实现状态的单一事实源。
 - 目标代码：`src/core/engine/RunEngine.*`、`src/core/model/Project.*`、`src/ui/widgets/FlowCanvas.*`、`src/ui/controllers/ProcessTreeController.*`、`src/ui/views/MainWindow.*`
 - 关联文档：`docs/architecture.md`、`docs/superpowers/specs/2026-10-30-background-execution-design.md`
 

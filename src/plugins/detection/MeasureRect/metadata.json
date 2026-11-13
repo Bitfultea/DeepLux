@@ -35,6 +35,12 @@
                 "order": 40,
                 "label": "阈值2"
             }
+        },
+        "results": {
+            "rect_width": {"label": "宽", "unit": "px", "precision": 3, "order": 10},
+            "rect_height": {"label": "高", "unit": "px", "precision": 3, "order": 20},
+            "rect_area": {"label": "面积", "unit": "px^2", "precision": 3, "order": 30},
+            "rect_angle": {"label": "角度", "unit": "deg", "precision": 3, "order": 40}
         }
     },
     "execution": {
@@ -76,6 +82,20 @@
                 "id": "rect_area",
                 "displayName": "面积",
                 "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "rect_angle",
+                "displayName": "角度",
+                "type": "Number",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "rectangle",
+                "displayName": "矩形区域",
+                "type": "Region2D",
                 "required": false,
                 "multiple": false
             }

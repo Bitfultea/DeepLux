@@ -10,6 +10,25 @@ permissions:
   contents: read
 
 jobs:
+  docs-status:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test status policy
+        run: python3 scripts/test_check_docs_status.py
+      - name: Check live status snapshot
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            python3 scripts/check_docs_status.py --base "$BASE_SHA"
+          else
+            python3 scripts/check_docs_status.py
+          fi
+
   plugin-affinity-lint:
     runs-on: ubuntu-22.04
     steps:
@@ -252,6 +271,9 @@ jobs:
           setarch "$(uname -m)" -R ctest --test-dir build --output-on-failure -j2 \
             -R '^(test_runengine|test_executionaffinity|test_flowexecutionservice|test_workerpluginconsistency)$' \
             2>&1 | tee build/tsan-ctest.log
+      - name: Check skipped tests
+        if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
+        run: python3 scripts/check_ctest_skips.py build/Testing/Temporary/LastTest.log
       - name: Group direct QtCore shared-library summaries for manual review
         if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
         run: python3 scripts/classify_tsan.py build/Testing/Temporary/LastTest.log

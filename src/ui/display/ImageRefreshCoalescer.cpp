@@ -15,7 +15,8 @@ void ImageRefreshCoalescer::setRenderCallback(RenderCallback callback) {
 
 void ImageRefreshCoalescer::setExpectedIdentity(quint64 jobId, const QString& runId) {
     const bool jobChanged = (jobId != 0 && jobId != m_jobId);
-    if (jobChanged) {
+    const bool runChanged = !runId.isEmpty() && runId != m_expectedRunId;
+    if (jobChanged || runChanged) {
         // 新 job：丢弃旧 job 的待渲染帧，避免旧帧被渲染到新 job 画面上（设计 §7.3）。
         clearPending();
     }
@@ -93,7 +94,7 @@ void ImageRefreshCoalescer::renderSlot(const QString& viewportId) {
     slot.pending = DisplayFrame();
     slot.hasPending = false;
     slot.lastRenderMs = m_clock.elapsed();
-    if (m_renderCallback) {
+    if (m_renderCallback && accepts(frame)) {
         m_renderCallback(frame);
     }
 }

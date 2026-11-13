@@ -35,6 +35,13 @@
                 "type": "Image2D",
                 "required": false,
                 "multiple": false
+            },
+            {
+                "id": "color_center",
+                "displayName": "颜色中心点",
+                "type": "Point2D",
+                "required": false,
+                "multiple": false
             }
         ]
     }

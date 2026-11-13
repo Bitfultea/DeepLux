@@ -30,6 +30,9 @@ public:
         // R5：一旦服务端以"不支持图片"拒绝过，本客户端会话内不再附图
         return m_visionEnabled && !m_visionDowngraded;
     }
+    bool supportsRequestCorrelation() const override {
+        return true;
+    }
     qint64 estimateImageTokens(const AgentImageAttachment& image) const override;
     int preferredImageLongEdge() const override;
     void setVisionEnabled(bool enabled);
@@ -56,6 +59,7 @@ public:
     static QString normalizeEndpoint(const QString& endpoint);
 
     void sendRequest(const AgentConversation& ctx, const QList<ToolDefinition>& tools) override;
+    void cancelRequest() override;
     void abortRequest() override;
 
     /**
@@ -128,6 +132,9 @@ DEEPLUX_TEST_VISIBILITY slots : void onReplyFinished();
 
     QNetworkAccessManager* m_networkManager = nullptr;
     QNetworkReply* m_currentReply = nullptr;
+    QString m_activeRequestId;
+    quint64 m_requestGeneration = 0;
+    quint64 m_retryGeneration = 0;
 
     // 重试状态：只重发上一次请求体，不重放对话副作用（§7.3 第 8 条）
     QTimer* m_retryTimer = nullptr;

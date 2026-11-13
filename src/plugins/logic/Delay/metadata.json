@@ -5,6 +5,10 @@
     "version": "1.0.0",
     "author": "DeepLux Team",
     "description": "延时指定时间",
+    "execution": {
+        "threadSafe": false,
+        "affinity": "worker"
+    },
     "ui": {
         "parameters": {
             "delayMs": {

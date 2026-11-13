@@ -1,5 +1,7 @@
 <RCC>
     <qresource prefix="/agent/knowledge">
         <file alias="DEEPLUX.md">knowledge/DEEPLUX.md</file>
+        <file alias="PLUGINS.md">../../../docs/plugins.md</file>
+        <file alias="USER_MANUAL.md">../../../docs/user-manual.md</file>
     </qresource>
 </RCC>

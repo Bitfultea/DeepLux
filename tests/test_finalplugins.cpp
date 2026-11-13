@@ -32,6 +32,7 @@ private slots:
     void testImageScriptInvalidTypeRejected();
     void testImageScriptFailureNotMarkedExecuted();
     void testImageScriptNonIntegerSetParamFailsAtRuntime();
+    void testImageScriptBuiltinsPreserveCoordinateProvenance();
 
     // ShowPoint
     void testShowPointDrawsMarker();
@@ -239,6 +240,46 @@ void TestFinalPlugins::testImageScriptNonIntegerSetParamFailsAtRuntime() {
 #endif
 }
 
+void TestFinalPlugins::testImageScriptBuiltinsPreserveCoordinateProvenance() {
+#ifdef DEEPLUX_HAS_OPENCV
+    cv::Mat pixels(47, 61, CV_8UC3);
+    for (int y = 0; y < pixels.rows; ++y) {
+        for (int x = 0; x < pixels.cols; ++x)
+            pixels.at<cv::Vec3b>(y, x) =
+                cv::Vec3b(uchar((3 * x + y) % 256), uchar((x + 5 * y) % 256), uchar((7 * x + 2 * y) % 256));
+    }
+    ImageData input;
+    input.setMat(pixels);
+    ImageCoordinateProvenance provenance;
+    provenance.sourceImageId = QStringLiteral("image-script-parent");
+    provenance.sourceSize = QSize(200, 150);
+    const ImageCoordinateProvenance::Matrix3 matrix{{1.5, 0.0, 7.0, 0.0, 2.0, 9.0, 0.0, 0.0, 1.0}};
+    QVERIFY(provenance.composeLocalToSource(matrix));
+    input.setCoordinateProvenance(provenance);
+
+    ImageScriptPlugin plugin;
+    QVERIFY(plugin.initialize());
+    for (int type = 0; type <= 3; ++type) {
+        ImageData output;
+        QVERIFY2(runModule(plugin, QJsonObject{{QStringLiteral("scriptType"), type}}, input, output).success,
+                 qPrintable(QString::number(type)));
+        QCOMPARE(output.width(), input.width());
+        QCOMPARE(output.height(), input.height());
+        const ImageCoordinateProvenance actual = output.coordinateProvenance();
+        QVERIFY(actual.isValid());
+        QCOMPARE(actual.sourceImageId, provenance.sourceImageId);
+        QCOMPARE(actual.sourceSize, provenance.sourceSize);
+        const auto actualMatrix = actual.localToSourceMatrix();
+        for (size_t i = 0; i < matrix.size(); ++i)
+            QCOMPARE(actualMatrix[i], matrix[i]);
+        for (const QPointF point : {QPointF(3, 5), QPointF(57, 43)})
+            QCOMPARE(actual.mapLocalToSource(point).value(), provenance.mapLocalToSource(point).value());
+    }
+#else
+    QSKIP("OpenCV not available");
+#endif
+}
+
 void TestFinalPlugins::testImageScriptCloneIndependent() {
     ImageScriptPlugin plugin;
     QVERIFY(plugin.initialize());
@@ -369,7 +410,7 @@ void TestFinalPlugins::testFreeformSurfaceCoplanarPointsLowRoughness() {
     MeasurementData::setPointCloud(input, cloud);
 
     ImageData output;
-    QJsonObject params{{"samplingInterval", 1.0}};
+    QJsonObject params;
     const ExecutionResult result = runModule(plugin, params, input, output);
     QVERIFY2(result.success, qPrintable(result.userMessage));
     QCOMPARE(output.data("point_count").toInt(), 100);

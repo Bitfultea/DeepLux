@@ -1,4 +1,7 @@
+#include "core/agent/AgentActor.h"
+#include "core/agent/ToolSchema.h"
 #include "core/common/CancellationToken.h"
+#include "core/common/UserManager.h"
 #include "core/deeplux/DataContract.h"
 #include "core/deeplux/PayloadTypes.h"
 #include "core/engine/RunEngine.h"
@@ -26,6 +29,91 @@
 
 using namespace DeepLux;
 using DeepLuxTest::SamTestServer;
+
+class ScopedUserSessionRestore final {
+public:
+    explicit ScopedUserSessionRestore(UserInfo previousUser) : m_previousUser(std::move(previousUser)) {}
+
+    ~ScopedUserSessionRestore() {
+        if (m_previousUser.isLoggedIn)
+            UserManager::instance().login(m_previousUser.userName, QString());
+        else
+            UserManager::instance().logout();
+    }
+
+private:
+    UserInfo m_previousUser;
+};
+
+class RegionImageFixtureModule final : public ModuleBase {
+public:
+    explicit RegionImageFixtureModule(bool withProvenance, bool withRegion = true)
+        : m_withProvenance(withProvenance), m_withRegion(withRegion) {
+        m_moduleId = QStringLiteral("RegionImageFixture");
+        m_name = QStringLiteral("Region and image fixture");
+        m_category = QStringLiteral("test");
+        PortSpec image;
+        image.id = QStringLiteral("image");
+        image.type = DataType::Image2D;
+        PortSpec region;
+        region.id = QStringLiteral("region");
+        region.type = DataType::Region2D;
+        setPorts({}, {image, region});
+    }
+
+protected:
+    bool process(const ImageData&, ImageData& output) override {
+        output = ImageData(QImage(32, 32, QImage::Format_RGB32));
+        if (m_withProvenance) {
+            ImageCoordinateProvenance provenance;
+            provenance.sourceImageId = QStringLiteral("12345678-1234-4234-9234-123456789abc");
+            provenance.sourceSize = QSize(200, 200);
+            provenance.localOriginInSource = QPointF(50, 40);
+            output.setCoordinateProvenance(provenance);
+        }
+        if (m_withRegion) {
+            Region2D region;
+            region.polygon = {QPointF(120, 120), QPointF(140, 120), QPointF(140, 140), QPointF(120, 140)};
+            region.bbox = QRectF(120, 120, 20, 20);
+            output.setData(QStringLiteral("region"), QVariant::fromValue(region));
+        }
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    bool m_withProvenance;
+    bool m_withRegion;
+};
+
+class RegionStatsCentroidFixtureModule final : public ModuleBase {
+public:
+    explicit RegionStatsCentroidFixtureModule(QVariant centroid) : m_centroid(std::move(centroid)) {
+        m_moduleId = QStringLiteral("RegionStats");
+        m_name = QStringLiteral("Malformed RegionStats centroid fixture");
+        PortSpec centroidPort;
+        centroidPort.id = QStringLiteral("centroid");
+        centroidPort.type = DataType::Point2D;
+        setPorts({}, {centroidPort});
+    }
+
+protected:
+    bool process(const ImageData&, ImageData& output) override {
+        output = ImageData(QImage(16, 16, QImage::Format_RGB32));
+        output.setData(QStringLiteral("centroid"), m_centroid);
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    QVariant m_centroid;
+};
 
 /**
  * SAM 批1：Region2D 载荷契约 + SamPredict 生产者 + RegionStats 消费者。
@@ -80,16 +168,29 @@ private slots:
         QVERIFY2(installPlugin(pluginRoot, QStringLiteral("SamPredict"), QStringLiteral(TEST_SAMREGION_META_SamPredict),
                                QStringLiteral(TEST_SAMREGION_LIB_SamPredict)),
                  "install SamPredict");
+        QVERIFY2(installPlugin(pluginRoot, QStringLiteral("CropImage"), QStringLiteral(TEST_SAMREGION_META_CropImage),
+                               QStringLiteral(TEST_SAMREGION_LIB_CropImage)),
+                 "install CropImage");
         QVERIFY2(installPlugin(pluginRoot, QStringLiteral("RegionStats"),
                                QStringLiteral(TEST_SAMREGION_META_RegionStats),
                                QStringLiteral(TEST_SAMREGION_LIB_RegionStats)),
                  "install RegionStats");
+        const QString fixtureDir = QDir(pluginRoot).filePath(QStringLiteral("RegionImageFixture"));
+        QVERIFY(QDir().mkpath(fixtureDir));
+        QFile fixtureMetadata(QDir(fixtureDir).filePath(QStringLiteral("metadata.json")));
+        QVERIFY(fixtureMetadata.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        const QByteArray fixtureJson =
+            R"({"id":"com.deeplux.tests.regionimagefixture","name":"RegionImageFixture","category":"test","version":"1.0","ports":{"inputs":[],"outputs":[{"id":"image","displayName":"Image","type":"Image2D","required":false,"multiple":false},{"id":"region","displayName":"Region","type":"Region2D","required":false,"multiple":false}]}})";
+        QCOMPARE(fixtureMetadata.write(fixtureJson), static_cast<qint64>(fixtureJson.size()));
+        fixtureMetadata.close();
         PluginManager::instance().addPluginPath(pluginRoot);
         QVERIFY(PluginManager::instance().initialize());
         // Region2D 端口若在加载门禁被判为不支持，这里会直接失败（契约放行回归）
         QVERIFY(PluginManager::instance().loadPlugin(QStringLiteral("GrabImage")));
         QVERIFY(PluginManager::instance().loadPlugin(QStringLiteral("SamPredict")));
+        QVERIFY(PluginManager::instance().loadPlugin(QStringLiteral("CropImage")));
         QVERIFY(PluginManager::instance().loadPlugin(QStringLiteral("RegionStats")));
+        PluginManager::instance().scanPlugins();
     }
 
     void cleanupTestCase() {
@@ -449,9 +550,11 @@ private slots:
         region.score = 0.97;
         ImageData input;
         input.setData("region", QVariant::fromValue(region));
+        input.setData("centroid", QPointF(-1, -1));
         ImageData output;
         QVERIFY(plugin.execute(input, output));
         QCOMPARE(output.data("region_area").toDouble(), 100.0); // shoelace 精确
+        QCOMPARE(output.data("centroid").toPointF(), QPointF(15, 15));
         QCOMPARE(output.data("point_count").toInt(), 4);
         QCOMPARE(output.data("centroid_x").toDouble(), 15.0);
         QCOMPARE(output.data("centroid_y").toDouble(), 15.0);
@@ -551,11 +654,13 @@ private slots:
         // 字符串载荷
         ImageData strInput;
         strInput.setData("region", QStringLiteral("not-a-region"));
+        strInput.setData("centroid", QPointF(-1, -1));
         ImageData strOut;
         QSignalSpy strSpy(&plugin, &DeepLux::IModule::errorOccurred);
         QVERIFY(!plugin.execute(strInput, strOut));
         QVERIFY2(strSpy.first().at(0).toString().contains(QStringLiteral("契约")),
                  qPrintable(strSpy.first().at(0).toString()));
+        QVERIFY(!strOut.hasData(QStringLiteral("centroid")));
 
         // 缺 bbox 的 map（polygon<3 时契约要求 bbox 有效）
         QVariantMap noBbox;
@@ -670,7 +775,10 @@ private slots:
         project->addConnection(regionConn);
 
         QVERIFY(engine.loadProject(project));
-        engine.runOnce();
+        QString runId;
+        QVERIFY(engine.runOnceAsync(&runId));
+        QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 10000);
+        QVERIFY(engine.runObservation(runId).result.success);
 
         // SamPredict 输出：强类型 Region2D 进入端口缓存（跨节点送达）
         const ImageData samOut = engine.moduleOutput(QStringLiteral("sam"));
@@ -683,6 +791,16 @@ private slots:
         QVERIFY(std::abs(statsOut.data("region_area").toDouble() - 100.0) < 1e-9);
         QCOMPARE(statsOut.data("point_count").toInt(), 4);
         QVERIFY(std::abs(statsOut.data("centroid_x").toDouble() - 15.0) < 1e-9);
+        QVERIFY(std::abs(statsOut.data("centroid_y").toDouble() - 15.0) < 1e-9);
+        QVERIFY(statsOut.data("centroid").canConvert<QPointF>());
+        QVERIFY(!statsOut.coordinateProvenance().isValid());
+        ToolSchema::instance().registerDefaultTools();
+        const QJsonObject centroid = AgentActor().executeTool(QStringLiteral("get_module_output"),
+                                                              QJsonObject{{"runId", runId},
+                                                                          {"instanceId", QStringLiteral("stats")},
+                                                                          {"port", QStringLiteral("centroid")}});
+        QCOMPARE(centroid.value(QStringLiteral("value")).toArray(), (QJsonArray{15, 15}));
+        QVERIFY(!centroid.contains(QStringLiteral("sourceImageCoordinates")));
         QVERIFY(std::abs(statsOut.data("score").toDouble() - 0.97) < 1e-9);
         QCOMPARE(statsOut.data("label").toString(), QStringLiteral("circle"));
         QVERIFY2(server.requestLog.contains(QStringLiteral("POST /set_image")),
@@ -690,6 +808,589 @@ private slots:
         QVERIFY(server.requestLog.contains(QStringLiteral("POST /predict")));
 
         engine.clearModules();
+        ProjectManager::instance().closeProject();
+    }
+
+    void testAgentSamPredictRegionCoordinatesAfterNonzeroCrop() {
+        ScopedUserSessionRestore userSession(UserManager::instance().currentUser());
+        QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+        SamTestServer server;
+        QVERIFY(server.listen());
+        server.usePredictOverride = true;
+        server.predictResponseOverride = QJsonObject{
+            {QStringLiteral("status"), QStringLiteral("ok")},
+            {QStringLiteral("polygon"), QJsonArray{QJsonArray{10, 10}, QJsonArray{20, 10}, QJsonArray{20, 14},
+                                                   QJsonArray{14, 14}, QJsonArray{14, 20}, QJsonArray{10, 20}}},
+            {QStringLiteral("bbox"), QJsonArray{10, 10, 10, 10}},
+            {QStringLiteral("score"), 0.97}};
+        ToolSchema::instance().registerDefaultTools();
+
+        RunEngine& engine = RunEngine::instance();
+        engine.clearModules();
+        ProjectManager::instance().closeProject();
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project);
+
+        ModuleInstance grab;
+        grab.id = QStringLiteral("grab");
+        grab.moduleId = QStringLiteral("GrabImage");
+        grab.params[QStringLiteral("grabSource")] = QStringLiteral("Path");
+        grab.params[QStringLiteral("filePath")] = QStringLiteral(TEST_SAMREGION_DATA_Circle);
+        project->addModule(grab);
+
+        ModuleInstance crop;
+        crop.id = QStringLiteral("crop");
+        crop.moduleId = QStringLiteral("CropImage");
+        crop.params[QStringLiteral("rectangles")] = QJsonArray{QJsonValue(QJsonArray{280, 220, 200, 150, 0})};
+        crop.params[QStringLiteral("outputFirstAsImage")] = true;
+        project->addModule(crop);
+
+        ModuleInstance sam;
+        sam.id = QStringLiteral("sam");
+        sam.moduleId = QStringLiteral("SamPredict");
+        const QJsonObject successfulSamParams = samParams(server.url(), QStringLiteral("concave-L"));
+        sam.params = successfulSamParams;
+        project->addModule(sam);
+
+        ModuleInstance stats;
+        stats.id = QStringLiteral("stats");
+        stats.moduleId = QStringLiteral("RegionStats");
+        project->addModule(stats);
+
+        ModuleInstance mismatchedStats;
+        mismatchedStats.id = QStringLiteral("stats_mismatched_carrier");
+        mismatchedStats.moduleId = QStringLiteral("RegionStats");
+        project->addModule(mismatchedStats);
+
+        ModuleInstance missingImageStats;
+        missingImageStats.id = QStringLiteral("stats_missing_image");
+        missingImageStats.moduleId = QStringLiteral("RegionStats");
+        project->addModule(missingImageStats);
+
+        const auto connectPorts = [project](const QString& from, const QString& to) {
+            ModuleConnection connection;
+            connection.fromModuleId = from;
+            connection.toModuleId = to;
+            connection.fromPort = QStringLiteral("image");
+            connection.toPort = QStringLiteral("image");
+            connection.edgeType = QStringLiteral("data");
+            project->addConnection(connection);
+        };
+        connectPorts(grab.id, crop.id);
+        connectPorts(crop.id, sam.id);
+        const auto connectPort = [project](const QString& from, const QString& fromPort, const QString& to,
+                                           const QString& toPort) {
+            ModuleConnection connection;
+            connection.fromModuleId = from;
+            connection.fromPort = fromPort;
+            connection.toModuleId = to;
+            connection.toPort = toPort;
+            connection.edgeType = QStringLiteral("data");
+            project->addConnection(connection);
+        };
+        connectPort(sam.id, QStringLiteral("region"), stats.id, QStringLiteral("region"));
+        connectPort(sam.id, QStringLiteral("image"), stats.id, QStringLiteral("image"));
+        connectPort(sam.id, QStringLiteral("region"), mismatchedStats.id, QStringLiteral("region"));
+        connectPort(crop.id, QStringLiteral("image"), mismatchedStats.id, QStringLiteral("image"));
+        connectPort(sam.id, QStringLiteral("region"), missingImageStats.id, QStringLiteral("region"));
+        ProjectFlow flow;
+        flow.id = QStringLiteral("main");
+        flow.name = QStringLiteral("main");
+        flow.nodeIds = QStringList{grab.id, crop.id, sam.id, stats.id, mismatchedStats.id, missingImageStats.id};
+        project->setFlows({flow});
+
+        QVERIFY(engine.loadProject(project));
+        AgentActor actor;
+
+        const QJsonObject rejectedParams =
+            actor.executeTool(QStringLiteral("set_module_params"),
+                              QJsonObject{{"instanceId", sam.id}, {"values", QJsonObject{{"serverUrl", QString()}}}});
+        QCOMPARE(rejectedParams.value(QStringLiteral("errorCode")).toString(), QStringLiteral("VALIDATION_FAILED"));
+        QCOMPARE(rejectedParams.value(QStringLiteral("error")).toString(),
+                 QStringLiteral("serverUrl 必须为非空字符串"));
+        const auto unchangedSam = project->moduleById(sam.id);
+        QVERIFY(unchangedSam.has_value());
+        QCOMPARE(unchangedSam->params.value(QStringLiteral("serverUrl")).toString(),
+                 successfulSamParams.value(QStringLiteral("serverUrl")).toString());
+        QCOMPARE(unchangedSam->params.value(QStringLiteral("label")).toString(),
+                 successfulSamParams.value(QStringLiteral("label")).toString());
+        QCOMPARE(unchangedSam->params.value(QStringLiteral("points")).toArray(),
+                 successfulSamParams.value(QStringLiteral("points")).toArray());
+        QCOMPARE(unchangedSam->params.value(QStringLiteral("negativePoints")).toArray(),
+                 successfulSamParams.value(QStringLiteral("negativePoints")).toArray());
+        QVERIFY(unchangedSam->params.value(QStringLiteral("box")).isNull());
+        QVERIFY(successfulSamParams.value(QStringLiteral("box")).isNull());
+        QCOMPARE(unchangedSam->params.value(QStringLiteral("timeoutMs")).toInt(),
+                 successfulSamParams.value(QStringLiteral("timeoutMs")).toInt());
+        QVERIFY(!engine.isBusy());
+
+        QJsonObject noPromptParams = successfulSamParams;
+        noPromptParams[QStringLiteral("points")] = QJsonArray{};
+        noPromptParams[QStringLiteral("negativePoints")] = QJsonArray{};
+        noPromptParams[QStringLiteral("box")] = QJsonValue::Null;
+        const QJsonObject noPromptConfigured = actor.executeTool(
+            QStringLiteral("set_module_params"), QJsonObject{{"instanceId", sam.id}, {"values", noPromptParams}});
+        QCOMPARE(noPromptConfigured.value(QStringLiteral("status")).toString(), QStringLiteral("params_set"));
+        QVERIFY(engine.loadProject(project));
+        const int requestsBeforeMissingPromptRun = server.requestLog.size();
+        QString missingPromptRunId;
+        QVERIFY(engine.runOnceAsync(&missingPromptRunId));
+        QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(missingPromptRunId).finished, 10000);
+        const RunObservation missingPromptRun = engine.runObservation(missingPromptRunId);
+        QVERIFY(!missingPromptRun.result.success);
+        QCOMPARE(missingPromptRun.result.failedModule, sam.id);
+        QVERIFY(missingPromptRun.result.errorMessage.contains(QStringLiteral("points 与 box 至少提供一个 prompt")));
+        QCOMPARE(actor.executeTool(QStringLiteral("get_run_results"), QJsonObject{{"runId", missingPromptRunId}})
+                     .value(QStringLiteral("status"))
+                     .toString(),
+                 QStringLiteral("failed"));
+        const QJsonObject unavailableSamRegion =
+            actor.executeTool(QStringLiteral("get_module_output"),
+                              QJsonObject{{"runId", missingPromptRunId}, {"instanceId", sam.id}, {"port", "region"}});
+        QCOMPARE(unavailableSamRegion.value(QStringLiteral("status")).toString(), QStringLiteral("unavailable"));
+        QCOMPARE(unavailableSamRegion.value(QStringLiteral("reason")).toString(), QStringLiteral("run_failed"));
+        QCOMPARE(server.requestLog.size(), requestsBeforeMissingPromptRun);
+
+        const QJsonObject validParamsConfigured = actor.executeTool(
+            QStringLiteral("set_module_params"), QJsonObject{{"instanceId", sam.id}, {"values", successfulSamParams}});
+        QCOMPARE(validParamsConfigured.value(QStringLiteral("status")).toString(), QStringLiteral("params_set"));
+        QVERIFY(engine.loadProject(project));
+        QString runId;
+        QVERIFY(engine.runOnceAsync(&runId));
+        QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 10000);
+        QVERIFY2(engine.runObservation(runId).result.success,
+                 qPrintable(engine.runObservation(runId).result.errorMessage));
+
+        const ImageData grabOutput = engine.moduleOutput(grab.id);
+        const ImageData cropOutput = engine.moduleOutput(crop.id);
+        QCOMPARE(grabOutput.width(), 640);
+        QCOMPARE(grabOutput.height(), 480);
+        QCOMPARE(cropOutput.width(), 400);
+        QCOMPARE(cropOutput.height(), 300);
+        QCOMPARE(server.lastSetImage.width(), 400);
+        QCOMPARE(server.lastSetImage.height(), 300);
+        QVERIFY(server.lastSetImageReadable);
+        QVERIFY(!server.lastSetImagePath.isEmpty());
+        QCOMPARE(server.requestLog.count(QStringLiteral("POST /set_image")), 1);
+        QCOMPARE(server.requestLog.count(QStringLiteral("POST /predict")), 1);
+        QCOMPARE(server.lastPredictBody.value(QStringLiteral("embedding_id")).toString(), QStringLiteral("emb-1"));
+        QCOMPARE(server.lastPredictBody.value(QStringLiteral("points_pos")).toArray(),
+                 (QJsonArray{QJsonValue(QJsonArray{320, 240})}));
+        QCOMPARE(server.lastPredictBody.value(QStringLiteral("points_neg")).toArray(), QJsonArray{});
+
+        const ImageCoordinateProvenance provenance = grabOutput.coordinateProvenance();
+        QVERIFY(provenance.isValid());
+        QCOMPARE(provenance.sourceSize, QSize(640, 480));
+        const ImageCoordinateProvenance cropProvenance = cropOutput.coordinateProvenance();
+        QVERIFY(cropProvenance.isValid());
+        QCOMPARE(cropProvenance.sourceImageId, provenance.sourceImageId);
+        const ImageCoordinateProvenance::Matrix3 expectedCropMatrix{{1, 0, 80, 0, 1, 70, 0, 0, 1}};
+        QCOMPARE(cropProvenance.localToSourceMatrix(), expectedCropMatrix);
+        const auto expectedSourceBounds = cropProvenance.mapRectToSourceBounds(QRectF(10, 10, 10, 10));
+        QVERIFY(expectedSourceBounds);
+        QCOMPARE(expectedSourceBounds->x(), 90.0);
+        QCOMPARE(expectedSourceBounds->y(), 80.0);
+        QCOMPARE(expectedSourceBounds->width(), 10.0);
+        QCOMPARE(expectedSourceBounds->height(), 10.0);
+        const QVector<QPointF> expectedLocalPoints{QPointF(10, 10), QPointF(20, 10), QPointF(20, 14),
+                                                   QPointF(14, 14), QPointF(14, 20), QPointF(10, 20)};
+        QJsonArray mappedSourcePoints;
+        for (const QPointF& point : expectedLocalPoints) {
+            const auto mapped = cropProvenance.mapLocalToSource(point);
+            QVERIFY(mapped);
+            mappedSourcePoints.append(QJsonArray{mapped->x(), mapped->y()});
+        }
+        const QJsonArray expectedSourcePoints{QJsonArray{90, 80}, QJsonArray{100, 80}, QJsonArray{100, 84},
+                                              QJsonArray{94, 84}, QJsonArray{94, 90},  QJsonArray{90, 90}};
+        QCOMPARE(mappedSourcePoints, expectedSourcePoints);
+        const int requestCountBeforeQuery = server.requestLog.size();
+        QCOMPARE(requestCountBeforeQuery, 2);
+
+        const QJsonObject response =
+            actor.executeTool(QStringLiteral("get_module_output"), QJsonObject{{"runId", runId},
+                                                                               {"instanceId", sam.id},
+                                                                               {"port", "region"},
+                                                                               {"polygonOffset", 0},
+                                                                               {"polygonLimit", 4}});
+        QCOMPARE(response.value(QStringLiteral("status")).toString(), QStringLiteral("available"));
+        const QJsonObject region = response.value(QStringLiteral("value")).toObject();
+        QCOMPARE(region.value(QStringLiteral("label")).toString(), QStringLiteral("concave-L"));
+        QCOMPARE(region.value(QStringLiteral("score")).toDouble(), 0.97);
+        QCOMPARE(region.value(QStringLiteral("coordinateSystem")).toString(), QStringLiteral("image_pixels"));
+        QCOMPARE(region.value(QStringLiteral("polygonPointCount")).toInt(), 6);
+        QCOMPARE(region.value(QStringLiteral("bbox")).toArray(), QJsonArray({10, 10, 10, 10}));
+        const QJsonObject source = region.value(QStringLiteral("sourceImageCoordinates")).toObject();
+        QCOMPARE(source.value(QStringLiteral("sourceImageId")).toString(), provenance.sourceImageId);
+        QCOMPARE(source.value(QStringLiteral("coordinateSystem")).toString(), QStringLiteral("source_image_pixels"));
+        QCOMPARE(source.value(QStringLiteral("bbox")).toArray(), QJsonArray({90, 80, 10, 10}));
+        QCOMPARE(source.value(QStringLiteral("bbox")).toArray(),
+                 QJsonArray({expectedSourceBounds->x(), expectedSourceBounds->y(), expectedSourceBounds->width(),
+                             expectedSourceBounds->height()}));
+
+        const QJsonObject polygonPage = response.value(QStringLiteral("polygonPage")).toObject();
+        const QJsonArray expectedLocal{QJsonArray{10, 10}, QJsonArray{20, 10}, QJsonArray{20, 14},
+                                       QJsonArray{14, 14}, QJsonArray{14, 20}, QJsonArray{10, 20}};
+        const QJsonArray expectedLocalFirst{expectedLocal.at(0), expectedLocal.at(1), expectedLocal.at(2),
+                                            expectedLocal.at(3)};
+        const QJsonArray expectedLocalSecond{expectedLocal.at(4), expectedLocal.at(5)};
+        const QJsonArray expectedSource{QJsonArray{90, 80}, QJsonArray{100, 80}, QJsonArray{100, 84},
+                                        QJsonArray{94, 84}, QJsonArray{94, 90},  QJsonArray{90, 90}};
+        const QJsonArray expectedSourceFirst{expectedSource.at(0), expectedSource.at(1), expectedSource.at(2),
+                                             expectedSource.at(3)};
+        const QJsonArray expectedSourceSecond{expectedSource.at(4), expectedSource.at(5)};
+        const QJsonArray mappedSourceFirst{mappedSourcePoints.at(0), mappedSourcePoints.at(1), mappedSourcePoints.at(2),
+                                           mappedSourcePoints.at(3)};
+        const QJsonArray mappedSourceSecond{mappedSourcePoints.at(4), mappedSourcePoints.at(5)};
+        QCOMPARE(polygonPage.value(QStringLiteral("coordinateSystem")).toString(), QStringLiteral("image_pixels"));
+        QCOMPARE(polygonPage.value(QStringLiteral("totalPoints")).toInt(), 6);
+        QCOMPARE(polygonPage.value(QStringLiteral("offset")).toInt(), 0);
+        QCOMPARE(polygonPage.value(QStringLiteral("limit")).toInt(), 4);
+        QVERIFY(polygonPage.value(QStringLiteral("truncated")).toBool());
+        QCOMPARE(polygonPage.value(QStringLiteral("points")).toArray(), expectedLocalFirst);
+        const QJsonObject sourcePage = polygonPage.value(QStringLiteral("sourceImageCoordinates")).toObject();
+        QCOMPARE(sourcePage.value(QStringLiteral("sourceImageId")).toString(), provenance.sourceImageId);
+        QCOMPARE(sourcePage.value(QStringLiteral("coordinateSystem")).toString(),
+                 QStringLiteral("source_image_pixels"));
+        QCOMPARE(sourcePage.value(QStringLiteral("points")).toArray(), expectedSourceFirst);
+        QCOMPARE(sourcePage.value(QStringLiteral("points")).toArray(), mappedSourceFirst);
+
+        const QJsonObject secondPageResponse =
+            actor.executeTool(QStringLiteral("get_module_output"), QJsonObject{{"runId", runId},
+                                                                               {"instanceId", sam.id},
+                                                                               {"port", "region"},
+                                                                               {"polygonOffset", 4},
+                                                                               {"polygonLimit", 4}});
+        QCOMPARE(secondPageResponse.value(QStringLiteral("status")).toString(), QStringLiteral("available"));
+        const QJsonObject secondPage = secondPageResponse.value(QStringLiteral("polygonPage")).toObject();
+        QCOMPARE(secondPage.value(QStringLiteral("totalPoints")).toInt(), 6);
+        QCOMPARE(secondPage.value(QStringLiteral("offset")).toInt(), 4);
+        QCOMPARE(secondPage.value(QStringLiteral("limit")).toInt(), 4);
+        QVERIFY(!secondPage.value(QStringLiteral("truncated")).toBool());
+        QCOMPARE(secondPage.value(QStringLiteral("coordinateSystem")).toString(), QStringLiteral("image_pixels"));
+        QCOMPARE(secondPage.value(QStringLiteral("points")).toArray(), expectedLocalSecond);
+        const QJsonObject secondSourcePage = secondPage.value(QStringLiteral("sourceImageCoordinates")).toObject();
+        QCOMPARE(secondSourcePage.value(QStringLiteral("sourceImageId")).toString(), provenance.sourceImageId);
+        QCOMPARE(secondSourcePage.value(QStringLiteral("coordinateSystem")).toString(),
+                 QStringLiteral("source_image_pixels"));
+        QCOMPARE(secondSourcePage.value(QStringLiteral("points")).toArray(), expectedSourceSecond);
+        QCOMPARE(secondSourcePage.value(QStringLiteral("points")).toArray(), mappedSourceSecond);
+
+        const ImageData statsOutput = engine.moduleOutput(stats.id);
+        QCOMPARE(statsOutput.data(QStringLiteral("region_area")).toDouble(), 64.0);
+        QCOMPARE(statsOutput.data(QStringLiteral("point_count")).toInt(), 6);
+        QCOMPARE(statsOutput.data(QStringLiteral("centroid_x")).toDouble(), 13.875);
+        QCOMPARE(statsOutput.data(QStringLiteral("centroid_y")).toDouble(), 13.875);
+        const QHash<QString, double> expectedStatsValues{
+            {QStringLiteral("region_area"), 64.0}, {QStringLiteral("bbox_x"), 10.0},
+            {QStringLiteral("bbox_y"), 10.0},      {QStringLiteral("bbox_w"), 10.0},
+            {QStringLiteral("bbox_h"), 10.0},      {QStringLiteral("centroid_x"), 13.875},
+            {QStringLiteral("centroid_y"), 13.875}};
+        const QList<QPair<QString, QString>> pixelFields{{QStringLiteral("region_area"), QStringLiteral("px^2")},
+                                                         {QStringLiteral("bbox_x"), QStringLiteral("px")},
+                                                         {QStringLiteral("bbox_y"), QStringLiteral("px")},
+                                                         {QStringLiteral("bbox_w"), QStringLiteral("px")},
+                                                         {QStringLiteral("bbox_h"), QStringLiteral("px")},
+                                                         {QStringLiteral("centroid_x"), QStringLiteral("px")},
+                                                         {QStringLiteral("centroid_y"), QStringLiteral("px")}};
+        for (const auto& field : pixelFields) {
+            for (const QString& selector : {QStringLiteral("port"), QStringLiteral("key")}) {
+                const QJsonObject query =
+                    actor.executeTool(QStringLiteral("get_module_output"),
+                                      QJsonObject{{"runId", runId}, {"instanceId", stats.id}, {selector, field.first}});
+                QCOMPARE(query.value(QStringLiteral("status")).toString(), QStringLiteral("available"));
+                QCOMPARE(query.value(QStringLiteral("unit")).toString(), field.second);
+                QCOMPARE(query.value(QStringLiteral("value")).toDouble(), expectedStatsValues.value(field.first));
+                QCOMPARE(query.value(QStringLiteral("value")).toDouble(), statsOutput.data(field.first).toDouble());
+            }
+        }
+        for (const QString& selector : {QStringLiteral("port"), QStringLiteral("key")}) {
+            const QJsonObject pointCount = actor.executeTool(
+                QStringLiteral("get_module_output"),
+                QJsonObject{{"runId", runId}, {"instanceId", stats.id}, {selector, QStringLiteral("point_count")}});
+            QCOMPARE(pointCount.value(QStringLiteral("status")).toString(), QStringLiteral("available"));
+            QCOMPARE(pointCount.value(QStringLiteral("value")).toInt(), 6);
+            QVERIFY(!pointCount.contains(QStringLiteral("unit")));
+        }
+        for (const QString& field : {QStringLiteral("score"), QStringLiteral("label")}) {
+            for (const QString& selector : {QStringLiteral("port"), QStringLiteral("key")}) {
+                const QJsonObject query =
+                    actor.executeTool(QStringLiteral("get_module_output"),
+                                      QJsonObject{{"runId", runId}, {"instanceId", stats.id}, {selector, field}});
+                QCOMPARE(query.value(QStringLiteral("status")).toString(), QStringLiteral("available"));
+                if (field == QLatin1String("score"))
+                    QCOMPARE(query.value(QStringLiteral("value")).toDouble(), 0.97);
+                else
+                    QCOMPARE(query.value(QStringLiteral("value")).toString(), QStringLiteral("concave-L"));
+                QVERIFY(!query.contains(QStringLiteral("unit")));
+            }
+        }
+        const auto verifyUnlabelledStats = [&actor, &runId, &pixelFields](const QString& instanceId) {
+            const ImageData output = RunEngine::instance().moduleOutput(instanceId);
+            for (const auto& field : pixelFields) {
+                for (const QString& selector : {QStringLiteral("port"), QStringLiteral("key")}) {
+                    const QJsonObject query = actor.executeTool(
+                        QStringLiteral("get_module_output"),
+                        QJsonObject{{"runId", runId}, {"instanceId", instanceId}, {selector, field.first}});
+                    if (query.value(QStringLiteral("status")).toString() != QLatin1String("available") ||
+                        query.contains(QStringLiteral("unit")) ||
+                        query.value(QStringLiteral("value")).toDouble() != output.data(field.first).toDouble())
+                        return false;
+                }
+            }
+            return true;
+        };
+        QVERIFY(verifyUnlabelledStats(mismatchedStats.id));
+        QVERIFY(verifyUnlabelledStats(missingImageStats.id));
+        const QJsonObject centroid = actor.executeTool(
+            QStringLiteral("get_module_output"),
+            QJsonObject{{"runId", runId}, {"instanceId", stats.id}, {"port", QStringLiteral("centroid")}});
+        QCOMPARE(centroid.value(QStringLiteral("status")).toString(), QStringLiteral("available"));
+        QCOMPARE(centroid.value(QStringLiteral("type")).toString(), QStringLiteral("Point2D"));
+        QCOMPARE(centroid.value(QStringLiteral("coordinateSystem")).toString(), QStringLiteral("image_pixels"));
+        QCOMPARE(centroid.value(QStringLiteral("value")).toArray(), (QJsonArray{13.875, 13.875}));
+        const QJsonObject centroidSource = centroid.value(QStringLiteral("sourceImageCoordinates")).toObject();
+        QCOMPARE(centroidSource.value(QStringLiteral("sourceImageId")).toString(), provenance.sourceImageId);
+        QCOMPARE(centroidSource.value(QStringLiteral("coordinateSystem")).toString(),
+                 QStringLiteral("source_image_pixels"));
+        QCOMPARE(centroidSource.value(QStringLiteral("value")).toArray(), (QJsonArray{93.875, 83.875}));
+        const QJsonObject centroidKey = actor.executeTool(
+            QStringLiteral("get_module_output"),
+            QJsonObject{{"runId", runId}, {"instanceId", stats.id}, {"key", QStringLiteral("centroid")}});
+        QCOMPARE(centroidKey.value(QStringLiteral("type")).toString(), QStringLiteral("QPointF"));
+        QCOMPARE(centroidKey.value(QStringLiteral("value")).toArray(), (QJsonArray{13.875, 13.875}));
+        QVERIFY(!centroidKey.contains(QStringLiteral("coordinateSystem")));
+        QVERIFY(!centroidKey.contains(QStringLiteral("sourceImageCoordinates")));
+        const QJsonObject mismatchedCentroid = actor.executeTool(
+            QStringLiteral("get_module_output"),
+            QJsonObject{{"runId", runId}, {"instanceId", mismatchedStats.id}, {"port", QStringLiteral("centroid")}});
+        QCOMPARE(mismatchedCentroid.value(QStringLiteral("value")).toArray(), (QJsonArray{13.875, 13.875}));
+        QVERIFY(!mismatchedCentroid.contains(QStringLiteral("sourceImageCoordinates")));
+        for (const QString& parameter :
+             {QStringLiteral("offset"), QStringLiteral("limit"), QStringLiteral("maskOffset"),
+              QStringLiteral("polygonOffset"), QStringLiteral("polygonLimit")}) {
+            QJsonObject args{{"runId", runId}, {"instanceId", stats.id}, {"port", QStringLiteral("centroid")}};
+            args.insert(parameter, 0);
+            const QJsonObject rejected = actor.executeTool(QStringLiteral("get_module_output"), args);
+            QCOMPARE(rejected.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+            QVERIFY(!rejected.contains(QStringLiteral("value")));
+        }
+        QCOMPARE(server.requestLog.size(), requestCountBeforeQuery);
+
+        engine.clearModules();
+        ProjectManager::instance().closeProject();
+    }
+
+    void testRegionStatsRejectsRepeatedSingleUpstreamInputs() {
+        RunEngine& engine = RunEngine::instance();
+        const auto loadGraph = [&engine](bool duplicateImage, bool duplicateRegion) {
+            engine.clearModules();
+            ProjectManager::instance().closeProject();
+            Project* project = ProjectManager::instance().newProject();
+            if (!project)
+                return false;
+
+            ModuleInstance grab;
+            grab.id = QStringLiteral("grab");
+            grab.moduleId = QStringLiteral("GrabImage");
+            grab.params[QStringLiteral("grabSource")] = QStringLiteral("Path");
+            grab.params[QStringLiteral("filePath")] = QStringLiteral(TEST_SAMREGION_DATA_Circle);
+            project->addModule(grab);
+            for (const QString& id : {QStringLiteral("sam1"), QStringLiteral("sam2")}) {
+                ModuleInstance sam;
+                sam.id = id;
+                sam.moduleId = QStringLiteral("SamPredict");
+                sam.params = samParams(QStringLiteral("http://127.0.0.1:1"), id);
+                project->addModule(sam);
+            }
+            ModuleInstance stats;
+            stats.id = QStringLiteral("stats");
+            stats.moduleId = QStringLiteral("RegionStats");
+            project->addModule(stats);
+
+            const auto connectPort = [project](const QString& from, const QString& fromPort, const QString& to,
+                                               const QString& toPort) {
+                ModuleConnection connection;
+                connection.fromModuleId = from;
+                connection.fromPort = fromPort;
+                connection.toModuleId = to;
+                connection.toPort = toPort;
+                connection.edgeType = QStringLiteral("data");
+                project->addConnection(connection);
+            };
+            connectPort(QStringLiteral("grab"), QStringLiteral("image"), QStringLiteral("sam1"),
+                        QStringLiteral("image"));
+            connectPort(QStringLiteral("grab"), QStringLiteral("image"), QStringLiteral("sam2"),
+                        QStringLiteral("image"));
+            connectPort(QStringLiteral("sam1"), QStringLiteral("region"), QStringLiteral("stats"),
+                        QStringLiteral("region"));
+            connectPort(QStringLiteral("sam1"), QStringLiteral("image"), QStringLiteral("stats"),
+                        QStringLiteral("image"));
+            if (duplicateImage)
+                connectPort(QStringLiteral("sam2"), QStringLiteral("image"), QStringLiteral("stats"),
+                            QStringLiteral("image"));
+            if (duplicateRegion)
+                connectPort(QStringLiteral("sam2"), QStringLiteral("region"), QStringLiteral("stats"),
+                            QStringLiteral("region"));
+
+            ProjectFlow flow;
+            flow.id = QStringLiteral("main");
+            flow.name = QStringLiteral("main");
+            flow.nodeIds =
+                QStringList{QStringLiteral("grab"), QStringLiteral("sam1"), QStringLiteral("sam2"), stats.id};
+            project->setFlows({flow});
+            const bool loaded = engine.loadProject(project);
+            engine.clearModules();
+            ProjectManager::instance().closeProject();
+            return loaded;
+        };
+
+        QVERIFY(loadGraph(false, false));
+        QVERIFY(!loadGraph(true, false));
+        QVERIFY(!loadGraph(false, true));
+    }
+
+    void testAgentRegionStatsCentroidUnknownProducerHasNoSourceMapping() {
+        ToolSchema::instance().registerDefaultTools();
+        AgentActor actor;
+        RunEngine& engine = RunEngine::instance();
+        const auto runFixture = [&engine](bool withProvenance, bool withRegion, QString& runId) {
+            engine.clearModules();
+            ProjectManager::instance().closeProject();
+            Project* project = ProjectManager::instance().newProject();
+            if (!project)
+                return false;
+            ModuleInstance source;
+            source.id = QStringLiteral("source");
+            source.moduleId = QStringLiteral("RegionImageFixture");
+            project->addModule(source);
+            ModuleInstance stats;
+            stats.id = QStringLiteral("stats");
+            stats.moduleId = QStringLiteral("RegionStats");
+            project->addModule(stats);
+            for (const auto& ports : {qMakePair(QStringLiteral("image"), QStringLiteral("image")),
+                                      qMakePair(QStringLiteral("region"), QStringLiteral("region"))}) {
+                ModuleConnection connection;
+                connection.fromModuleId = source.id;
+                connection.fromPort = ports.first;
+                connection.toModuleId = stats.id;
+                connection.toPort = ports.second;
+                connection.edgeType = QStringLiteral("data");
+                project->addConnection(connection);
+            }
+            ProjectFlow flow;
+            flow.id = QStringLiteral("main");
+            flow.name = QStringLiteral("main");
+            flow.nodeIds = QStringList{source.id, stats.id};
+            project->setFlows({flow});
+            const bool loaded =
+                engine.loadProject(project, [withProvenance, withRegion](const ModuleInstance& instance) {
+                    if (instance.moduleId == QLatin1String("RegionImageFixture"))
+                        return static_cast<ModuleBase*>(new RegionImageFixtureModule(withProvenance, withRegion));
+                    PluginManager& plugins = PluginManager::instance();
+                    if (!plugins.isPluginLoaded(instance.moduleId) && !plugins.loadPlugin(instance.moduleId))
+                        return static_cast<ModuleBase*>(nullptr);
+                    return qobject_cast<ModuleBase*>(plugins.createModule(instance.moduleId));
+                });
+            return loaded && engine.runOnceAsync(&runId);
+        };
+
+        for (bool withProvenance : {false, true}) {
+            QString runId;
+            QVERIFY(runFixture(withProvenance, true, runId));
+            QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 10000);
+            QVERIFY2(engine.runObservation(runId).result.success,
+                     qPrintable(engine.runObservation(runId).result.errorMessage));
+            const ImageData output = engine.moduleOutput(QStringLiteral("stats"));
+            const QMap<QString, double> expectedStatsValues{
+                {QStringLiteral("region_area"), 400.0}, {QStringLiteral("bbox_x"), 120.0},
+                {QStringLiteral("bbox_y"), 120.0},      {QStringLiteral("bbox_w"), 20.0},
+                {QStringLiteral("bbox_h"), 20.0},       {QStringLiteral("centroid_x"), 130.0},
+                {QStringLiteral("centroid_y"), 130.0}};
+            for (auto expected = expectedStatsValues.cbegin(); expected != expectedStatsValues.cend(); ++expected)
+                QCOMPARE(output.data(expected.key()).toDouble(), expected.value());
+            const QList<QPair<QString, QString>> pixelFields{{QStringLiteral("region_area"), QStringLiteral("px^2")},
+                                                             {QStringLiteral("bbox_x"), QStringLiteral("px")},
+                                                             {QStringLiteral("bbox_y"), QStringLiteral("px")},
+                                                             {QStringLiteral("bbox_w"), QStringLiteral("px")},
+                                                             {QStringLiteral("bbox_h"), QStringLiteral("px")},
+                                                             {QStringLiteral("centroid_x"), QStringLiteral("px")},
+                                                             {QStringLiteral("centroid_y"), QStringLiteral("px")}};
+            for (const auto& field : pixelFields) {
+                for (const QString& selector : {QStringLiteral("port"), QStringLiteral("key")}) {
+                    const QJsonObject query = actor.executeTool(QStringLiteral("get_module_output"),
+                                                                QJsonObject{{"runId", runId},
+                                                                            {"instanceId", QStringLiteral("stats")},
+                                                                            {selector, field.first}});
+                    QCOMPARE(query.value(QStringLiteral("status")).toString(), QStringLiteral("available"));
+                    QVERIFY(!query.contains(QStringLiteral("unit")));
+                    QCOMPARE(query.value(QStringLiteral("value")).toDouble(), expectedStatsValues.value(field.first));
+                }
+            }
+            const QJsonObject response = actor.executeTool(QStringLiteral("get_module_output"),
+                                                           QJsonObject{{"runId", runId},
+                                                                       {"instanceId", QStringLiteral("stats")},
+                                                                       {"port", QStringLiteral("centroid")}});
+            QCOMPARE(response.value(QStringLiteral("type")).toString(), QStringLiteral("Point2D"));
+            QCOMPARE(response.value(QStringLiteral("value")).toArray(), (QJsonArray{130, 130}));
+            QVERIFY(!response.contains(QStringLiteral("sourceImageCoordinates")));
+        }
+
+        QString missingRegionRunId;
+        QVERIFY(runFixture(false, false, missingRegionRunId));
+        QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(missingRegionRunId).finished, 10000);
+        const RunObservation failedRun = engine.runObservation(missingRegionRunId);
+        QVERIFY(!failedRun.result.success);
+        QCOMPARE(failedRun.result.failedModule, QStringLiteral("stats"));
+        QVERIFY(failedRun.result.errorMessage.contains(QStringLiteral("缺少必需输入：区域")));
+        QCOMPARE(actor.executeTool(QStringLiteral("get_run_results"), {{"runId", missingRegionRunId}})
+                     .value(QStringLiteral("status"))
+                     .toString(),
+                 QStringLiteral("failed"));
+        const QJsonObject unavailable =
+            actor.executeTool(QStringLiteral("get_module_output"), {{"runId", missingRegionRunId},
+                                                                    {"instanceId", QStringLiteral("stats")},
+                                                                    {"key", QStringLiteral("region_area")}});
+        QCOMPARE(unavailable.value(QStringLiteral("status")).toString(), QStringLiteral("unavailable"));
+        QCOMPARE(unavailable.value(QStringLiteral("reason")).toString(), QStringLiteral("run_failed"));
+        engine.clearModules();
+        ProjectManager::instance().closeProject();
+    }
+
+    void testAgentRegionStatsCentroidRejectsMalformedPoint() {
+        ToolSchema::instance().registerDefaultTools();
+        AgentActor actor;
+        const QList<QVariant> invalidValues{
+            QVariant(QVariantList{15.0, 15.0}),
+            QVariant::fromValue(QPointF(std::numeric_limits<double>::quiet_NaN(), 15.0))};
+        for (const QVariant& invalid : invalidValues) {
+            RunEngine& engine = RunEngine::instance();
+            engine.clearModules();
+            ProjectManager::instance().closeProject();
+            Project* project = ProjectManager::instance().newProject();
+            QVERIFY(project);
+            ModuleInstance stats;
+            stats.id = QStringLiteral("stats");
+            stats.moduleId = QStringLiteral("RegionStats");
+            project->addModule(stats);
+            ProjectFlow flow;
+            flow.id = QStringLiteral("main");
+            flow.name = QStringLiteral("main");
+            flow.nodeIds = QStringList{stats.id};
+            project->setFlows({flow});
+            QVERIFY(engine.loadProject(project, [invalid](const ModuleInstance&) {
+                return static_cast<ModuleBase*>(new RegionStatsCentroidFixtureModule(invalid));
+            }));
+            QString runId;
+            QVERIFY(engine.runOnceAsync(&runId));
+            QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 10000);
+            QVERIFY(engine.runObservation(runId).result.success);
+            const QJsonObject response = actor.executeTool(
+                QStringLiteral("get_module_output"),
+                QJsonObject{{"runId", runId}, {"instanceId", stats.id}, {"port", QStringLiteral("centroid")}});
+            QCOMPARE(response.value(QStringLiteral("errorCode")).toString(), QStringLiteral("UNSUPPORTED_OUTPUT_TYPE"));
+            QVERIFY(!response.contains(QStringLiteral("value")));
+        }
+        RunEngine::instance().clearModules();
         ProjectManager::instance().closeProject();
     }
 

@@ -145,6 +145,20 @@ private slots:
         QCOMPARE(out2.data("surface_roughness").toDouble(), 0.0);
     }
 
+    void retiredSamplingIntervalIsRejectedAndLegacyStateLoads() {
+        FreeformSurfacePlugin plugin;
+        QVERIFY(plugin.initialize());
+
+        QString error;
+        QVERIFY(!plugin.validateParams(QJsonObject{{QStringLiteral("samplingInterval"), 2.0}}, error));
+        QCOMPARE(error, QStringLiteral("samplingInterval 已停用；FreeformSurface 使用全部输入点"));
+
+        QJsonObject legacy = plugin.toJson();
+        legacy.insert(QStringLiteral("params"), QJsonObject{{QStringLiteral("samplingInterval"), 5.0}});
+        QVERIFY(plugin.fromJson(legacy));
+        QVERIFY(!plugin.currentParams().contains(QStringLiteral("samplingInterval")));
+    }
+
     void cleanupTestCase() {
         qDebug() << "=== TestFreeformSurface End ===";
     }

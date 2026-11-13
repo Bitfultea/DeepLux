@@ -55,6 +55,14 @@
                 "order": 60,
                 "label": "基准角度Φ(度)"
             }
+        },
+        "results": {
+            "offset_a": {
+                "label": "偏移角度",
+                "unit": "deg",
+                "precision": 3,
+                "order": 30
+            }
         }
     },
     "ports": {

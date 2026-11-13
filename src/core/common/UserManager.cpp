@@ -115,6 +115,7 @@ bool UserManager::hasPermission(const QString& permission) const {
 }
 
 void UserManager::updatePermissions() {
+    m_permissions = Permission{};
     switch (m_currentUser.type) {
     case UserType::Developer:
         m_permissions.cameraSet = true;

@@ -39,6 +39,8 @@ void FitLinePlugin::shutdown() {
 
 bool FitLinePlugin::process(const ImageData& input, ImageData& output) {
     output = input;
+    output.removeData("line");
+    const bool imageLocal = input.data("coordinate_frame").toString() == "ImageLocalPixel";
 
     // 阶段 3: 从 currentParams() 读取参数到局部变量
     QJsonObject params = currentParams();
@@ -104,6 +106,9 @@ bool FitLinePlugin::process(const ImageData& input, ImageData& output) {
     output.setData("line_col1", m_resultCol1);
     output.setData("line_row2", m_resultRow2);
     output.setData("line_col2", m_resultCol2);
+    if (imageLocal) {
+        output.setData("line", QVariantList{m_resultCol1, m_resultRow1, m_resultCol2, m_resultRow2});
+    }
     output.setData("line_phi", m_resultPhi);
     output.setData("line_rho", m_resultRho);
     output.setData("line_error", m_resultError);

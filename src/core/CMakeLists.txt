@@ -32,6 +32,9 @@ set(CORE_SOURCES
     engine/FlowGraphAnalyzer.cpp
     engine/FlowExecutionService.cpp
     device/CameraManager.cpp
+    device/CameraParameterWrite.cpp
+    device/CameraOperationSession.cpp
+    device/CameraDiscoveryJob.cpp
     communication/CommunicationManager.cpp
     config/SystemConfig.cpp
     display/DisplayData.cpp
@@ -46,6 +49,10 @@ set(CORE_SOURCES
     model/AnnotationCoordinateMapping.cpp
     model/AnnotationMaskOps.cpp
     agent/AgentBridge.cpp
+    agent/AgentFileOutputAuthorization.cpp
+    agent/AnnotationSessionExport.cpp
+    agent/AnnotationSessionOpen.cpp
+    agent/AnnotationSessionTransform.cpp
     agent/AgentConnection.cpp
     agent/AgentController.cpp
     agent/AgentObserver.cpp
@@ -67,8 +74,10 @@ set(CORE_SOURCES
 set(CORE_HEADERS
     interface/IModule.h
     interface/ICamera.h
+    interface/ICameraParameterControl.h
     interface/IMotion.h
     interface/ICameraPlugin.h
+    interface/ICameraDiscoveryAsync.h
     base/ModuleBase.h
     platform/Platform.h
     platform/PathUtils.h
@@ -95,11 +104,17 @@ set(CORE_HEADERS
     engine/ExecutionAffinity.h
     engine/DisplayFrame.h
     device/CameraManager.h
+    device/CameraParameterWrite.h
+    device/CameraOperationSession.h
+    device/CameraDiscoveryJob.h
     communication/CommunicationManager.h
     config/SystemConfig.h
     display/DisplayData.h
     display/IDisplayPort.h
     agent/AgentBridge.h
+    agent/AgentFileOutputAuthorization.h
+    agent/AnnotationSessionExport.h
+    agent/AnnotationSessionOpen.h
     agent/AgentConnection.h
     agent/AgentController.h
     agent/AgentObserver.h

@@ -2,6 +2,7 @@
 
 #include "../widgets/AppIconProvider.h"
 #include "common/Logger.h"
+#include "core/common/UserManager.h"
 #include "core/common/VarModel.h"
 #include "core/manager/GlobalVarManager.h"
 
@@ -10,7 +11,10 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QMessageBox>
+#include <QSet>
 #include <QVBoxLayout>
+#include <limits>
 
 namespace DeepLux {
 
@@ -21,7 +25,14 @@ GlobalVarView::GlobalVarView(QWidget* parent) : QDialog(parent) {
     // 样式跟随主窗口主题（ThemeManager 统一管理），不再硬编码
 
     setupUI();
-    loadVariables();
+    connect(&UserManager::instance(), &UserManager::permissionChanged, this, &GlobalVarView::updatePermissionState);
+    auto& variables = GlobalVarManager::instance();
+    connect(&variables, &GlobalVarManager::variableAdded, this, [this](const QString&) { loadVariables(); });
+    connect(&variables, &GlobalVarManager::variableRemoved, this, [this](const QString&) { loadVariables(); });
+    connect(&variables, &GlobalVarManager::variableValueChanged, this,
+            [this](const QString&, const QVariant&) { loadVariables(); });
+    connect(&variables, &GlobalVarManager::allVariablesCleared, this, [this]() { loadVariables(); });
+    updatePermissionState();
 }
 
 void GlobalVarView::setupUI() {
@@ -34,11 +45,13 @@ void GlobalVarView::setupUI() {
     QVBoxLayout* listLayout = new QVBoxLayout(listGroup);
 
     m_varTable = new QTableWidget(this);
+    m_varTable->setObjectName(QStringLiteral("GlobalVarTable"));
     m_varTable->setColumnCount(5);
     m_varTable->setHorizontalHeaderLabels({tr("Index"), tr("Name"), tr("Type"), tr("Value"), tr("Note")});
     m_varTable->horizontalHeader()->setStretchLastSection(true);
     m_varTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_varTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_varTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_varTable->setAlternatingRowColors(true);
     m_varTable->verticalHeader()->setVisible(false);
     listLayout->addWidget(m_varTable);
@@ -48,15 +61,20 @@ void GlobalVarView::setupUI() {
     btnLayout->setSpacing(10);
 
     m_addBtn = new QPushButton(tr("Add"), this);
+    m_addBtn->setObjectName(QStringLiteral("GlobalVarAddButton"));
     m_addBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Add, 16, QColor("#2563EB")));
     m_deleteBtn = new QPushButton(tr("Delete"), this);
+    m_deleteBtn->setObjectName(QStringLiteral("GlobalVarDeleteButton"));
     m_deleteBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Delete, 16, QColor("#DC2626")));
     m_deleteBtn->setEnabled(false);
     m_moveUpBtn = new QPushButton(tr("Up"), this);
+    m_moveUpBtn->setObjectName(QStringLiteral("GlobalVarMoveUpButton"));
     m_moveUpBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::MoveUp, 16, QColor("#4B5563")));
     m_moveDownBtn = new QPushButton(tr("Down"), this);
+    m_moveDownBtn->setObjectName(QStringLiteral("GlobalVarMoveDownButton"));
     m_moveDownBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::MoveDown, 16, QColor("#4B5563")));
     m_executeBtn = new QPushButton(tr("Execute"), this);
+    m_executeBtn->setObjectName(QStringLiteral("GlobalVarExecuteButton"));
     m_executeBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Execute, 16, QColor("#16A34A")));
     m_executeBtn->setEnabled(false);
 
@@ -73,10 +91,11 @@ void GlobalVarView::setupUI() {
     mainLayout->addWidget(listGroup, 1);
 
     // Add variable section
-    QGroupBox* addGroup = new QGroupBox(tr("Add Variable"), this);
-    QHBoxLayout* addLayout = new QHBoxLayout(addGroup);
+    m_addGroup = new QGroupBox(tr("Add Variable"), this);
+    QHBoxLayout* addLayout = new QHBoxLayout(m_addGroup);
 
     m_addTypeCombo = new QComboBox(this);
+    m_addTypeCombo->setObjectName(QStringLiteral("GlobalVarAddTypeCombo"));
     m_addTypeCombo->addItem("int", QVariant::fromValue((int) VarDataType::Int));
     m_addTypeCombo->addItem("double", QVariant::fromValue((int) VarDataType::Double));
     m_addTypeCombo->addItem("string", QVariant::fromValue((int) VarDataType::String));
@@ -87,12 +106,16 @@ void GlobalVarView::setupUI() {
     m_addTypeCombo->addItem("bool[]", QVariant::fromValue((int) VarDataType::BoolArray));
 
     QPushButton* addIntBtn = new QPushButton(tr("Add Int"), this);
+    addIntBtn->setObjectName(QStringLiteral("GlobalVarAddIntButton"));
     addIntBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Add, 16, QColor("#2563EB")));
     QPushButton* addDoubleBtn = new QPushButton(tr("Add Double"), this);
+    addDoubleBtn->setObjectName(QStringLiteral("GlobalVarAddDoubleButton"));
     addDoubleBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Add, 16, QColor("#2563EB")));
     QPushButton* addStringBtn = new QPushButton(tr("Add String"), this);
+    addStringBtn->setObjectName(QStringLiteral("GlobalVarAddStringButton"));
     addStringBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Add, 16, QColor("#2563EB")));
     QPushButton* addBoolBtn = new QPushButton(tr("Add Bool"), this);
+    addBoolBtn->setObjectName(QStringLiteral("GlobalVarAddBoolButton"));
     addBoolBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Add, 16, QColor("#2563EB")));
 
     addLayout->addWidget(new QLabel(tr("Type:"), this));
@@ -103,16 +126,18 @@ void GlobalVarView::setupUI() {
     addLayout->addWidget(addBoolBtn);
     addLayout->addStretch();
 
-    mainLayout->addWidget(addGroup);
+    mainLayout->addWidget(m_addGroup);
 
     // Bottom buttons
     QHBoxLayout* bottomLayout = new QHBoxLayout();
     bottomLayout->setSpacing(10);
 
     m_applyBtn = new QPushButton(tr("Apply"), this);
+    m_applyBtn->setObjectName(QStringLiteral("GlobalVarApplyButton"));
     m_applyBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 16, QColor("#16A34A")));
     m_applyBtn->setProperty("default", true);
     m_closeBtn = new QPushButton(tr("Close"), this);
+    m_closeBtn->setObjectName(QStringLiteral("GlobalVarCloseButton"));
     m_closeBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Close, 16, QColor("#4B5563")));
 
     bottomLayout->addStretch();
@@ -122,6 +147,7 @@ void GlobalVarView::setupUI() {
     mainLayout->addLayout(bottomLayout);
 
     // Connections
+    connect(m_addBtn, &QPushButton::clicked, this, &GlobalVarView::onAddClicked);
     connect(addIntBtn, &QPushButton::clicked, [this]() { onAddClicked(); });
     connect(addDoubleBtn, &QPushButton::clicked, [this]() { onAddClicked(); });
     connect(addStringBtn, &QPushButton::clicked, [this]() { onAddClicked(); });
@@ -136,25 +162,73 @@ void GlobalVarView::setupUI() {
 }
 
 void GlobalVarView::loadVariables() {
+    if (!hasGlobalVarPermission())
+        return;
     m_varTable->setRowCount(0);
 
-    QList<VarModel*> vars = GlobalVarManager::instance().getAllVariables();
+    const QList<GlobalVariableSnapshot> vars = GlobalVarManager::instance().userVariableSnapshots();
 
-    for (VarModel* var : vars) {
+    for (const GlobalVariableSnapshot& var : vars) {
         int row = m_varTable->rowCount();
         m_varTable->insertRow(row);
 
-        m_varTable->setItem(row, 0, new QTableWidgetItem(QString::number(var->index())));
-        m_varTable->setItem(row, 1, new QTableWidgetItem(var->name()));
-        m_varTable->setItem(row, 2, new QTableWidgetItem(VarModel::dataTypeToString(var->dataType())));
-        m_varTable->setItem(row, 3, new QTableWidgetItem(var->value().toString()));
-        m_varTable->setItem(row, 4, new QTableWidgetItem(var->note()));
+        m_varTable->setItem(row, 0, new QTableWidgetItem(QString::number(var.index)));
+        m_varTable->setItem(row, 1, new QTableWidgetItem(var.name));
+        m_varTable->setItem(row, 2, new QTableWidgetItem(VarModel::dataTypeToString(var.type)));
+        m_varTable->setItem(row, 3, new QTableWidgetItem(var.value.toString()));
+        m_varTable->setItem(row, 4, new QTableWidgetItem(var.note));
     }
 
     updateButtons();
 }
 
+bool GlobalVarView::hasGlobalVarPermission() const {
+    const UserManager& users = UserManager::instance();
+    return users.isLoggedIn() && users.currentUser().type != UserType::Guest &&
+           users.hasPermission(QStringLiteral("GlobalVar"));
+}
+
+void GlobalVarView::updatePermissionState() {
+    const bool allowed = hasGlobalVarPermission();
+    if (m_permissionInitialized && allowed == m_permissionGranted)
+        return;
+    const bool initialState = !m_permissionInitialized;
+    m_permissionInitialized = true;
+    m_permissionGranted = allowed;
+
+    m_varTable->setEnabled(allowed);
+    m_addBtn->setEnabled(allowed);
+    m_addGroup->setEnabled(allowed);
+    m_addTypeCombo->setEnabled(allowed);
+    m_applyBtn->setEnabled(allowed);
+    if (!allowed) {
+        m_varTable->setRowCount(0);
+        m_addTypeCombo->setCurrentIndex(-1);
+    } else if (m_addTypeCombo->currentIndex() < 0) {
+        m_addTypeCombo->setCurrentIndex(0);
+    }
+    updateButtons();
+    if (allowed && initialState)
+        loadVariables();
+}
+
+bool GlobalVarView::refreshVariablesIfAuthorized() {
+    if (!hasGlobalVarPermission())
+        return false;
+    if (m_addTypeCombo->currentIndex() < 0)
+        m_addTypeCombo->setCurrentIndex(0);
+    loadVariables();
+    return true;
+}
+
 void GlobalVarView::updateButtons() {
+    if (!m_permissionGranted) {
+        m_deleteBtn->setEnabled(false);
+        m_moveUpBtn->setEnabled(false);
+        m_moveDownBtn->setEnabled(false);
+        m_executeBtn->setEnabled(false);
+        return;
+    }
     bool hasSelection = m_varTable->currentRow() >= 0;
     m_deleteBtn->setEnabled(hasSelection);
     m_executeBtn->setEnabled(hasSelection);
@@ -163,33 +237,78 @@ void GlobalVarView::updateButtons() {
 }
 
 void GlobalVarView::onAddClicked() {
+    if (!hasGlobalVarPermission())
+        return;
     int typeIndex = m_addTypeCombo->currentData().toInt();
     VarDataType type = (VarDataType) typeIndex;
-
-    VarModel* var = new VarModel();
-    var->setName(QString("newVar%1").arg(GlobalVarManager::instance().count() + 1));
-    var->setDataType(type);
-    var->setValue(QVariant(0));
-
-    GlobalVarManager::instance().addVariable(var);
-    loadVariables();
-
-    Logger::instance().info(QString("Variable added: %1").arg(var->name()), "Var");
+    QSet<QString> existingNames;
+    for (const GlobalVariableSnapshot& variable : GlobalVarManager::instance().userVariableSnapshots())
+        existingNames.insert(variable.name);
+    QString name;
+    for (int suffix = 1; suffix < std::numeric_limits<int>::max(); ++suffix) {
+        const QString candidate = QStringLiteral("newVar%1").arg(suffix);
+        if (!existingNames.contains(candidate)) {
+            name = candidate;
+            break;
+        }
+    }
+    if (name.isEmpty()) {
+        QMessageBox::warning(this, tr("Variable"), tr("No available automatic variable name was found."));
+        return;
+    }
+    QVariant value;
+    switch (type) {
+    case VarDataType::Int:
+        value = 0;
+        break;
+    case VarDataType::Double:
+        value = 0.0;
+        break;
+    case VarDataType::String:
+        value = QString();
+        break;
+    case VarDataType::Bool:
+        value = false;
+        break;
+    case VarDataType::IntArray:
+    case VarDataType::DoubleArray:
+    case VarDataType::StringArray:
+    case VarDataType::BoolArray:
+        value = QVariantList();
+        break;
+    default:
+        QMessageBox::warning(this, tr("Variable"), tr("The selected variable type is not supported."));
+        return;
+    }
+    QString errorCode;
+    GlobalVariableSnapshot created;
+    if (!GlobalVarManager::instance().tryCreateUserVariable(name, type, value, {}, &created, &errorCode)) {
+        QMessageBox::warning(this, tr("Variable"), tr("Variable creation failed: %1").arg(errorCode));
+        return;
+    }
+    Logger::instance().info(QString("Variable added: %1").arg(created.name), "Var");
 }
 
 void GlobalVarView::onDeleteClicked() {
+    if (!hasGlobalVarPermission())
+        return;
     int row = m_varTable->currentRow();
     if (row < 0)
         return;
 
     QString name = m_varTable->item(row, 1)->text();
-    GlobalVarManager::instance().removeVariable(name);
-    loadVariables();
+    QString errorCode;
+    if (!GlobalVarManager::instance().tryRemoveUserVariable(name, {}, &errorCode)) {
+        QMessageBox::warning(this, tr("Variable"), tr("Variable removal failed: %1").arg(errorCode));
+        return;
+    }
 
     Logger::instance().info(QString("Variable deleted: %1").arg(name), "Var");
 }
 
 void GlobalVarView::onMoveUpClicked() {
+    if (!hasGlobalVarPermission())
+        return;
     int row = m_varTable->currentRow();
     if (row <= 0)
         return;
@@ -206,6 +325,8 @@ void GlobalVarView::onMoveUpClicked() {
 }
 
 void GlobalVarView::onMoveDownClicked() {
+    if (!hasGlobalVarPermission())
+        return;
     int row = m_varTable->currentRow();
     if (row < 0 || row >= m_varTable->rowCount() - 1)
         return;
@@ -222,6 +343,8 @@ void GlobalVarView::onMoveDownClicked() {
 }
 
 void GlobalVarView::onExecuteClicked() {
+    if (!hasGlobalVarPermission())
+        return;
     int row = m_varTable->currentRow();
     if (row < 0)
         return;
@@ -232,6 +355,8 @@ void GlobalVarView::onExecuteClicked() {
 }
 
 void GlobalVarView::onApplyClicked() {
+    if (!hasGlobalVarPermission())
+        return;
     Logger::instance().info("Global variables applied", "Var");
     accept();
 }

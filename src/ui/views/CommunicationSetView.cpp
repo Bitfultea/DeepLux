@@ -2,6 +2,7 @@
 
 #include "../widgets/AppIconProvider.h"
 #include "common/Logger.h"
+#include "core/common/UserManager.h"
 #include "core/communication/CommunicationManager.h"
 
 #include <QFormLayout>
@@ -21,13 +22,39 @@ CommunicationSetView::CommunicationSetView(QWidget* parent) : QDialog(parent) {
     // 样式跟随主窗口主题（ThemeManager 统一管理），不再硬编码
 
     setupUI();
-    loadCommunications();
+    connect(&UserManager::instance(), &UserManager::permissionChanged, this,
+            &CommunicationSetView::updatePermissionState);
+    connect(&CommunicationManager::instance(), &CommunicationManager::connectionStateChanged, this,
+            [this](const QString& configId, CommunicationState state) {
+                if (!hasCommunicationPermission())
+                    return;
+                for (int row = 0; row < m_commTable->rowCount(); ++row) {
+                    const auto* nameItem = m_commTable->item(row, 0);
+                    if (!nameItem || nameItem->data(Qt::UserRole).toString() != configId)
+                        continue;
+
+                    const QString status = state == CommunicationState::Connected    ? tr("Connected")
+                                           : state == CommunicationState::Listening  ? tr("Listening")
+                                           : state == CommunicationState::Connecting ? tr("Connecting")
+                                           : state == CommunicationState::Error      ? tr("Error")
+                                                                                     : tr("Disconnected");
+                    m_commTable->item(row, 4)->setText(status);
+                    updateButtons();
+                    break;
+                }
+            });
+    updatePermissionState();
 }
 
 void CommunicationSetView::setupUI() {
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(15);
     mainLayout->setContentsMargins(20, 20, 20, 20);
+
+    m_permissionMessage = new QLabel(tr("You do not have permission to manage communication settings."), this);
+    m_permissionMessage->setObjectName(QStringLiteral("CommunicationPermissionMessage"));
+    m_permissionMessage->setWordWrap(true);
+    mainLayout->addWidget(m_permissionMessage);
 
     // Communication list table
     QGroupBox* listGroup = new QGroupBox(tr("Communication List"), this);
@@ -49,13 +76,17 @@ void CommunicationSetView::setupUI() {
     btnLayout->setSpacing(10);
 
     m_addBtn = new QPushButton(tr("Add"), this);
+    m_addBtn->setObjectName(QStringLiteral("CommunicationAddButton"));
     m_addBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Add, 16, QColor("#2563EB")));
     m_deleteBtn = new QPushButton(tr("Delete"), this);
+    m_deleteBtn->setObjectName(QStringLiteral("CommunicationDeleteButton"));
     m_deleteBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Delete, 16, QColor("#DC2626")));
     m_deleteBtn->setEnabled(false);
     m_connectBtn = new QPushButton(tr("Connect"), this);
+    m_connectBtn->setObjectName(QStringLiteral("CommunicationConnectButton"));
     m_connectBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Connect, 16, QColor("#16A34A")));
     m_disconnectBtn = new QPushButton(tr("Disconnect"), this);
+    m_disconnectBtn->setObjectName(QStringLiteral("CommunicationDisconnectButton"));
     m_disconnectBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Disconnect, 16, QColor("#DC2626")));
     m_disconnectBtn->setEnabled(false);
 
@@ -94,7 +125,8 @@ void CommunicationSetView::setupUI() {
 
     m_portSpin = new QSpinBox(this);
     m_portSpin->setObjectName("CommunicationPortSpin");
-    m_portSpin->setRange(1, 65535);
+    m_portSpin->setRange(0, 65535);
+    m_portSpin->setSpecialValueText(tr("—"));
     m_portSpin->setValue(5000);
     settingsLayout->addRow(tr("Port:"), m_portSpin);
 
@@ -126,6 +158,7 @@ void CommunicationSetView::setupUI() {
     bottomLayout->setSpacing(10);
 
     m_applyBtn = new QPushButton(tr("Apply"), this);
+    m_applyBtn->setObjectName(QStringLiteral("CommunicationApplyButton"));
     m_applyBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Confirm, 16, QColor("#16A34A")));
     m_applyBtn->setProperty("default", true);
     m_closeBtn = new QPushButton(tr("Close"), this);
@@ -151,8 +184,71 @@ void CommunicationSetView::setupUI() {
     onTypeChanged(m_typeCombo->currentIndex());
 }
 
+bool CommunicationSetView::hasCommunicationPermission() const {
+    const UserManager& users = UserManager::instance();
+    return users.isLoggedIn() && users.currentUser().type != UserType::Guest &&
+           users.hasPermission(QStringLiteral("CommunicationSet"));
+}
+
+bool CommunicationSetView::ensureCommunicationPermission() {
+    if (hasCommunicationPermission())
+        return true;
+    if (m_permissionGranted)
+        updatePermissionState();
+    Logger::instance().warning(QStringLiteral("Communication settings denied: CommunicationSet permission required"),
+                               QStringLiteral("Auth"));
+    return false;
+}
+
+void CommunicationSetView::updatePermissionState() {
+    const bool allowed = hasCommunicationPermission();
+    const bool permissionWasGranted = m_permissionGranted;
+    m_permissionGranted = allowed;
+    m_permissionMessage->setVisible(!allowed);
+
+    m_commTable->setEnabled(allowed);
+    m_addBtn->setEnabled(allowed);
+    m_deleteBtn->setEnabled(allowed && m_commTable->currentRow() >= 0);
+    m_applyBtn->setEnabled(allowed);
+    m_connectBtn->setEnabled(false);
+    m_disconnectBtn->setEnabled(false);
+    m_nameEdit->setEnabled(allowed);
+    m_typeCombo->setEnabled(allowed);
+    m_ipEdit->setEnabled(false);
+    m_portSpin->setEnabled(false);
+    m_portNameCombo->setEnabled(false);
+    m_baudRateSpin->setEnabled(false);
+    m_parityCombo->setEnabled(false);
+
+    if (!allowed) {
+        m_commTable->setRowCount(0);
+        clearConfigurationFields();
+        return;
+    }
+
+    onTypeChanged(m_typeCombo->currentIndex());
+    if (!permissionWasGranted)
+        loadCommunications();
+}
+
+void CommunicationSetView::clearConfigurationFields() {
+    m_nameEdit->clear();
+    m_ipEdit->clear();
+    m_portSpin->setValue(m_portSpin->minimum());
+    m_portNameCombo->setCurrentIndex(-1);
+    m_baudRateSpin->setValue(115200);
+    m_parityCombo->setCurrentIndex(0);
+}
+
 void CommunicationSetView::loadCommunications() {
+    QString selectedConfigId;
+    const int selectedRow = m_commTable->currentRow();
+    if (selectedRow >= 0 && m_commTable->item(selectedRow, 0))
+        selectedConfigId = m_commTable->item(selectedRow, 0)->data(Qt::UserRole).toString();
     m_commTable->setRowCount(0);
+
+    if (!ensureCommunicationPermission())
+        return;
 
     const QList<CommunicationConfig>& configs = CommunicationManager::instance().configs();
 
@@ -187,16 +283,33 @@ void CommunicationSetView::loadCommunications() {
         m_commTable->setItem(row, 3, new QTableWidgetItem(QString::number(config.port)));
 
         CommunicationState state = CommunicationManager::instance().state(config.id);
-        QString stateStr = (state == CommunicationState::Connected)   ? tr("Connected")
-                           : (state == CommunicationState::Listening) ? tr("Listening")
-                                                                      : tr("Disconnected");
+        QString stateStr = state == CommunicationState::Connected    ? tr("Connected")
+                           : state == CommunicationState::Listening  ? tr("Listening")
+                           : state == CommunicationState::Connecting ? tr("Connecting")
+                           : state == CommunicationState::Error      ? tr("Error")
+                                                                     : tr("Disconnected");
         m_commTable->setItem(row, 4, new QTableWidgetItem(stateStr));
+    }
+
+    if (!selectedConfigId.isEmpty()) {
+        for (int row = 0; row < m_commTable->rowCount(); ++row) {
+            if (m_commTable->item(row, 0)->data(Qt::UserRole).toString() == selectedConfigId) {
+                m_commTable->selectRow(row);
+                break;
+            }
+        }
     }
 
     updateButtons();
 }
 
 void CommunicationSetView::updateButtons() {
+    if (!hasCommunicationPermission()) {
+        m_deleteBtn->setEnabled(false);
+        m_connectBtn->setEnabled(false);
+        m_disconnectBtn->setEnabled(false);
+        return;
+    }
     bool hasSelection = m_commTable->currentRow() >= 0;
     m_deleteBtn->setEnabled(hasSelection);
 
@@ -204,8 +317,9 @@ void CommunicationSetView::updateButtons() {
         int row = m_commTable->currentRow();
         QString status = m_commTable->item(row, 4)->text();
         bool isConnected = (status == tr("Connected") || status == tr("Listening"));
-        m_connectBtn->setEnabled(!isConnected);
-        m_disconnectBtn->setEnabled(isConnected);
+        const bool isConnecting = status == tr("Connecting");
+        m_connectBtn->setEnabled(!isConnected && !isConnecting);
+        m_disconnectBtn->setEnabled(isConnected || isConnecting);
     } else {
         m_connectBtn->setEnabled(false);
         m_disconnectBtn->setEnabled(false);
@@ -213,6 +327,8 @@ void CommunicationSetView::updateButtons() {
 }
 
 void CommunicationSetView::onAddClicked() {
+    if (!ensureCommunicationPermission())
+        return;
     m_commTable->clearSelection();
     m_nameEdit->setText(tr("New Connection"));
     m_typeCombo->setCurrentIndex(m_typeCombo->findData(static_cast<int>(CommunicationType::TCP_Client)));
@@ -222,6 +338,8 @@ void CommunicationSetView::onAddClicked() {
 }
 
 void CommunicationSetView::onDeleteClicked() {
+    if (!ensureCommunicationPermission())
+        return;
     int row = m_commTable->currentRow();
     if (row < 0)
         return;
@@ -233,6 +351,8 @@ void CommunicationSetView::onDeleteClicked() {
 }
 
 void CommunicationSetView::onConnectClicked() {
+    if (!ensureCommunicationPermission())
+        return;
     int row = m_commTable->currentRow();
     if (row < 0)
         return;
@@ -244,6 +364,8 @@ void CommunicationSetView::onConnectClicked() {
 }
 
 void CommunicationSetView::onDisconnectClicked() {
+    if (!ensureCommunicationPermission())
+        return;
     int row = m_commTable->currentRow();
     if (row < 0)
         return;
@@ -255,6 +377,8 @@ void CommunicationSetView::onDisconnectClicked() {
 }
 
 void CommunicationSetView::onApplyClicked() {
+    if (!ensureCommunicationPermission())
+        return;
     CommunicationConfig config;
     int row = m_commTable->currentRow();
     if (row >= 0 && m_commTable->item(row, 0)) {
@@ -293,6 +417,8 @@ void CommunicationSetView::onCloseClicked() {
 }
 
 void CommunicationSetView::onCommSelectionChanged() {
+    if (!ensureCommunicationPermission())
+        return;
     int row = m_commTable->currentRow();
     if (row >= 0 && m_commTable->item(row, 0)) {
         const QString configId = m_commTable->item(row, 0)->data(Qt::UserRole).toString();
@@ -330,20 +456,21 @@ void CommunicationSetView::onTypeChanged(int index) {
     const bool isNetwork = (type == CommunicationType::TCP_Client || type == CommunicationType::TCP_Server ||
                             type == CommunicationType::PLC);
 
+    const bool allowed = hasCommunicationPermission();
     if (m_ipEdit) {
-        m_ipEdit->setEnabled(isNetwork);
+        m_ipEdit->setEnabled(allowed && isNetwork);
     }
     if (m_portSpin) {
-        m_portSpin->setEnabled(isNetwork);
+        m_portSpin->setEnabled(allowed && isNetwork);
     }
     if (m_portNameCombo) {
-        m_portNameCombo->setEnabled(isSerial);
+        m_portNameCombo->setEnabled(allowed && isSerial);
     }
     if (m_baudRateSpin) {
-        m_baudRateSpin->setEnabled(isSerial);
+        m_baudRateSpin->setEnabled(allowed && isSerial);
     }
     if (m_parityCombo) {
-        m_parityCombo->setEnabled(isSerial);
+        m_parityCombo->setEnabled(allowed && isSerial);
     }
 }
 

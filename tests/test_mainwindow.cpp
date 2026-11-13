@@ -1,5 +1,7 @@
 #include "TestPluginRegistry.h"
+#include "project_json_test_helpers.h"
 
+#include <Eigen/Geometry>
 #include <QAbstractItemModel>
 #include <QAction>
 #include <QApplication>
@@ -7,15 +9,22 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QCryptographicHash>
+#include <QDateTime>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
+#include <QDropEvent>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QGraphicsSceneEvent>
 #include <QHeaderView>
 #include <QImage>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -24,18 +33,24 @@
 #include <QLayout>
 #include <QLineEdit>
 #include <QLineF>
+#include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMessageBox>
+#include <QMimeData>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPen>
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSemaphore>
 #include <QSignalSpy>
 #include <QSplitter>
+#include <QStatusBar>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -43,6 +58,7 @@
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextTable>
+#include <QThread>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
@@ -50,30 +66,56 @@
 #include <QTreeWidgetItemIterator>
 #include <QUndoStack>
 #include <QVector3D>
+#include <QWheelEvent>
 #include <QtTest/QtTest>
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <core/agent/AgentActor.h>
 #include <core/agent/AgentController.h>
+#include <core/agent/GuiEvent.h>
+#include <core/agent/ILLMClient.h>
+#include <core/agent/ToolSchema.h>
 #include <core/base/ModuleBase.h>
+#include <core/common/UserManager.h>
+#include <core/common/VarModel.h>
+#include <core/config/SystemConfig.h>
 #include <core/deeplux/PayloadTypes.h>
+#include <core/display/DisplayData.h>
 #include <core/engine/EngineTestSupport.h>
 #include <core/engine/FlowExecutionService.h>
 #include <core/engine/FlowGraphAnalyzer.h>
 #include <core/engine/RunEngine.h>
+#include <core/manager/ConfigManager.h>
+#include <core/manager/GlobalVarManager.h>
 #include <core/manager/PluginManager.h>
 #include <core/manager/ProjectManager.h>
+#include <core/model/Annotation.h>
+#include <core/model/AnnotationMaskOps.h>
+#include <core/model/ImageData.h>
 #include <core/model/Project.h>
 #include <cstdlib>
 #include <functional>
+#include <limits>
+#include <plugins/calibration/NPointCalibration/NPointCalibrationPlugin.h>
 #include <plugins/image_processing/CropImage/CropImagePlugin.h>
+#include <thread>
 #include <ui/ThemeManager.h>
 #include <ui/controllers/FlowLayoutCoordinator.h>
 #include <ui/controllers/ProcessTreeController.h>
+#include <ui/dialogs/LoginDialog.h>
 #include <ui/dialogs/SamAnnotatorDialog.h>
+#include <ui/display/3d/CameraController.h>
 #include <ui/display/3d/Viewport3DContent.h>
 #include <ui/display/DisplayManager.h>
 #include <ui/display/ImageRefreshCoalescer.h>
+#include <ui/panels/DataSourcePanel.h>
+#include <ui/views/CameraSetView.h>
+#include <ui/views/CommunicationSetView.h>
+#include <ui/views/GlobalVarView.h>
 #include <ui/views/MainWindow.h>
+#include <ui/views/SystemParamView.h>
+#include <ui/widgets/AgentActionLogWidget.h>
 #include <ui/widgets/AgentChatPanel.h>
 #include <ui/widgets/AgentMessageBubble.h>
 #include <ui/widgets/AgentToolPreviewCard.h>
@@ -87,6 +129,87 @@
 
 using namespace DeepLux;
 
+namespace {
+
+bool confirmPendingToolsAndWait(AgentController& controller, const QString& confirmationId) {
+    if (!controller.confirmPendingTools(confirmationId))
+        return false;
+
+    QElapsedTimer timeout;
+    timeout.start();
+    while (controller.state() == AgentController::AgentState::Confirming && timeout.elapsed() < 5000) {
+        QCoreApplication::processEvents();
+        QThread::msleep(1);
+    }
+    return controller.state() != AgentController::AgentState::Confirming;
+}
+
+} // namespace
+
+class MainWindowReplyClient : public ILLMClient {
+public:
+    using ILLMClient::ILLMClient;
+    void setApiKey(const QString&) override {}
+    void setEndpoint(const QString&) override {}
+    void setModel(const QString&) override {}
+    void setTemperature(double) override {}
+    void setMaxTokens(int) override {}
+    void setToolsEnabled(bool) override {}
+    void sendRequest(const AgentConversation& context, const QList<ToolDefinition>&) override {
+        m_requestId = context.requestId;
+    }
+
+    void reply(const AgentResponse& response) {
+        AgentResponse correlated = response;
+        if (correlated.requestId.isEmpty())
+            correlated.requestId = m_requestId;
+        emit responseReceived(correlated);
+        QCoreApplication::processEvents();
+    }
+
+private:
+    QString m_requestId;
+};
+
+class AgentControllerStateRestore {
+public:
+    explicit AgentControllerStateRestore(AgentController& controller)
+        : m_controller(controller), m_client(controller.llmClient()), m_permission(controller.permissionLevel()) {}
+    ~AgentControllerStateRestore() {
+        m_controller.setLLMClient(m_client);
+        m_controller.setPermissionLevel(m_permission);
+    }
+
+private:
+    AgentController& m_controller;
+    ILLMClient* m_client;
+    AgentController::PermissionLevel m_permission;
+};
+
+class ConfigThemeStateRestore {
+public:
+    ConfigThemeStateRestore()
+        : m_config(ConfigManager::instance()), m_initialized(m_config.isInitialized()),
+          m_hadTheme(m_config.containsGroupKey(QStringLiteral("appearance"), QStringLiteral("darkTheme"))),
+          m_darkTheme(m_config.groupBool(QStringLiteral("appearance"), QStringLiteral("darkTheme"), false)) {}
+
+    ~ConfigThemeStateRestore() {
+        if (!m_initialized)
+            return;
+        if (m_hadTheme)
+            m_config.setGroupValue(QStringLiteral("appearance"), QStringLiteral("darkTheme"), m_darkTheme);
+        else
+            m_config.removeGroupKey(QStringLiteral("appearance"), QStringLiteral("darkTheme"));
+        m_config.save();
+    }
+
+private:
+    ConfigManager& m_config;
+    bool m_initialized;
+    bool m_hadTheme;
+    bool m_darkTheme;
+};
+
 class MainWindowOutputProbeModule : public ModuleBase {
     Q_OBJECT
 
@@ -96,6 +219,12 @@ public:
         m_name = QStringLiteral("OutputProbe");
         m_category = QStringLiteral("test");
         setInstanceName(instanceId);
+
+        PortSpec imagePort;
+        imagePort.id = QStringLiteral("image");
+        imagePort.displayName = QStringLiteral("Image");
+        imagePort.type = DataType::Image2D;
+        setPorts({imagePort}, {imagePort});
     }
 
     std::function<void()> duringProcess;
@@ -105,6 +234,7 @@ public:
     // 不改变其他既有用例的行为；历史填色行保持原样，仅在开启时覆盖颜色。
     bool distinctImages = false;
     std::atomic_int runs{0};
+    bool executeResult = true;
 
 protected:
     bool process(const ImageData& input, ImageData& output) override {
@@ -126,7 +256,32 @@ protected:
         if (distinctImages) {
             output.setData(QStringLiteral("t26_k"), k);
         }
-        return true;
+        return executeResult;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+};
+
+class TestGrabImageParamModule : public ModuleBase {
+public:
+    explicit TestGrabImageParamModule(const QString& instanceId) {
+        m_moduleId = QStringLiteral("GrabImage");
+        m_name = QStringLiteral("GrabImage");
+        setInstanceName(instanceId);
+        m_defaultParams = QJsonObject{{QStringLiteral("grabSource"), QStringLiteral("Camera")},
+                                      {QStringLiteral("filePath"), QString()},
+                                      {QStringLiteral("folderPath"), QString()},
+                                      {QStringLiteral("folderLoop"), true}};
+        m_params = m_defaultParams;
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        Q_UNUSED(input)
+        Q_UNUSED(output)
+        return false;
     }
 
     QWidget* createConfigWidget() override {
@@ -186,6 +341,44 @@ protected:
         return nullptr;
     }
 };
+
+class TestableMainWindow : public MainWindow {
+public:
+    using MainWindow::eventFilter;
+    using MainWindow::schedulePendingToolboxDrop;
+
+    std::function<void(QDropEvent*)> afterProcessTreeDrop;
+    QString lastDroppedPlugin;
+    QString lastDroppedFlowInstance;
+
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        const bool handled = MainWindow::eventFilter(watched, event);
+        if (event->type() == QEvent::Drop && afterProcessTreeDrop) {
+            auto* drop = static_cast<QDropEvent*>(event);
+            const QString plugin = PluginDragPayload::pluginName(drop->mimeData());
+            const QString flowInstance = PluginDragPayload::flowInstanceId(drop->mimeData());
+            if (!plugin.isEmpty())
+                lastDroppedPlugin = plugin;
+            if (!flowInstance.isEmpty())
+                lastDroppedFlowInstance = flowInstance;
+            auto callback = std::move(afterProcessTreeDrop);
+            afterProcessTreeDrop = {};
+            callback(drop);
+        }
+        return handled;
+    }
+};
+
+static QModelIndex treeModelIndexForItem(QTreeWidget* tree, QTreeWidgetItem* item) {
+    if (!tree || !item)
+        return {};
+    QTreeWidgetItem* parent = item->parent();
+    const int row = parent ? parent->indexOfChild(item) : tree->indexOfTopLevelItem(item);
+    if (row < 0)
+        return {};
+    const QModelIndex parentIndex = parent ? treeModelIndexForItem(tree, parent) : QModelIndex();
+    return tree->model()->index(row, 0, parentIndex);
+}
 
 /// t13 回归：观察到取消后仍会慢速收尾的探针（模拟“取消后仍需返回”的模块）。
 /// 取消时从工作线程回调 onCancelObserved，用于验证 GUI 是否仍在事件循环内处理事件。
@@ -452,9 +645,127 @@ private slots:
     void cleanup();
 
     void testOpenProjectSyncsProcessTreeAndFlowCanvas();
+    void testG4LegacyControlEdgeIncrementalSyncUsesInferredType();
+    void testG4AgentRemoveUndoKeepsProcessTreeOrder();
+    void testG4AgentMoveUndoKeepsProcessTreeOrder();
+    void testG4AgentMoveUndoExpiresAfterProcessTreeReorder();
+    void testG4AgentMoveUndoExpiresAfterExternalOrderAba();
+    void testG4AgentMoveUndoExpiresAfterSameOrderReloadButNotFailedLoad();
+    void testG4MoveModuleBatchUndoIsolatesSiblings();
+    void testG4AgentRenameUpdatesTreeCanvasAndReopen();
+    void testG4AgentRuntimeFieldUndoExpiresAfterInspectorEdit();
+    void testG4AgentRuntimeFieldUndoRedoPreservesAgentLifoAndGuiAba();
+    void testG4AgentRuntimeFieldUndoIsolatedFromBatchSiblings();
+    void testG4AgentRuntimeFieldUndoExpiresAfterModuleIdReuse();
+    void testG4AgentPositionUpdatesCanvasConnectionsUndoAndReopen();
+    void testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition();
+    void testG4AgentGuiParameterUndoIsKeyScopedAndStaleSafe();
+    void testG4MixedParameterUndoSerializationRoundTrips();
+    void testG4ResetDefaultsIsOneAtomicUndoCommand();
+    void testAgentUndoBarrierRejectionIsVisibleInStatusBar();
+    void testG4LegacyEmptyNameStaysVisibleAfterRenameUndoAndReopen();
+    void testG4AgentEnabledUpdatesInspectorAndEngine();
+    void testG4GuiInspectorEditsRejectedWhileEngineBusy();
+    void testG4InspectorEditsRejectedDuringMaintenanceLease();
+    void testG4NewImageImportIsRejectedWhileBusyThenCommitsAfterStop();
+    void testAgentDataSourceRemovalRefreshesGuiAndRejectsBusyMutation();
+    void testAgentDataSourceDisplayAndVisibilityTools();
+    void testImportImageMenuActionAddsAndDisplaysDataSource();
+    void testAgentDataSourceViewHandlerRequiresLiveOwnerAndGuiThread();
+    void testOpenSamEnvironmentSetupRequiresGui();
+    void testOpenSamEnvironmentSetupOpensAndReusesWithoutStartingBackend();
+    void testOpenSamEnvironmentSetupBindsImageViewportOnceWithoutPreparingBackend();
+    void testOpenSamEnvironmentSetupReportsMissingEnvironmentWithScreenshots();
+    void testUserSubmitsLoginThroughDialogUi();
+    void testOpenUserLoginDialogOpensReusesAndPreservesUserState();
+    void testCommunicationSettingsMenuRequiresCommunicationPermission();
+    void testCameraSettingsMenuRequiresCameraPermissions();
+    void testGlobalVariableMenuRequiresGlobalVarPermission();
+    void testSystemParameterPagesRequireTheirMappedProductPermissions();
+    void testProjectOperationSlotsEnforceProductPermissionsAndRecheckSave();
+    void testGuiFlowRunSlotsEnforceProductPermissionsBeforeSideEffects();
+    void testGuiRunSlotsResumePausedModeWithModeSpecificPermission();
+    void testGuiRunOnceSlotPreservesSafetyStopForActiveModes();
+    void testSavePermissionIsRecheckedAfterSaveAsDialog();
+    void testOperatorCloseUnsavedProjectOffersOnlyCancelOrDiscard();
+    void testOpenUserLoginDialogReusesExistingMenuDialog();
+    void testLoggedOutUserGetsLoginHandoffWithoutAgentLogin();
+    void testAgentQuickMeasurementLifecycleAndTargetIsolation();
+    void testAgentQuickMeasurementCoordinatesSurviveViewportTransformsAndSourceIsolation();
+    void testAgentRectangleRoiUsesFixedScreenCoordinatesAndSourceMapping();
+    void testAgentRectangleRoiMapsRotatedScaledSourceCoordinates();
+    void testAgentQuickSegmentGapCoordinatesSurviveViewportTransforms();
+    void testAgentQuickAngleCoordinatesSurviveViewportTransforms();
+    void testAgentQuickPointToLineCoordinatesSurviveViewportTransforms();
+    void testAgentQuickCircleCoordinatesSurviveViewportTransforms();
+    void testG6MeasurementInput2DRealMousePicksWithViewportTransformsAndProvenance();
+    void testAgentQuickMeasurementCancelDropsLateClickAndRoiRelease();
+    void testAgentQuickMeasurementRequiresImageIn2DViewport();
+    void testObserverCannotStartGuiQuickMeasurement();
+    void testAgent3DQuickMeasurementUsesWorldPicksAndDropsStaleReleases();
+    void testAgent3DQuickMeasurementPicksWorldPointsAfterCameraTransforms();
+    void testAgent3DQuickPointToLinePicksAfterCameraTransformsAndCancelsSafely();
+    void testAgent3DSegmentGapPicksAfterCameraTransforms();
+    void testAgent3DAnglePicksAfterCameraTransforms();
+    void testAgent3DCirclePicksAfterCameraTransforms();
+    void testAgent3DQuickMeasurementArithmeticUsesDoublePrecision();
+    void testAgentQuickMeasurementCancellationExpiryAndTerminalStability();
+    void testAgentQuickMeasurementAdvisorConfirmationBindsViewportContent();
+    void testAgentQuickMeasurementOwnerDestructionKeepsExpiredStatus();
+    void testAgentAndGuiQuickMeasurementModesAreMutuallyExclusive();
+    void testGuiQuickMeasureRectangleUsesImageLocalCoordinatesAndSingleRoiConnection();
+    void testGuiQuickMeasureDistanceUsesImageLocalCoordinatesAfterViewportTransform();
+    void testGuiQuickMeasurePointLineAndSegmentGapUseImageLocalCoordinatesAfterViewportTransform();
+    void testGuiQuickMeasureAngleAndCircleUseImageLocalCoordinatesAfterViewportTransform();
+    void testG6MeasurementInputUsesActualCropImageOutputAfterViewportTransform();
+    void testG6MeasurementInput2DPointLineRealMousePicksAndRunsDistancePL();
+    void testG6MeasurementInput2DLinePairRealMousePicksAndRunsLinesDistance();
+    void testG6MeasurementInputQueuedContinuationRejectsProjectReplacement();
+    void testG6MeasurementInputQueuedContinuationRejectsSameIdModuleReplacement();
+    void testG6MeasurementInputQueuedContinuationHonorsStop();
+    void testG6MeasurementInputQueuedContinuationAllowsUnrelatedProjectChange();
+    void testG6MeasurementInputRejectsImageChangeBeforeFirstPick();
+    void testG6MeasurementInputRejectsImageChangeAfterBindingViewport();
+    void testG6MeasurementInputRejectsCrossViewportPick();
+    void testG6MeasurementInputCancelsImageChangeAndLateRelease();
+    void testG6MeasurementInputQueuedContinuationRejectsDestroyedViewport();
+    void testG6MeasurementInput3DQueuedContinuationRejectsSameIdModuleReplacement();
+    void testG6MeasurementInput3DWorldCoordinatesReachRunOutput();
+    void testG6MeasurementInput3DRealMousePicksAfterCameraTransformsRunOnce();
+    void testG6MeasurementInput3DPointLineRealMousePicksAfterCameraTransforms();
+    void testG6MeasurementInput3DLinePairRealMousePicksAfterCameraTransforms();
+    void testG6MeasurementInput3DPointPlaneRealMousePicksAfterCameraTransforms();
+    void testG6MeasurementInput3DPickCancelsAfterPointCloudReplacement();
+    void testG6MeasurementInput3DCrossViewportPickIsIgnored();
+    void testG6MeasurementInput3DPointPlanePicksAllWorldVertices();
+    void testAgentActiveSamMaskEditConfirmationPrivacyAndUndo();
+    void testAgentWorkspacePanelVisibilityWithoutProjectAndInFocusMode();
+    void testAgentLogLevelFilterIsBoundedToRuntimeTable();
+    void testAgentSelectsLogPanelTabWithoutProject();
+    void testAgentScrollsConversationToLatestWithoutProject();
+    void testAgentScrollLatestRejectsMissingScrollArea();
+    void testAgentSystemSettingsDialogLifecycleAndThemeSync();
+    void testAgentClearRuntimeLogsRequiresConfirmationAndPreservesDiskAndActionHistory();
+    void testAgentSelectFlowModuleSynchronizesGuiAndRespectsPinnedInspector();
+    void testG4AdvancedConfigKeepsDraftWhenEngineBecomesBusy();
+    void testG4AdvancedConfigRejectsCrossSourceConflictAtomically();
+    void testG4AdvancedConfigDefersCalibrationPointClearUntilAccepted();
+    void testG4BusyRejectsNonPendingMeasurementPickOnly();
+    void testG4BusyTreeDropRejectsAndPlaceholderCleanupIsViewOnly();
+    void testG4PendingToolboxCallbacksRejectStaleDrops();
+    void testG4SourceLessDropRequiresMatchingPayload();
+    void testG4AgentEnabledLeavesOtherInspectorStateAlone();
+    void testG4AgentBreakpointUpdatesInspectorWithoutLosingNoteDraft();
+    void testG4PreInsertedToolboxDropKeepsRequestedRow();
+    void testUnsavedNewSolutionSaveAsCancelKeepsProject();
+    void testUnsavedNewSolutionSaveAsSuccessSwitchesProject();
     void testClosingProjectClearsRunEngineReferencesAndOutputs();
     void testRunningFlowDefersCloseAndBlocksProjectReplacement();
+    void testG3VisibleGuiHeartbeatWhileWaitingForRun();
     void testRunningFlowRejectsModuleDeletion();
+    void testFlowCanvasPortDragAddsProjectConnection();
+    void testInspectorRerunButtonRunsWholeFlow();
+    void testStatusBarShowsRunDurationClockAndUserPlaceholder();
     void testConnectionChangeRebuildsExecutionTopology();
     void testDirtyStateInvalidatesDownstreamResults();
     void testProjectModuleUpdateSyncsRuntimeAndMarksDirty();
@@ -467,16 +778,28 @@ private slots:
     void testAgentChatReadableLayout();
     void testToolboxDragPayloadUsesDraggedPlugin();
     void testAgentInputErrorPathDoesNotCrashOrStayThinking();
+    void testAgentPartialFailureSummaryAppearsInChat();
+    void testAgentActiveSamCategoryEditConfirmationAndUndo();
+    void testAgentActiveSamPromptCancelPermissionsAndSnapshot();
+    void testAgentSaveActiveSamSessionAsNewFile();
+    void testAgentOpenActiveSamSession();
+    void testToolBoxSearchFiltersItemsAndRestoresOnClear();
+    void testQuickModeRunsCurrentFlowOnce();
+    void testOpenProjectMenuActionLoadsAndSyncsProject();
+    void testProcessTreeDoubleClickOpensInspectorParams();
     void testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTheme();
+    void testRunFlowConfirmationShowsIrreversibleLabelEndToEnd();
     void testProcessControlsFitCompactWindow();
     void testMainToolbarCheckedStateFitsItsBottomIndicator();
     void testClickingProcessModuleDisplaysIntermediateOutput();
     void testStepRunHighlightMovesBetweenModules();
     void testMeasurementPickingUpdatesInputAndClipboard();
+    void testMeasurementInput3DPickingPreservesWorldPrecisionAndSingleStep();
     void testMeasurementPickingViaImageViewportClick();
     void testMeasurementConfigButtonCreatesInputNode();
     void testMeasurementConfigButtonWithInstalledPlugins();
     void testRunCreatesMeasurementInputForConsumer();
+    void testG4CycleAutoCreatesMeasurementInputBeforeSync();
     void testControlFlowRunRendersBranchStates();
     void testDualMeasurementInputsShowOwnOverlay();
     void testSharedDownstreamMeasurementResultNotMisattributed();
@@ -494,8 +817,15 @@ private slots:
     void testProcessTreeClickOverridesPinnedInspector();
     void testInspectorRuntimeStateSyncsToRunEngine();
     void testBreakpointPauseAndContinueFromRunButton();
+    void testG4AgentBreakpointRunAlternatesGuiAndAgentResumeSameRunId();
     void testCycleRunDoesNotStealSelection();
+    void testG4AgentCanPauseGuiCycleBetweenIterations();
+    void testG4AgentCanStopPausedGuiCycle();
+    void testG4FailedGuiCycleIterationStopsSession();
+    void testG4GuiCycleMeasurementPickKeepsSharedSession();
+    void testG4AgentStopClearsDeferredMeasurementPick();
     void testStepRunFollowsExecution();
+    void testG4AgentAndGuiSingleStepSharePosition();
     // B7：UI 运行/循环/单步/关闭接入 FlowExecutionService（设计 §8.1）
     void testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns();
     // B10：已审计 worker 流程（FindCircle 验收工程）运行期间 GUI 保持响应
@@ -583,6 +913,7 @@ void TestMainWindow::initTestCase() {
 }
 
 void TestMainWindow::init() {
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
     ProjectManager::instance().closeProject();
     PluginManager::instance().shutdown();
     RunEngine::instance().stop();
@@ -595,6 +926,7 @@ void TestMainWindow::init() {
     // 默认插件目录重定向到临时目录，避免每个 MainWindow 实例都扫描
     // ~/.deeplux/plugins（会刷出大量 qDebug 并触发 QtTest 警告上限）。
     qputenv("DEEPLUX_APP_DATA_DIR", m_appDataDir.filePath("appdata").toLocal8Bit());
+    PluginManager::instance().addPluginPath(QDir::home().filePath(QStringLiteral(".deeplux/plugins")));
     qunsetenv("DEEPLUX_SHOW_DEBUG_MENU");
 }
 
@@ -609,6 +941,113 @@ void TestMainWindow::cleanup() {
     RunEngine::instance().clearOutputs();
     qunsetenv("DEEPLUX_APP_DATA_DIR");
     qunsetenv("DEEPLUX_SHOW_DEBUG_MENU");
+}
+
+void TestMainWindow::testUnsavedNewSolutionSaveAsCancelKeepsProject() {
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+    MainWindow window;
+    window.show();
+    ProjectManager& manager = ProjectManager::instance();
+    Project* project = manager.newProject();
+    QVERIFY(project);
+    project->setName(QStringLiteral("unsaved-cancel"));
+    QVERIFY(project->filePath().isEmpty());
+    QSignalSpy closedSpy(&manager, &ProjectManager::projectClosed);
+
+    bool sawSaveAs = false;
+    QTimer::singleShot(0, &window, [&]() {
+        auto* prompt = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!prompt)
+            return;
+        QAbstractButton* saveButton = nullptr;
+        for (QAbstractButton* button : prompt->buttons()) {
+            if (prompt->buttonRole(button) == QMessageBox::AcceptRole) {
+                saveButton = button;
+                break;
+            }
+        }
+        QTimer::singleShot(0, &window, [&]() {
+            QDialog* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            sawSaveAs = qobject_cast<QFileDialog*>(modal) != nullptr;
+            if (modal)
+                modal->reject();
+        });
+        if (saveButton)
+            saveButton->click();
+        else
+            prompt->reject();
+    });
+    // 保底关闭意外出现的弹窗，避免回归失败时测试挂起。
+    QTimer::singleShot(2000, &window, []() {
+        if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+            modal->reject();
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onNewSolution", Qt::DirectConnection));
+
+    QCOMPARE(sawSaveAs, true);
+    QCOMPARE(closedSpy.count(), 0);
+    QCOMPARE(manager.currentProject(), project);
+    QVERIFY(project->isModified());
+    QVERIFY(project->filePath().isEmpty());
+    manager.closeProject();
+}
+
+void TestMainWindow::testUnsavedNewSolutionSaveAsSuccessSwitchesProject() {
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("saved-before-switch.dproj"));
+    MainWindow window;
+    window.show();
+    ProjectManager& manager = ProjectManager::instance();
+    Project* project = manager.newProject();
+    QVERIFY(project);
+    project->setName(QStringLiteral("save-me"));
+    QSignalSpy closedSpy(&manager, &ProjectManager::projectClosed);
+
+    bool sawSaveAs = false;
+    QTimer::singleShot(0, &window, [&]() {
+        auto* prompt = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!prompt)
+            return;
+        QAbstractButton* saveButton = nullptr;
+        for (QAbstractButton* button : prompt->buttons()) {
+            if (prompt->buttonRole(button) == QMessageBox::AcceptRole) {
+                saveButton = button;
+                break;
+            }
+        }
+        QTimer::singleShot(0, &window, [&]() {
+            auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+            if (!dialog)
+                return;
+            sawSaveAs = true;
+            dialog->selectFile(path);
+            QTimer::singleShot(0, &window, []() {
+                if (auto* info = qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))
+                    info->accept();
+            });
+            QMetaObject::invokeMethod(dialog, "done", Qt::DirectConnection, Q_ARG(int, QDialog::Accepted));
+        });
+        if (saveButton)
+            saveButton->click();
+        else
+            prompt->reject();
+    });
+    QTimer::singleShot(2000, &window, []() {
+        if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+            modal->reject();
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onNewSolution", Qt::DirectConnection));
+
+    QVERIFY(sawSaveAs);
+    QCOMPARE(closedSpy.count(), 1);
+    QFile saved(path);
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    QVERIFY(saved.readAll().contains("save-me"));
+    QVERIFY(manager.currentProject());
+    QVERIFY(manager.currentProject()->name() != QLatin1String("save-me"));
+    manager.closeProject();
 }
 
 bool TestMainWindow::installFitLinePlugin(const QString& pluginRoot) const {
@@ -739,6 +1178,6640 @@ void TestMainWindow::testStepRunHighlightMovesBetweenModules() {
     engine.clearModules();
     delete first;
     delete second;
+}
+
+void TestMainWindow::testAgentQuickMeasurementLifecycleAndTargetIsolation() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    QCOMPARE(controller.evaluateToolGate(QStringLiteral("list_viewports")), AgentController::ToolGate::Allow);
+    QCOMPARE(controller.evaluateToolGate(QStringLiteral("get_quick_measurement_status"),
+                                         QJsonObject{{QStringLiteral("requestId"), QStringLiteral("x")}}),
+             AgentController::ToolGate::Allow);
+    QCOMPARE(controller.evaluateToolGate(QStringLiteral("begin_quick_measurement")), AgentController::ToolGate::Deny);
+    QCOMPARE(controller.evaluateToolGate(QStringLiteral("cancel_quick_measurement")), AgentController::ToolGate::Deny);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+    QCOMPARE(controller.evaluateToolGate(QStringLiteral("begin_quick_measurement")),
+             AgentController::ToolGate::RequireConfirmation);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+    QCOMPARE(controller.evaluateToolGate(QStringLiteral("begin_quick_measurement")), AgentController::ToolGate::Allow);
+
+    MainWindow window;
+    QVERIFY(ToolSchema::instance().hasTool(QStringLiteral("list_viewports")));
+    QVERIFY(ToolSchema::instance().hasTool(QStringLiteral("begin_quick_measurement")));
+    QVERIFY(ToolSchema::instance().hasTool(QStringLiteral("get_quick_measurement_status")));
+    QVERIFY(ToolSchema::instance().hasTool(QStringLiteral("cancel_quick_measurement")));
+    const ToolDefinition beginDefinition = ToolSchema::instance().findTool(QStringLiteral("begin_quick_measurement"));
+    QCOMPARE(beginDefinition.params.size(), 3);
+    QVERIFY(beginDefinition.params.at(1).enumValues.contains(QStringLiteral("2d")));
+    QVERIFY(beginDefinition.params.at(1).enumValues.contains(QStringLiteral("3d")));
+    QVERIFY(beginDefinition.params.at(2).enumValues.contains(QStringLiteral("rectangle_area")));
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* target = viewports.first();
+    QImage image(80, 60, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    window.show();
+    target->imageWidget()->setFixedSize(240, 180);
+    ImageData croppedDisplay(image);
+    ImageCoordinateProvenance cropProvenance = croppedDisplay.coordinateProvenance();
+    cropProvenance.localOriginInSource = QPointF(10, 20);
+    croppedDisplay.setCoordinateProvenance(cropProvenance);
+    DisplayData croppedDisplayData(croppedDisplay);
+    croppedDisplayData.setViewportId(target->viewportId());
+    displayManager->displayData(croppedDisplayData);
+    const auto panImageWidget = [](HImageWidget* widget) {
+        QTest::mousePress(widget, Qt::MiddleButton, Qt::NoModifier, QPoint(10, 10));
+        QMouseEvent move(QEvent::MouseMove, QPointF(25, 5), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+        QApplication::sendEvent(widget, &move);
+        QTest::mouseRelease(widget, Qt::MiddleButton, Qt::NoModifier, QPoint(25, 5));
+    };
+
+    const QJsonObject listed = controller.actor()->executeTool(QStringLiteral("list_viewports"), {});
+    QCOMPARE(listed.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+    QCOMPARE(listed.value(QStringLiteral("total")).toInt(), 1);
+    QCOMPARE(listed.value(QStringLiteral("viewports"))
+                 .toArray()
+                 .first()
+                 .toObject()
+                 .value(QStringLiteral("viewportId"))
+                 .toString(),
+             target->viewportId());
+    QVERIFY(listed.value(QStringLiteral("viewports"))
+                .toArray()
+                .first()
+                .toObject()
+                .value(QStringLiteral("hasImage"))
+                .toBool());
+
+    const QJsonObject begin = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}});
+    QCOMPARE(begin.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    const QString requestId = begin.value(QStringLiteral("requestId")).toString();
+    QVERIFY(!requestId.isEmpty());
+    QCOMPARE(begin.value(QStringLiteral("coordinateSystem")).toString(), QStringLiteral("image_pixels"));
+    QCOMPARE(begin.value(QStringLiteral("remainingSteps")).toInt(), 2);
+
+    const QString oldClipboard = QApplication::clipboard()->text();
+    const QString extraId = displayManager->createViewport(QStringLiteral("Other image"));
+    ViewportWidget* other = displayManager->viewport(extraId);
+    QVERIFY(other != nullptr);
+    target->imageWidget()->setFixedSize(240, 180);
+    other->imageWidget()->setFixedSize(240, 180);
+    other->displayImage(image);
+    target->imageWidget()->actualSize();
+    target->imageWidget()->setZoom(2.0);
+    panImageWidget(target->imageWidget());
+    other->imageWidget()->actualSize();
+    other->imageWidget()->setZoom(2.0);
+    panImageWidget(other->imageWidget());
+    QCoreApplication::processEvents();
+    // actualSize 的中心偏移 (80,60)，2x 缩放后再平移 (15,-5)。
+    const QPoint firstPointWidget(121, 89);   // image pixel (13,17)
+    const QPoint secondPointWidget(221, 149); // image pixel (63,47)
+    QTest::mouseClick(other->imageWidget(), Qt::LeftButton, Qt::NoModifier, firstPointWidget);
+    QCOMPARE(QApplication::clipboard()->text(), oldClipboard);
+    QJsonObject status = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                                         QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), 0);
+    QVERIFY(other->imageWidget()->measurementPoints().isEmpty());
+    QVERIFY(other->imageWidget()->measurementLines().isEmpty());
+
+    QTest::mouseClick(target->imageWidget(), Qt::LeftButton, Qt::NoModifier, firstPointWidget);
+    status = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                             QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(status.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), 1);
+    QCOMPARE(status.value(QStringLiteral("remainingSteps")).toInt(), 1);
+    QCOMPARE(status.value(QStringLiteral("nextStep")).toString(), QStringLiteral("点击第二个端点"));
+    const QJsonArray firstPickedCoordinates = status.value(QStringLiteral("pickedCoordinates")).toArray();
+    QCOMPARE(firstPickedCoordinates.size(), 1);
+    const QJsonObject firstPicked = firstPickedCoordinates.first().toObject();
+    QCOMPARE(firstPicked.value(QStringLiteral("coordinateFrame")).toString(), QStringLiteral("ImageLocalPixel"));
+    QCOMPARE(firstPicked.value(QStringLiteral("sourceCoordinateAvailable")).toBool(), true);
+    const QJsonArray expectedFirstLocal{13, 17};
+    const QJsonArray expectedFirstSource{23, 37};
+    const QJsonArray expectedSourceSize{80, 60};
+    QCOMPARE(firstPicked.value(QStringLiteral("imageLocal")).toArray(), expectedFirstLocal);
+    QCOMPARE(firstPicked.value(QStringLiteral("sourceImagePixel")).toArray(), expectedFirstSource);
+    QCOMPARE(firstPicked.value(QStringLiteral("sourceImageSize")).toArray(), expectedSourceSize);
+    QVERIFY(!firstPicked.value(QStringLiteral("sourceImage")).toString().isEmpty());
+
+    QTest::mouseClick(target->imageWidget(), Qt::LeftButton, Qt::NoModifier, secondPointWidget);
+    status = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                             QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(status.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+    QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), 2);
+    QCOMPARE(status.value(QStringLiteral("remainingSteps")).toInt(), 0);
+    const QJsonArray allPickedCoordinates = status.value(QStringLiteral("pickedCoordinates")).toArray();
+    QCOMPARE(allPickedCoordinates.size(), 2);
+    const QJsonArray expectedSecondSource{73, 67};
+    QCOMPARE(allPickedCoordinates.at(1).toObject().value(QStringLiteral("sourceImagePixel")).toArray(),
+             expectedSecondSource);
+    const QList<MeasurementOverlayPoint> distancePoints = target->imageWidget()->measurementPoints();
+    QCOMPARE(distancePoints.size(), 2);
+    QCOMPARE(distancePoints.at(0).pos, QPointF(13.0, 17.0));
+    QCOMPARE(distancePoints.at(1).pos, QPointF(63.0, 47.0));
+    const QList<MeasurementOverlayLine> distanceLines = target->imageWidget()->measurementLines();
+    QCOMPARE(distanceLines.size(), 1);
+    QCOMPARE(distanceLines.first().p1, QPointF(13.0, 17.0));
+    QCOMPARE(distanceLines.first().p2, QPointF(63.0, 47.0));
+    QCOMPARE(distanceLines.first().label, QStringLiteral("距离: 58.310"));
+    QTest::mouseClick(target->imageWidget(), Qt::LeftButton, Qt::NoModifier, firstPointWidget);
+    const QJsonObject completedAfterExtraClick = controller.actor()->executeTool(
+        QStringLiteral("get_quick_measurement_status"), QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(completedAfterExtraClick.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+    QCOMPARE(completedAfterExtraClick.value(QStringLiteral("completedSteps")).toInt(), 2);
+    QCOMPARE(target->imageWidget()->measurementPoints().size(), 2);
+    const QJsonObject terminalAgain = controller.actor()->executeTool(
+        QStringLiteral("get_quick_measurement_status"), QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(terminalAgain.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+    const QJsonObject repeatCancel = controller.actor()->executeTool(
+        QStringLiteral("cancel_quick_measurement"), QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(repeatCancel.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+
+    const QJsonObject unsupported = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("3d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("rectangle_area")}});
+    QCOMPARE(unsupported.value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("UNSUPPORTED_MEASUREMENT_DIMENSION"));
+    const QJsonObject invalidType =
+        controller.actor()->executeTool(QStringLiteral("begin_quick_measurement"),
+                                        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                                                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                                                    {QStringLiteral("measurementType"), QStringLiteral("unknown")}});
+    QCOMPARE(invalidType.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+
+    const QList<QPair<QString, int>> twoDimensionalTypes{
+        {QStringLiteral("distance_2_points"), 2}, {QStringLiteral("point_to_line"), 3},
+        {QStringLiteral("segment_gap"), 4},       {QStringLiteral("angle_3_points"), 3},
+        {QStringLiteral("circle_3_points"), 3},   {QStringLiteral("rectangle_area"), 1}};
+    for (const auto& measurement : twoDimensionalTypes) {
+        const QJsonObject typedBegin =
+            controller.actor()->executeTool(QStringLiteral("begin_quick_measurement"),
+                                            QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                                                        {QStringLiteral("dimension"), QStringLiteral("2d")},
+                                                        {QStringLiteral("measurementType"), measurement.first}});
+        QCOMPARE(typedBegin.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+        QCOMPARE(typedBegin.value(QStringLiteral("steps")).toArray().size(), measurement.second);
+        const QJsonObject typedCancel = controller.actor()->executeTool(
+            QStringLiteral("cancel_quick_measurement"),
+            QJsonObject{{QStringLiteral("requestId"), typedBegin.value(QStringLiteral("requestId"))}});
+        QCOMPARE(typedCancel.value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+    }
+
+    const QJsonObject rectangle = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("rectangle_area")}});
+    const QPoint rectangleStartWidget(115, 79); // image pixel (10,12)
+    const QPoint rectangleEndWidget(155, 119);  // image pixel (30,32)
+    QTest::mousePress(target->imageWidget(), Qt::LeftButton, Qt::NoModifier, rectangleStartWidget);
+    QMouseEvent rectangleMove(QEvent::MouseMove, rectangleEndWidget, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(target->imageWidget(), &rectangleMove);
+    QTest::mouseRelease(target->imageWidget(), Qt::LeftButton, Qt::NoModifier, rectangleEndWidget);
+    const QJsonObject rectangleStatus = controller.actor()->executeTool(
+        QStringLiteral("get_quick_measurement_status"),
+        QJsonObject{{QStringLiteral("requestId"), rectangle.value(QStringLiteral("requestId"))}});
+    QCOMPARE(rectangleStatus.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+    QCOMPARE(target->imageWidget()->measurementLines().size(), 4);
+    const QList<MeasurementOverlayPoint> rectanglePoints = target->imageWidget()->measurementPoints();
+    QCOMPARE(rectanglePoints.size(), 2);
+    QCOMPARE(rectanglePoints.at(0).pos, QPointF(10.0, 12.0));
+    QCOMPARE(rectanglePoints.at(1).pos, QPointF(30.0, 32.0));
+    const QList<MeasurementOverlayLine> rectangleLines = target->imageWidget()->measurementLines();
+    const QList<QPair<QPointF, QPointF>> expectedEdges{{{10.0, 12.0}, {30.0, 12.0}},
+                                                       {{30.0, 12.0}, {30.0, 32.0}},
+                                                       {{30.0, 32.0}, {10.0, 32.0}},
+                                                       {{10.0, 32.0}, {10.0, 12.0}}};
+    for (int edge = 0; edge < expectedEdges.size(); ++edge) {
+        QCOMPARE(rectangleLines.at(edge).p1, expectedEdges.at(edge).first);
+        QCOMPARE(rectangleLines.at(edge).p2, expectedEdges.at(edge).second);
+    }
+
+    SamAnnotatorDialog samDialog;
+    samDialog.attachToImageWidgetForEnvironmentSetup(target->imageWidget());
+    const ImageCoordinateProvenance sourceBeforeSamSwap = target->imageCoordinateProvenance();
+    const quint64 generationBeforeSamSwap = target->contentGeneration();
+    const QJsonObject pendingBeforeSamSwap = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}});
+    QCOMPARE(pendingBeforeSamSwap.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QImage samReplacement(80, 60, QImage::Format_RGB32);
+    samReplacement.fill(Qt::red);
+    target->imageWidget()->setImage(samReplacement);
+    QVERIFY(target->contentGeneration() > generationBeforeSamSwap);
+    const ImageCoordinateProvenance sourceAfterSamSwap = target->imageCoordinateProvenance();
+    QVERIFY(sourceAfterSamSwap.isValid());
+    QVERIFY(sourceAfterSamSwap.sourceImageId != sourceBeforeSamSwap.sourceImageId);
+    QCOMPARE(sourceAfterSamSwap.sourceSize, samReplacement.size());
+    QCOMPARE(sourceAfterSamSwap.localOriginInSource, QPointF(0.0, 0.0));
+
+    const QPoint replacementPoint = target->imageWidget()->imageToWidget(QPointF(13.0, 17.0)).toPoint();
+    QTest::mouseClick(target->imageWidget(), Qt::LeftButton, Qt::NoModifier, replacementPoint);
+    const QJsonObject expiredAfterSamSwap = controller.actor()->executeTool(
+        QStringLiteral("get_quick_measurement_status"),
+        QJsonObject{{QStringLiteral("requestId"), pendingBeforeSamSwap.value(QStringLiteral("requestId"))}});
+    QCOMPARE(expiredAfterSamSwap.value(QStringLiteral("status")).toString(), QStringLiteral("expired"));
+    QVERIFY(expiredAfterSamSwap.value(QStringLiteral("pickedCoordinates")).toArray().isEmpty());
+
+    const QJsonObject replacementBegin = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}});
+    QTest::mouseClick(target->imageWidget(), Qt::LeftButton, Qt::NoModifier, replacementPoint);
+    const QJsonObject replacementStatus = controller.actor()->executeTool(
+        QStringLiteral("get_quick_measurement_status"),
+        QJsonObject{{QStringLiteral("requestId"), replacementBegin.value(QStringLiteral("requestId"))}});
+    const QJsonObject replacementPick =
+        replacementStatus.value(QStringLiteral("pickedCoordinates")).toArray().first().toObject();
+    QCOMPARE(replacementPick.value(QStringLiteral("sourceImage")).toString(), sourceAfterSamSwap.sourceImageId);
+    const QJsonArray replacementLocal = replacementPick.value(QStringLiteral("imageLocal")).toArray();
+    const QJsonArray replacementSource = replacementPick.value(QStringLiteral("sourceImagePixel")).toArray();
+    QCOMPARE(replacementLocal.size(), 2);
+    QVERIFY(std::abs(replacementLocal.at(0).toDouble() - 13.0) < 1.0);
+    QVERIFY(std::abs(replacementLocal.at(1).toDouble() - 17.0) < 1.0);
+    QCOMPARE(replacementSource, replacementLocal);
+    const QJsonObject replacementCancel = controller.actor()->executeTool(
+        QStringLiteral("cancel_quick_measurement"),
+        QJsonObject{{QStringLiteral("requestId"), replacementBegin.value(QStringLiteral("requestId"))}});
+    QCOMPARE(replacementCancel.value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+
+    samDialog.positivePointButton()->click();
+    QTest::mouseClick(samDialog.overlayWidget(), Qt::LeftButton, Qt::NoModifier, replacementPoint);
+    const QList<QPointF> replacementPrompt = samDialog.overlayWidget()->positivePromptPoints();
+    QCOMPARE(replacementPrompt.size(), 1);
+    QVERIFY(std::abs(replacementPrompt.first().x() - 13.0) < 0.1);
+    QVERIFY(std::abs(replacementPrompt.first().y() - 17.0) < 0.1);
+    const QJsonObject promptBeforeOtherViewportClick = samDialog.agentPromptStateSnapshot();
+    QTest::mouseClick(other->imageWidget(), Qt::LeftButton, Qt::NoModifier, firstPointWidget);
+    QCOMPARE(samDialog.agentPromptStateSnapshot(), promptBeforeOtherViewportClick);
+
+    PointCloudData cloud;
+    cloud.points = {{0.0, 0.0, 0.0}, {1.0, 0.0, 1.0}, {0.0, 1.0, 1.0}};
+    DisplayData cloudData;
+    cloudData.variant() = cloud;
+    target->setDualData(image, cloudData, ViewportWidget::DisplayMode::Auto3D);
+    other->setDualData(image, cloudData, ViewportWidget::DisplayMode::Auto3D);
+    const QList<QPair<QString, int>> threeDimensionalTypes{{QStringLiteral("distance_2_points"), 2},
+                                                           {QStringLiteral("point_to_line"), 3},
+                                                           {QStringLiteral("segment_gap"), 4},
+                                                           {QStringLiteral("angle_3_points"), 3},
+                                                           {QStringLiteral("circle_3_points"), 3}};
+    for (const auto& measurement : threeDimensionalTypes) {
+        const QJsonObject typedBegin =
+            controller.actor()->executeTool(QStringLiteral("begin_quick_measurement"),
+                                            QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                                                        {QStringLiteral("dimension"), QStringLiteral("3d")},
+                                                        {QStringLiteral("measurementType"), measurement.first}});
+        QCOMPARE(typedBegin.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+        QCOMPARE(typedBegin.value(QStringLiteral("steps")).toArray().size(), measurement.second);
+        const QJsonObject typedCancel = controller.actor()->executeTool(
+            QStringLiteral("cancel_quick_measurement"),
+            QJsonObject{{QStringLiteral("requestId"), typedBegin.value(QStringLiteral("requestId"))}});
+        QCOMPARE(typedCancel.value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+    }
+    const QJsonObject threeDimensional = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("3d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}});
+    QCOMPARE(threeDimensional.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QCOMPARE(threeDimensional.value(QStringLiteral("coordinateSystem")).toString(),
+             QStringLiteral("point_cloud_world_coordinates"));
+    other->point3DWorldClicked(0.0, 0.0, 0.0);
+    const QJsonObject ignoredOtherViewportPoint = controller.actor()->executeTool(
+        QStringLiteral("get_quick_measurement_status"),
+        QJsonObject{{QStringLiteral("requestId"), threeDimensional.value(QStringLiteral("requestId"))}});
+    QCOMPARE(ignoredOtherViewportPoint.value(QStringLiteral("completedSteps")).toInt(), 0);
+    target->point3DWorldClicked(0.0, 0.0, 0.0);
+    target->point3DWorldClicked(1.0, 0.0, 1.0);
+    const QJsonObject threeDimensionalStatus = controller.actor()->executeTool(
+        QStringLiteral("get_quick_measurement_status"),
+        QJsonObject{{QStringLiteral("requestId"), threeDimensional.value(QStringLiteral("requestId"))}});
+    QCOMPARE(threeDimensionalStatus.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+}
+
+void TestMainWindow::testAgentQuickMeasurementCoordinatesSurviveViewportTransformsAndSourceIsolation() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QString otherViewportId = displayManager->createViewport(QStringLiteral("Coordinate source B"));
+    QVERIFY(!otherViewportId.isEmpty());
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(viewports.size() >= 2);
+    ViewportWidget* target = viewports.at(0);
+    ViewportWidget* other = displayManager->viewport(otherViewportId);
+    QVERIFY(other != nullptr);
+    QImage image(96, 72, QImage::Format_RGB32);
+    image.fill(Qt::white);
+
+    auto displayWithSource = [&image](ViewportWidget* viewport, const QString& sourceId, const QSize& sourceSize,
+                                      const QPointF& origin) {
+        ImageData imageData(image);
+        ImageCoordinateProvenance provenance = imageData.coordinateProvenance();
+        provenance.sourceImageId = sourceId;
+        provenance.sourceSize = sourceSize;
+        provenance.localOriginInSource = origin;
+        imageData.setCoordinateProvenance(provenance);
+        DisplayData display;
+        display.variant() = imageData;
+        viewport->displayData(display);
+    };
+    displayWithSource(target, QStringLiteral("viewport-A-source"), QSize(220, 160), QPointF(12, 18));
+    displayWithSource(other, QStringLiteral("viewport-B-source"), QSize(300, 200), QPointF(90, 70));
+
+    const quint64 targetGeneration = target->contentGeneration();
+    const QJsonObject begun = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}});
+    QCOMPARE(begun.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    const QString requestId = begun.value(QStringLiteral("requestId")).toString();
+
+    HImageWidget* targetImage = target->imageWidget();
+    QVERIFY(targetImage != nullptr);
+    targetImage->resize(targetImage->size() + QSize(20, 12));
+    QCoreApplication::processEvents();
+    targetImage->setZoom(1.25);
+    const QPointF wheelAnchor(targetImage->width() / 2.0, targetImage->height() / 2.0);
+    QWheelEvent wheelEvent(wheelAnchor, targetImage->mapToGlobal(wheelAnchor.toPoint()), QPoint(), QPoint(0, 120),
+                           Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(targetImage, &wheelEvent);
+    const QPoint panStart = targetImage->imageToWidget(QPointF(48.0, 36.0)).toPoint();
+    QTest::mousePress(targetImage, Qt::MiddleButton, Qt::NoModifier, panStart);
+    const QPoint panEnd = panStart + QPoint(16, 9);
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(panEnd), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(targetImage, &panMove);
+    QTest::mouseRelease(targetImage, Qt::MiddleButton, Qt::NoModifier, panEnd);
+    QCOMPARE(target->contentGeneration(), targetGeneration);
+
+    const QPointF firstExpected(14.0, 20.0);
+    QTest::mouseClick(other->imageWidget(), Qt::LeftButton, Qt::NoModifier,
+                      other->imageWidget()->imageToWidget(firstExpected).toPoint());
+    QJsonObject status = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                                         QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), 0);
+    QVERIFY(status.value(QStringLiteral("pickedCoordinates")).toArray().isEmpty());
+
+    const QList<QPointF> expectedPoints{firstExpected, QPointF(64.0, 48.0)};
+    const QJsonArray expectedSourceSize{220, 160};
+    for (const QPointF& expected : expectedPoints)
+        QTest::mouseClick(targetImage, Qt::LeftButton, Qt::NoModifier, targetImage->imageToWidget(expected).toPoint());
+    status = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                             QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(status.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+    const QJsonArray targetPicks = status.value(QStringLiteral("pickedCoordinates")).toArray();
+    QCOMPARE(targetPicks.size(), 2);
+    for (int i = 0; i < targetPicks.size(); ++i) {
+        const QJsonObject pick = targetPicks.at(i).toObject();
+        const QJsonArray local = pick.value(QStringLiteral("imageLocal")).toArray();
+        const QJsonArray source = pick.value(QStringLiteral("sourceImagePixel")).toArray();
+        QVERIFY(std::abs(local.at(0).toDouble() - expectedPoints.at(i).x()) <= 0.75);
+        QVERIFY(std::abs(local.at(1).toDouble() - expectedPoints.at(i).y()) <= 0.75);
+        QCOMPARE(pick.value(QStringLiteral("sourceImage")).toString(), QStringLiteral("viewport-A-source"));
+        QCOMPARE(pick.value(QStringLiteral("sourceImageSize")).toArray(), expectedSourceSize);
+        QVERIFY(std::abs(source.at(0).toDouble() - local.at(0).toDouble() - 12.0) < 1e-9);
+        QVERIFY(std::abs(source.at(1).toDouble() - local.at(1).toDouble() - 18.0) < 1e-9);
+    }
+
+    const QJsonObject otherBegin = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), other->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}});
+    const QPointF otherExpected(22.0, 31.0);
+    QTest::mouseClick(other->imageWidget(), Qt::LeftButton, Qt::NoModifier,
+                      other->imageWidget()->imageToWidget(otherExpected).toPoint());
+    const QJsonObject otherStatus = controller.actor()->executeTool(
+        QStringLiteral("get_quick_measurement_status"),
+        QJsonObject{{QStringLiteral("requestId"), otherBegin.value(QStringLiteral("requestId"))}});
+    QCOMPARE(otherStatus.value(QStringLiteral("completedSteps")).toInt(), 1);
+    QCOMPARE(otherStatus.value(QStringLiteral("pickedCoordinates"))
+                 .toArray()
+                 .first()
+                 .toObject()
+                 .value(QStringLiteral("sourceImage"))
+                 .toString(),
+             QStringLiteral("viewport-B-source"));
+    controller.actor()->executeTool(
+        QStringLiteral("cancel_quick_measurement"),
+        QJsonObject{{QStringLiteral("requestId"), otherBegin.value(QStringLiteral("requestId"))}});
+
+    const QJsonObject rectangleBegin = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("rectangle_area")}});
+    const QPoint rectangleStart = targetImage->imageToWidget(QPointF(10.0, 12.0)).toPoint();
+    const QPoint rectangleEnd = targetImage->imageToWidget(QPointF(30.0, 32.0)).toPoint();
+    QTest::mousePress(targetImage, Qt::LeftButton, Qt::NoModifier, rectangleStart);
+    QMouseEvent rectangleMove(QEvent::MouseMove, QPointF(rectangleEnd), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(targetImage, &rectangleMove);
+    QTest::mouseRelease(targetImage, Qt::LeftButton, Qt::NoModifier, rectangleEnd);
+    const QJsonObject rectangleStatus = controller.actor()->executeTool(
+        QStringLiteral("get_quick_measurement_status"),
+        QJsonObject{{QStringLiteral("requestId"), rectangleBegin.value(QStringLiteral("requestId"))}});
+    QCOMPARE(rectangleStatus.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+    const QJsonArray rectanglePicks = rectangleStatus.value(QStringLiteral("pickedCoordinates")).toArray();
+    QCOMPARE(rectanglePicks.size(), 4);
+    const QList<QPointF> expectedCorners{QPointF(10.0, 12.0), QPointF(30.0, 12.0), QPointF(30.0, 32.0),
+                                         QPointF(10.0, 32.0)};
+    for (int i = 0; i < rectanglePicks.size(); ++i) {
+        const QJsonObject corner = rectanglePicks.at(i).toObject();
+        QCOMPARE(corner.value(QStringLiteral("sourceImage")).toString(), QStringLiteral("viewport-A-source"));
+        QCOMPARE(corner.value(QStringLiteral("sourceImageSize")).toArray(), expectedSourceSize);
+        const QJsonArray local = corner.value(QStringLiteral("imageLocal")).toArray();
+        const QJsonArray source = corner.value(QStringLiteral("sourceImagePixel")).toArray();
+        QCOMPARE(local.size(), 2);
+        QCOMPARE(source.size(), 2);
+        QVERIFY(std::abs(local.at(0).toDouble() - expectedCorners.at(i).x()) <= 0.75);
+        QVERIFY(std::abs(local.at(1).toDouble() - expectedCorners.at(i).y()) <= 0.75);
+        QVERIFY(std::abs(source.at(0).toDouble() - (local.at(0).toDouble() + 12.0)) <= 1e-9);
+        QVERIFY(std::abs(source.at(1).toDouble() - (local.at(1).toDouble() + 18.0)) <= 1e-9);
+    }
+}
+
+void TestMainWindow::testAgentRectangleRoiUsesFixedScreenCoordinatesAndSourceMapping() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* target = viewports.first();
+    HImageWidget* imageWidget = target->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+
+    QImage image(200, 150, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    ImageData imageData(image);
+    ImageCoordinateProvenance provenance = imageData.coordinateProvenance();
+    provenance.sourceImageId = QStringLiteral("slice167-parent");
+    provenance.sourceSize = QSize(320, 240);
+    provenance.localOriginInSource = QPointF(50.0, 40.0);
+    QVERIFY(provenance.isValid());
+    imageData.setCoordinateProvenance(provenance);
+    DisplayData display;
+    display.variant() = imageData;
+    target->displayData(display);
+
+    imageWidget->setFixedSize(320, 240);
+    QCoreApplication::processEvents();
+    imageWidget->actualSize();
+    imageWidget->setZoom(2.0);
+    // Fixed screen coordinates: the image starts at (60,45), then the actual middle drag adds (15,-5).
+    QTest::mousePress(imageWidget, Qt::MiddleButton, Qt::NoModifier, QPoint(10, 10));
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(25, 5), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &panMove);
+    QTest::mouseRelease(imageWidget, Qt::MiddleButton, Qt::NoModifier, QPoint(25, 5));
+
+    const QJsonObject begun = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("rectangle_area")}});
+    QCOMPARE(begun.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QCOMPARE(begun.value(QStringLiteral("completedSteps")).toInt(), 0);
+    const QString requestId = begun.value(QStringLiteral("requestId")).toString();
+    QVERIFY(!requestId.isEmpty());
+
+    QTest::mousePress(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(155, 100));
+    QMouseEvent rectangleMove(QEvent::MouseMove, QPointF(275, 220), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &rectangleMove);
+    QTest::mouseRelease(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(275, 220));
+
+    const QJsonObject status = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                                               QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(status.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+    QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), 1);
+    const QJsonArray picks = status.value(QStringLiteral("pickedCoordinates")).toArray();
+    QCOMPARE(picks.size(), 4);
+    const QList<QPointF> expectedLocal{QPointF(40.0, 30.0), QPointF(100.0, 30.0), QPointF(100.0, 90.0),
+                                       QPointF(40.0, 90.0)};
+    const QList<QPointF> expectedSource{QPointF(90.0, 70.0), QPointF(150.0, 70.0), QPointF(150.0, 130.0),
+                                        QPointF(90.0, 130.0)};
+    for (int i = 0; i < picks.size(); ++i) {
+        const QJsonObject pick = picks.at(i).toObject();
+        const QJsonArray local = pick.value(QStringLiteral("imageLocal")).toArray();
+        const QJsonArray source = pick.value(QStringLiteral("sourceImagePixel")).toArray();
+        QCOMPARE(local.size(), 2);
+        QCOMPARE(source.size(), 2);
+        QCOMPARE(QPointF(local.at(0).toDouble(), local.at(1).toDouble()), expectedLocal.at(i));
+        QCOMPARE(pick.value(QStringLiteral("coordinateFrame")).toString(), QStringLiteral("ImageLocalPixel"));
+        QVERIFY(pick.value(QStringLiteral("sourceCoordinateAvailable")).toBool());
+        QCOMPARE(pick.value(QStringLiteral("sourceImage")).toString(), QStringLiteral("slice167-parent"));
+        QCOMPARE(pick.value(QStringLiteral("sourceImageSize")).toArray(), (QJsonArray{320, 240}));
+        QCOMPARE(QPointF(source.at(0).toDouble(), source.at(1).toDouble()), expectedSource.at(i));
+    }
+
+    QTRY_COMPARE_WITH_TIMEOUT(imageWidget->measurementPoints().size(), 2, 1000);
+    const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
+    QCOMPARE(overlayPoints.size(), 2);
+    QCOMPARE(overlayPoints.at(0).pos, expectedLocal.first());
+    QCOMPARE(overlayPoints.at(0).label, QStringLiteral("TL"));
+    QCOMPARE(overlayPoints.at(1).pos, expectedLocal.at(2));
+    QCOMPARE(overlayPoints.at(1).label, QStringLiteral("BR"));
+    const QList<MeasurementOverlayLine> overlayLines = imageWidget->measurementLines();
+    QCOMPARE(overlayLines.size(), 4);
+    QCOMPARE(overlayLines.at(0).p1, expectedLocal.at(0));
+    QCOMPARE(overlayLines.at(0).p2, expectedLocal.at(1));
+    QCOMPARE(overlayLines.at(1).p1, expectedLocal.at(1));
+    QCOMPARE(overlayLines.at(1).p2, expectedLocal.at(2));
+    QCOMPARE(overlayLines.at(2).p1, expectedLocal.at(2));
+    QCOMPARE(overlayLines.at(2).p2, expectedLocal.at(3));
+    QCOMPARE(overlayLines.at(3).p1, expectedLocal.at(3));
+    QCOMPARE(overlayLines.at(3).p2, expectedLocal.first());
+    QCOMPARE(overlayLines.at(3).label, QStringLiteral("W=60.00, H=60.00, A=3600.00"));
+}
+
+void TestMainWindow::testAgentRectangleRoiMapsRotatedScaledSourceCoordinates() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* target = viewports.first();
+    HImageWidget* imageWidget = target->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+
+    QImage image(200, 150, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    ImageData imageData(image);
+    ImageCoordinateProvenance provenance = imageData.coordinateProvenance();
+    provenance.sourceImageId = QStringLiteral("slice178-rotated-scaled-source");
+    provenance.sourceSize = QSize(400, 320);
+    provenance.localToSource = {0.0, -2.0, 300.0, 1.5, 0.0, 10.0, 0.0, 0.0, 1.0};
+    provenance.hasLocalToSourceTransform = true;
+    QVERIFY(provenance.isValid());
+    imageData.setCoordinateProvenance(provenance);
+    DisplayData display;
+    display.variant() = imageData;
+    target->displayData(display);
+
+    imageWidget->setFixedSize(320, 240);
+    QCoreApplication::processEvents();
+    imageWidget->actualSize();
+    imageWidget->setZoom(2.0);
+    QTest::mousePress(imageWidget, Qt::MiddleButton, Qt::NoModifier, QPoint(10, 10));
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(25, 5), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &panMove);
+    QTest::mouseRelease(imageWidget, Qt::MiddleButton, Qt::NoModifier, QPoint(25, 5));
+
+    const QJsonObject begun = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("rectangle_area")}});
+    QCOMPARE(begun.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QCOMPARE(begun.value(QStringLiteral("completedSteps")).toInt(), 0);
+    const QString requestId = begun.value(QStringLiteral("requestId")).toString();
+    QVERIFY(!requestId.isEmpty());
+
+    QTest::mousePress(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(155, 100));
+    QMouseEvent rectangleMove(QEvent::MouseMove, QPointF(275, 220), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &rectangleMove);
+    QTest::mouseRelease(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(275, 220));
+
+    const QJsonObject status = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                                               QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(status.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+    QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), 1);
+    const QJsonArray picks = status.value(QStringLiteral("pickedCoordinates")).toArray();
+    QCOMPARE(picks.size(), 4);
+    const QList<QPointF> expectedLocal{QPointF(40.0, 30.0), QPointF(100.0, 30.0), QPointF(100.0, 90.0),
+                                       QPointF(40.0, 90.0)};
+    const QList<QPointF> expectedSource{QPointF(240.0, 70.0), QPointF(240.0, 160.0), QPointF(120.0, 160.0),
+                                        QPointF(120.0, 70.0)};
+    for (int i = 0; i < picks.size(); ++i) {
+        const QJsonObject pick = picks.at(i).toObject();
+        const QJsonArray local = pick.value(QStringLiteral("imageLocal")).toArray();
+        const QJsonArray source = pick.value(QStringLiteral("sourceImagePixel")).toArray();
+        QCOMPARE(local.size(), 2);
+        QCOMPARE(source.size(), 2);
+        QCOMPARE(QPointF(local.at(0).toDouble(), local.at(1).toDouble()), expectedLocal.at(i));
+        QCOMPARE(QPointF(source.at(0).toDouble(), source.at(1).toDouble()), expectedSource.at(i));
+        QCOMPARE(pick.value(QStringLiteral("coordinateFrame")).toString(), QStringLiteral("ImageLocalPixel"));
+        QVERIFY(pick.value(QStringLiteral("sourceCoordinateAvailable")).toBool());
+        QCOMPARE(pick.value(QStringLiteral("sourceImage")).toString(), provenance.sourceImageId);
+        QCOMPARE(pick.value(QStringLiteral("sourceImageSize")).toArray(), (QJsonArray{400, 320}));
+    }
+
+    const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
+    QCOMPARE(overlayPoints.size(), 2);
+    QCOMPARE(overlayPoints.at(0).pos, expectedLocal.first());
+    QCOMPARE(overlayPoints.at(0).label, QStringLiteral("TL"));
+    QCOMPARE(overlayPoints.at(1).pos, expectedLocal.at(2));
+    QCOMPARE(overlayPoints.at(1).label, QStringLiteral("BR"));
+    const QList<MeasurementOverlayLine> overlayLines = imageWidget->measurementLines();
+    QCOMPARE(overlayLines.size(), 4);
+    QCOMPARE(overlayLines.at(0).p1, expectedLocal.at(0));
+    QCOMPARE(overlayLines.at(0).p2, expectedLocal.at(1));
+    QCOMPARE(overlayLines.at(1).p1, expectedLocal.at(1));
+    QCOMPARE(overlayLines.at(1).p2, expectedLocal.at(2));
+    QCOMPARE(overlayLines.at(2).p1, expectedLocal.at(2));
+    QCOMPARE(overlayLines.at(2).p2, expectedLocal.at(3));
+    QCOMPARE(overlayLines.at(3).p1, expectedLocal.at(3));
+    QCOMPARE(overlayLines.at(3).p2, expectedLocal.first());
+    QCOMPARE(overlayLines.at(3).label, QStringLiteral("W=60.00, H=60.00, A=3600.00"));
+}
+
+void TestMainWindow::testAgentQuickSegmentGapCoordinatesSurviveViewportTransforms() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* target = viewports.first();
+    QImage image(96, 72, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    ImageData imageData(image);
+    ImageCoordinateProvenance provenance = imageData.coordinateProvenance();
+    provenance.sourceImageId = QStringLiteral("viewport-A-source");
+    provenance.sourceSize = QSize(220, 160);
+    provenance.localOriginInSource = QPointF(12.0, 18.0);
+    imageData.setCoordinateProvenance(provenance);
+    DisplayData display;
+    display.variant() = imageData;
+    target->displayData(display);
+
+    HImageWidget* imageWidget = target->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+    imageWidget->resize(imageWidget->size() + QSize(20, 12));
+    QCoreApplication::processEvents();
+    imageWidget->setZoom(1.25);
+    const QPointF wheelAnchor(imageWidget->width() / 2.0, imageWidget->height() / 2.0);
+    QWheelEvent wheelEvent(wheelAnchor, imageWidget->mapToGlobal(wheelAnchor.toPoint()), QPoint(), QPoint(0, 120),
+                           Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(imageWidget, &wheelEvent);
+    const QPoint panStart = imageWidget->imageToWidget(QPointF(48.0, 36.0)).toPoint();
+    QTest::mousePress(imageWidget, Qt::MiddleButton, Qt::NoModifier, panStart);
+    const QPoint panEnd = panStart + QPoint(16, 9);
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(panEnd), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &panMove);
+    QTest::mouseRelease(imageWidget, Qt::MiddleButton, Qt::NoModifier, panEnd);
+
+    const QJsonObject begun = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("segment_gap")}});
+    QCOMPARE(begun.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    const QString requestId = begun.value(QStringLiteral("requestId")).toString();
+    QVERIFY(!requestId.isEmpty());
+
+    const QList<QPointF> requestedPoints{QPointF(10.0, 10.0), QPointF(20.0, 10.0), QPointF(30.0, 25.0),
+                                         QPointF(40.0, 25.0)};
+    QJsonObject status;
+    for (int i = 0; i < requestedPoints.size(); ++i) {
+        QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                          imageWidget->imageToWidget(requestedPoints.at(i)).toPoint());
+        status = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                                 QJsonObject{{QStringLiteral("requestId"), requestId}});
+        QCOMPARE(status.value(QStringLiteral("status")).toString(),
+                 i == requestedPoints.size() - 1 ? QStringLiteral("completed") : QStringLiteral("awaiting_user_input"));
+        QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), i + 1);
+    }
+
+    const QJsonArray picks = status.value(QStringLiteral("pickedCoordinates")).toArray();
+    QCOMPARE(picks.size(), requestedPoints.size());
+    QList<QPointF> actualPoints;
+    for (int i = 0; i < picks.size(); ++i) {
+        const QJsonObject pick = picks.at(i).toObject();
+        QCOMPARE(pick.value(QStringLiteral("coordinateFrame")).toString(), QStringLiteral("ImageLocalPixel"));
+        QCOMPARE(pick.value(QStringLiteral("sourceImage")).toString(), QStringLiteral("viewport-A-source"));
+        QCOMPARE(pick.value(QStringLiteral("sourceImageSize")).toArray(), (QJsonArray{220, 160}));
+        const QJsonArray local = pick.value(QStringLiteral("imageLocal")).toArray();
+        const QJsonArray source = pick.value(QStringLiteral("sourceImagePixel")).toArray();
+        QCOMPARE(local.size(), 2);
+        QCOMPARE(source.size(), 2);
+        const QPointF actual(local.at(0).toDouble(), local.at(1).toDouble());
+        QVERIFY(QLineF(actual, requestedPoints.at(i)).length() <= 0.75);
+        QVERIFY(std::abs(source.at(0).toDouble() - actual.x() - 12.0) <= 1e-9);
+        QVERIFY(std::abs(source.at(1).toDouble() - actual.y() - 18.0) <= 1e-9);
+        actualPoints.append(actual);
+    }
+
+    const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
+    QCOMPARE(overlayPoints.size(), 4);
+    for (int i = 0; i < overlayPoints.size(); ++i)
+        QVERIFY(QLineF(overlayPoints.at(i).pos, actualPoints.at(i)).length() <= 1e-6);
+
+    const QList<MeasurementOverlayLine> overlayLines = imageWidget->measurementLines();
+    QCOMPARE(overlayLines.size(), 3);
+    const QLineF firstSegment(actualPoints.at(0), actualPoints.at(1));
+    const QLineF secondSegment(actualPoints.at(2), actualPoints.at(3));
+    QCOMPARE(overlayLines.at(0).p1, firstSegment.p1());
+    QCOMPARE(overlayLines.at(0).p2, firstSegment.p2());
+    QCOMPARE(overlayLines.at(0).label, QStringLiteral("线1: %1").arg(firstSegment.length(), 0, 'f', 3));
+    QCOMPARE(overlayLines.at(1).p1, secondSegment.p1());
+    QCOMPARE(overlayLines.at(1).p2, secondSegment.p2());
+    QCOMPARE(overlayLines.at(1).label, QStringLiteral("线2: %1").arg(secondSegment.length(), 0, 'f', 3));
+
+    auto projectToSegment = [](const QPointF& point, const QLineF& segment) {
+        const QPointF direction = segment.p2() - segment.p1();
+        const double lengthSquared = QPointF::dotProduct(direction, direction);
+        const double t = lengthSquared > 0.0
+                             ? qBound(0.0, QPointF::dotProduct(point - segment.p1(), direction) / lengthSquared, 1.0)
+                             : 0.0;
+        return segment.p1() + t * direction;
+    };
+    QPointF closestOnFirst;
+    QPointF closestOnSecond;
+    double closestDistance = std::numeric_limits<double>::infinity();
+    auto considerClosestPair = [&](const QPointF& first, const QPointF& second) {
+        const double distance = QLineF(first, second).length();
+        if (distance < closestDistance) {
+            closestOnFirst = first;
+            closestOnSecond = second;
+            closestDistance = distance;
+        }
+    };
+    considerClosestPair(firstSegment.p1(), projectToSegment(firstSegment.p1(), secondSegment));
+    considerClosestPair(firstSegment.p2(), projectToSegment(firstSegment.p2(), secondSegment));
+    considerClosestPair(projectToSegment(secondSegment.p1(), firstSegment), secondSegment.p1());
+    considerClosestPair(projectToSegment(secondSegment.p2(), firstSegment), secondSegment.p2());
+    QVERIFY(actualPoints.at(1).x() < actualPoints.at(2).x());
+    QVERIFY(QLineF(overlayLines.at(2).p1, closestOnFirst).length() <= 1e-6);
+    QVERIFY(QLineF(overlayLines.at(2).p2, closestOnSecond).length() <= 1e-6);
+    QCOMPARE(overlayLines.at(2).label, QStringLiteral("间距: %1").arg(closestDistance, 0, 'f', 3));
+}
+
+void TestMainWindow::testAgentQuickAngleCoordinatesSurviveViewportTransforms() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* target = viewports.first();
+    QImage image(96, 72, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    ImageData imageData(image);
+    ImageCoordinateProvenance provenance = imageData.coordinateProvenance();
+    provenance.sourceImageId = QStringLiteral("viewport-A-source");
+    provenance.sourceSize = QSize(220, 160);
+    provenance.localOriginInSource = QPointF(12.0, 18.0);
+    imageData.setCoordinateProvenance(provenance);
+    DisplayData display;
+    display.variant() = imageData;
+    target->displayData(display);
+
+    HImageWidget* imageWidget = target->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+    imageWidget->resize(imageWidget->size() + QSize(20, 12));
+    QCoreApplication::processEvents();
+    imageWidget->setZoom(1.25);
+    const QPointF wheelAnchor(imageWidget->width() / 2.0, imageWidget->height() / 2.0);
+    QWheelEvent wheelEvent(wheelAnchor, imageWidget->mapToGlobal(wheelAnchor.toPoint()), QPoint(), QPoint(0, 120),
+                           Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(imageWidget, &wheelEvent);
+    const QPoint panStart = imageWidget->imageToWidget(QPointF(48.0, 36.0)).toPoint();
+    QTest::mousePress(imageWidget, Qt::MiddleButton, Qt::NoModifier, panStart);
+    const QPoint panEnd = panStart + QPoint(16, 9);
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(panEnd), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &panMove);
+    QTest::mouseRelease(imageWidget, Qt::MiddleButton, Qt::NoModifier, panEnd);
+
+    const QJsonObject begun = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("angle_3_points")}});
+    QCOMPARE(begun.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    const QString requestId = begun.value(QStringLiteral("requestId")).toString();
+    QVERIFY(!requestId.isEmpty());
+
+    const QList<QPointF> requestedPoints{QPointF(20.0, 20.0), QPointF(30.0, 20.0), QPointF(20.0, 30.0)};
+    QJsonObject status;
+    for (int i = 0; i < requestedPoints.size(); ++i) {
+        QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                          imageWidget->imageToWidget(requestedPoints.at(i)).toPoint());
+        status = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                                 QJsonObject{{QStringLiteral("requestId"), requestId}});
+        QCOMPARE(status.value(QStringLiteral("status")).toString(),
+                 i == requestedPoints.size() - 1 ? QStringLiteral("completed") : QStringLiteral("awaiting_user_input"));
+        QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), i + 1);
+    }
+
+    const QJsonArray picks = status.value(QStringLiteral("pickedCoordinates")).toArray();
+    QCOMPARE(picks.size(), requestedPoints.size());
+    QList<QPointF> actualPoints;
+    for (int i = 0; i < picks.size(); ++i) {
+        const QJsonObject pick = picks.at(i).toObject();
+        QCOMPARE(pick.value(QStringLiteral("coordinateFrame")).toString(), QStringLiteral("ImageLocalPixel"));
+        QCOMPARE(pick.value(QStringLiteral("sourceImage")).toString(), QStringLiteral("viewport-A-source"));
+        QCOMPARE(pick.value(QStringLiteral("sourceImageSize")).toArray(), (QJsonArray{220, 160}));
+        const QJsonArray local = pick.value(QStringLiteral("imageLocal")).toArray();
+        const QJsonArray source = pick.value(QStringLiteral("sourceImagePixel")).toArray();
+        QCOMPARE(local.size(), 2);
+        QCOMPARE(source.size(), 2);
+        const QPointF actual(local.at(0).toDouble(), local.at(1).toDouble());
+        QVERIFY(QLineF(actual, requestedPoints.at(i)).length() <= 0.75);
+        QVERIFY(std::abs(source.at(0).toDouble() - actual.x() - 12.0) <= 1e-9);
+        QVERIFY(std::abs(source.at(1).toDouble() - actual.y() - 18.0) <= 1e-9);
+        actualPoints.append(actual);
+    }
+
+    const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
+    QCOMPARE(overlayPoints.size(), 3);
+    for (int i = 0; i < overlayPoints.size(); ++i)
+        QVERIFY(QLineF(overlayPoints.at(i).pos, actualPoints.at(i)).length() <= 1e-6);
+
+    const QList<MeasurementOverlayLine> overlayLines = imageWidget->measurementLines();
+    QCOMPARE(overlayLines.size(), 2);
+    QCOMPARE(overlayLines.at(0).p1, actualPoints.at(0));
+    QCOMPARE(overlayLines.at(0).p2, actualPoints.at(1));
+    QVERIFY(overlayLines.at(0).label.isEmpty());
+    QCOMPARE(overlayLines.at(1).p1, actualPoints.at(0));
+    QCOMPARE(overlayLines.at(1).p2, actualPoints.at(2));
+    const QPointF firstRay = actualPoints.at(1) - actualPoints.at(0);
+    const QPointF secondRay = actualPoints.at(2) - actualPoints.at(0);
+    const double dot = QPointF::dotProduct(firstRay, secondRay);
+    const double cross = firstRay.x() * secondRay.y() - firstRay.y() * secondRay.x();
+    constexpr double pi = 3.14159265358979323846;
+    const double angleDeg = std::atan2(std::abs(cross), dot) * 180.0 / pi;
+    QVERIFY(std::abs(angleDeg - 90.0) <= 21.0);
+    QCOMPARE(overlayLines.at(1).label, QStringLiteral("角度: %1°").arg(angleDeg, 0, 'f', 2));
+}
+
+void TestMainWindow::testAgentQuickPointToLineCoordinatesSurviveViewportTransforms() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* target = viewports.first();
+    QImage image(96, 72, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    ImageData imageData(image);
+    ImageCoordinateProvenance provenance = imageData.coordinateProvenance();
+    provenance.sourceImageId = QStringLiteral("viewport-A-source");
+    provenance.sourceSize = QSize(220, 160);
+    provenance.localOriginInSource = QPointF(12.0, 18.0);
+    imageData.setCoordinateProvenance(provenance);
+    DisplayData display;
+    display.variant() = imageData;
+    target->displayData(display);
+
+    HImageWidget* imageWidget = target->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+    imageWidget->resize(imageWidget->size() + QSize(20, 12));
+    QCoreApplication::processEvents();
+    imageWidget->setZoom(1.25);
+    const QPointF wheelAnchor(imageWidget->width() / 2.0, imageWidget->height() / 2.0);
+    QWheelEvent wheelEvent(wheelAnchor, imageWidget->mapToGlobal(wheelAnchor.toPoint()), QPoint(), QPoint(0, 120),
+                           Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(imageWidget, &wheelEvent);
+    const QPoint panStart = imageWidget->imageToWidget(QPointF(48.0, 36.0)).toPoint();
+    QTest::mousePress(imageWidget, Qt::MiddleButton, Qt::NoModifier, panStart);
+    const QPoint panEnd = panStart + QPoint(16, 9);
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(panEnd), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &panMove);
+    QTest::mouseRelease(imageWidget, Qt::MiddleButton, Qt::NoModifier, panEnd);
+
+    const QJsonObject begun = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("point_to_line")}});
+    QCOMPARE(begun.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    const QString requestId = begun.value(QStringLiteral("requestId")).toString();
+    QVERIFY(!requestId.isEmpty());
+
+    const QList<QPointF> requestedPoints{QPointF(20.0, 30.0), QPointF(10.0, 10.0), QPointF(50.0, 10.0)};
+    QJsonObject status;
+    for (int i = 0; i < requestedPoints.size(); ++i) {
+        QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                          imageWidget->imageToWidget(requestedPoints.at(i)).toPoint());
+        status = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                                 QJsonObject{{QStringLiteral("requestId"), requestId}});
+        QCOMPARE(status.value(QStringLiteral("status")).toString(),
+                 i == requestedPoints.size() - 1 ? QStringLiteral("completed") : QStringLiteral("awaiting_user_input"));
+        QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), i + 1);
+    }
+
+    const QJsonArray picks = status.value(QStringLiteral("pickedCoordinates")).toArray();
+    QCOMPARE(picks.size(), requestedPoints.size());
+    QList<QPointF> actualPoints;
+    for (int i = 0; i < picks.size(); ++i) {
+        const QJsonObject pick = picks.at(i).toObject();
+        QCOMPARE(pick.value(QStringLiteral("coordinateFrame")).toString(), QStringLiteral("ImageLocalPixel"));
+        QCOMPARE(pick.value(QStringLiteral("sourceImage")).toString(), QStringLiteral("viewport-A-source"));
+        QCOMPARE(pick.value(QStringLiteral("sourceImageSize")).toArray(), (QJsonArray{220, 160}));
+        const QJsonArray local = pick.value(QStringLiteral("imageLocal")).toArray();
+        const QJsonArray source = pick.value(QStringLiteral("sourceImagePixel")).toArray();
+        QCOMPARE(local.size(), 2);
+        QCOMPARE(source.size(), 2);
+        const QPointF actual(local.at(0).toDouble(), local.at(1).toDouble());
+        QVERIFY(QLineF(actual, requestedPoints.at(i)).length() <= 0.75);
+        QVERIFY(std::abs(source.at(0).toDouble() - actual.x() - 12.0) <= 1e-9);
+        QVERIFY(std::abs(source.at(1).toDouble() - actual.y() - 18.0) <= 1e-9);
+        actualPoints.append(actual);
+    }
+
+    const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
+    QCOMPARE(overlayPoints.size(), 3);
+    for (int i = 0; i < overlayPoints.size(); ++i)
+        QVERIFY(QLineF(overlayPoints.at(i).pos, actualPoints.at(i)).length() <= 1e-6);
+
+    const QList<MeasurementOverlayLine> overlayLines = imageWidget->measurementLines();
+    QCOMPARE(overlayLines.size(), 2);
+    const QPointF point = actualPoints.at(0);
+    const QPointF lineStart = actualPoints.at(1);
+    const QPointF lineEnd = actualPoints.at(2);
+    QCOMPARE(overlayLines.at(0).p1, lineStart);
+    QCOMPARE(overlayLines.at(0).p2, lineEnd);
+    QVERIFY(overlayLines.at(0).label.isEmpty());
+    const QPointF direction = lineEnd - lineStart;
+    const double lengthSquared = QPointF::dotProduct(direction, direction);
+    const double t = qBound(0.0, QPointF::dotProduct(point - lineStart, direction) / lengthSquared, 1.0);
+    QVERIFY(t > 0.0 && t < 1.0);
+    const QPointF foot = lineStart + t * direction;
+    const double distance = QLineF(point, foot).length();
+    QCOMPARE(overlayLines.at(1).p1, point);
+    QVERIFY(QLineF(overlayLines.at(1).p2, foot).length() <= 1e-6);
+    QCOMPARE(overlayLines.at(1).label, QStringLiteral("距离: %1").arg(distance, 0, 'f', 3));
+}
+
+void TestMainWindow::testAgentQuickCircleCoordinatesSurviveViewportTransforms() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* target = viewports.first();
+    QImage image(96, 72, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    ImageData imageData(image);
+    ImageCoordinateProvenance provenance = imageData.coordinateProvenance();
+    provenance.sourceImageId = QStringLiteral("viewport-A-source");
+    provenance.sourceSize = QSize(220, 160);
+    provenance.localOriginInSource = QPointF(12.0, 18.0);
+    imageData.setCoordinateProvenance(provenance);
+    DisplayData display;
+    display.variant() = imageData;
+    target->displayData(display);
+
+    HImageWidget* imageWidget = target->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+    imageWidget->resize(imageWidget->size() + QSize(20, 12));
+    QCoreApplication::processEvents();
+    imageWidget->setZoom(1.25);
+    const QPointF wheelAnchor(imageWidget->width() / 2.0, imageWidget->height() / 2.0);
+    QWheelEvent wheelEvent(wheelAnchor, imageWidget->mapToGlobal(wheelAnchor.toPoint()), QPoint(), QPoint(0, 120),
+                           Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(imageWidget, &wheelEvent);
+    const QPoint panStart = imageWidget->imageToWidget(QPointF(48.0, 36.0)).toPoint();
+    QTest::mousePress(imageWidget, Qt::MiddleButton, Qt::NoModifier, panStart);
+    const QPoint panEnd = panStart + QPoint(16, 9);
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(panEnd), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &panMove);
+    QTest::mouseRelease(imageWidget, Qt::MiddleButton, Qt::NoModifier, panEnd);
+
+    const QJsonObject begun = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("circle_3_points")}});
+    QCOMPARE(begun.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    const QString requestId = begun.value(QStringLiteral("requestId")).toString();
+    QVERIFY(!requestId.isEmpty());
+
+    const QList<QPointF> requestedPoints{QPointF(20.0, 20.0), QPointF(30.0, 30.0), QPointF(40.0, 20.0)};
+    QJsonObject status;
+    for (int i = 0; i < requestedPoints.size(); ++i) {
+        QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                          imageWidget->imageToWidget(requestedPoints.at(i)).toPoint());
+        status = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                                 QJsonObject{{QStringLiteral("requestId"), requestId}});
+        QCOMPARE(status.value(QStringLiteral("status")).toString(),
+                 i == requestedPoints.size() - 1 ? QStringLiteral("completed") : QStringLiteral("awaiting_user_input"));
+        QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), i + 1);
+    }
+
+    const QJsonArray picks = status.value(QStringLiteral("pickedCoordinates")).toArray();
+    QCOMPARE(picks.size(), requestedPoints.size());
+    QList<QPointF> actualPoints;
+    for (int i = 0; i < picks.size(); ++i) {
+        const QJsonObject pick = picks.at(i).toObject();
+        QCOMPARE(pick.value(QStringLiteral("coordinateFrame")).toString(), QStringLiteral("ImageLocalPixel"));
+        QCOMPARE(pick.value(QStringLiteral("sourceImage")).toString(), QStringLiteral("viewport-A-source"));
+        QCOMPARE(pick.value(QStringLiteral("sourceImageSize")).toArray(), (QJsonArray{220, 160}));
+        const QJsonArray local = pick.value(QStringLiteral("imageLocal")).toArray();
+        const QJsonArray source = pick.value(QStringLiteral("sourceImagePixel")).toArray();
+        QCOMPARE(local.size(), 2);
+        QCOMPARE(source.size(), 2);
+        const QPointF actual(local.at(0).toDouble(), local.at(1).toDouble());
+        QVERIFY(QLineF(actual, requestedPoints.at(i)).length() <= 0.75);
+        QVERIFY(std::abs(source.at(0).toDouble() - actual.x() - 12.0) <= 1e-9);
+        QVERIFY(std::abs(source.at(1).toDouble() - actual.y() - 18.0) <= 1e-9);
+        actualPoints.append(actual);
+    }
+
+    const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
+    QCOMPARE(overlayPoints.size(), 4);
+    for (int i = 0; i < actualPoints.size(); ++i)
+        QVERIFY(QLineF(overlayPoints.at(i).pos, actualPoints.at(i)).length() <= 1e-6);
+
+    const QPointF a = actualPoints.at(0);
+    const QPointF u = actualPoints.at(1) - a;
+    const QPointF v = actualPoints.at(2) - a;
+    const double determinant = u.x() * v.y() - u.y() * v.x();
+    QVERIFY(std::abs(determinant) > 1e-9);
+    const double uLengthSquared = QPointF::dotProduct(u, u);
+    const double vLengthSquared = QPointF::dotProduct(v, v);
+    const QPointF q((uLengthSquared * v.y() - vLengthSquared * u.y()) / (2.0 * determinant),
+                    (u.x() * vLengthSquared - v.x() * uLengthSquared) / (2.0 * determinant));
+    const QPointF center = a + q;
+    const double radius = QLineF(a, center).length();
+    QVERIFY(QLineF(overlayPoints.at(3).pos, center).length() <= 1e-6);
+    QCOMPARE(overlayPoints.at(3).label, QStringLiteral("C"));
+    constexpr double pi = 3.14159265358979323846;
+    const QList<MeasurementOverlayLine> overlayLines = imageWidget->measurementLines();
+    QCOMPARE(overlayLines.size(), 64);
+    for (int i = 0; i < overlayLines.size(); ++i) {
+        const double angle1 = 2.0 * pi * i / overlayLines.size();
+        const double angle2 = 2.0 * pi * (i + 1) / overlayLines.size();
+        const QPointF expectedStart(center.x() + radius * std::cos(angle1), center.y() + radius * std::sin(angle1));
+        const QPointF expectedEnd(center.x() + radius * std::cos(angle2), center.y() + radius * std::sin(angle2));
+        QVERIFY(QLineF(overlayLines.at(i).p1, expectedStart).length() <= 1e-6);
+        QVERIFY(QLineF(overlayLines.at(i).p2, expectedEnd).length() <= 1e-6);
+        const QString expectedLabel =
+            i == 0 ? QStringLiteral("R=%1, C=%2").arg(radius, 0, 'f', 2).arg(2.0 * pi * radius, 0, 'f', 2) : QString();
+        QCOMPARE(overlayLines.at(i).label, expectedLabel);
+    }
+}
+
+void TestMainWindow::testAgentQuickMeasurementCancelDropsLateClickAndRoiRelease() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    ViewportWidget* target = displayManager->allViewports().first();
+    QImage image(96, 72, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    target->displayImage(image);
+    HImageWidget* imageWidget = target->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+
+    auto begin = [&controller, target](const QString& measurementType) {
+        return controller.actor()->executeTool(QStringLiteral("begin_quick_measurement"),
+                                               QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                                                           {QStringLiteral("dimension"), QStringLiteral("2d")},
+                                                           {QStringLiteral("measurementType"), measurementType}});
+    };
+    imageWidget->setMeasurementOverlay({{QPointF(3.0, 4.0), QStringLiteral("existing")}}, {});
+    const QPoint oldClick = imageWidget->imageToWidget(QPointF(20.0, 20.0)).toPoint();
+    const QJsonObject clickRequestA = begin(QStringLiteral("distance_2_points"));
+    QTest::mousePress(imageWidget, Qt::LeftButton, Qt::NoModifier, oldClick);
+    const QJsonObject cancelA = controller.actor()->executeTool(
+        QStringLiteral("cancel_quick_measurement"),
+        QJsonObject{{QStringLiteral("requestId"), clickRequestA.value(QStringLiteral("requestId"))}});
+    QCOMPARE(cancelA.value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+    const QJsonObject clickRequestB = begin(QStringLiteral("distance_2_points"));
+    QTest::mouseRelease(imageWidget, Qt::LeftButton, Qt::NoModifier, oldClick);
+    QJsonObject statusB = controller.actor()->executeTool(
+        QStringLiteral("get_quick_measurement_status"),
+        QJsonObject{{QStringLiteral("requestId"), clickRequestB.value(QStringLiteral("requestId"))}});
+    QCOMPARE(statusB.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QCOMPARE(statusB.value(QStringLiteral("completedSteps")).toInt(), 0);
+    QVERIFY(statusB.value(QStringLiteral("pickedCoordinates")).toArray().isEmpty());
+    QCOMPARE(imageWidget->measurementPoints().size(), 1);
+    QCOMPARE(imageWidget->measurementPoints().first().pos, QPointF(3.0, 4.0));
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                      imageWidget->imageToWidget(QPointF(22, 25)).toPoint());
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                      imageWidget->imageToWidget(QPointF(60, 44)).toPoint());
+    statusB = controller.actor()->executeTool(
+        QStringLiteral("get_quick_measurement_status"),
+        QJsonObject{{QStringLiteral("requestId"), clickRequestB.value(QStringLiteral("requestId"))}});
+    QCOMPARE(statusB.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+    QCOMPARE(statusB.value(QStringLiteral("completedSteps")).toInt(), 2);
+
+    const QList<MeasurementOverlayPoint> overlayBeforeOldRoiRelease = imageWidget->measurementPoints();
+    const QList<MeasurementOverlayLine> linesBeforeOldRoiRelease = imageWidget->measurementLines();
+    const QPoint oldRoiStart = imageWidget->imageToWidget(QPointF(10, 12)).toPoint();
+    const QPoint oldRoiEnd = imageWidget->imageToWidget(QPointF(30, 32)).toPoint();
+    const QJsonObject roiRequestA = begin(QStringLiteral("rectangle_area"));
+    QTest::mousePress(imageWidget, Qt::LeftButton, Qt::NoModifier, oldRoiStart);
+    QMouseEvent oldRoiMove(QEvent::MouseMove, QPointF(oldRoiEnd), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &oldRoiMove);
+    const QJsonObject cancelRoiA = controller.actor()->executeTool(
+        QStringLiteral("cancel_quick_measurement"),
+        QJsonObject{{QStringLiteral("requestId"), roiRequestA.value(QStringLiteral("requestId"))}});
+    QCOMPARE(cancelRoiA.value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+    const QJsonObject roiRequestB = begin(QStringLiteral("rectangle_area"));
+    QTest::mouseRelease(imageWidget, Qt::LeftButton, Qt::NoModifier, oldRoiEnd);
+    const QJsonObject statusRoiB = controller.actor()->executeTool(
+        QStringLiteral("get_quick_measurement_status"),
+        QJsonObject{{QStringLiteral("requestId"), roiRequestB.value(QStringLiteral("requestId"))}});
+    QCOMPARE(statusRoiB.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QCOMPARE(statusRoiB.value(QStringLiteral("completedSteps")).toInt(), 0);
+    QVERIFY(statusRoiB.value(QStringLiteral("pickedCoordinates")).toArray().isEmpty());
+    QCOMPARE(imageWidget->measurementPoints().size(), overlayBeforeOldRoiRelease.size());
+    QCOMPARE(imageWidget->measurementLines().size(), linesBeforeOldRoiRelease.size());
+    for (int i = 0; i < overlayBeforeOldRoiRelease.size(); ++i)
+        QCOMPARE(imageWidget->measurementPoints().at(i).pos, overlayBeforeOldRoiRelease.at(i).pos);
+
+    const QPoint newRoiStart = imageWidget->imageToWidget(QPointF(12, 14)).toPoint();
+    const QPoint newRoiEnd = imageWidget->imageToWidget(QPointF(40, 38)).toPoint();
+    QTest::mousePress(imageWidget, Qt::LeftButton, Qt::NoModifier, newRoiStart);
+    QMouseEvent newRoiMove(QEvent::MouseMove, QPointF(newRoiEnd), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &newRoiMove);
+    QTest::mouseRelease(imageWidget, Qt::LeftButton, Qt::NoModifier, newRoiEnd);
+    const QJsonObject completedRoiB = controller.actor()->executeTool(
+        QStringLiteral("get_quick_measurement_status"),
+        QJsonObject{{QStringLiteral("requestId"), roiRequestB.value(QStringLiteral("requestId"))}});
+    QCOMPARE(completedRoiB.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+    QCOMPARE(completedRoiB.value(QStringLiteral("completedSteps")).toInt(), 1);
+}
+
+void TestMainWindow::testAgentQuickMeasurementRequiresImageIn2DViewport() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+    ToolSchema::instance().registerDefaultTools();
+
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* target = viewports.first();
+    QVERIFY(target != nullptr);
+    const QString viewportId = target->viewportId();
+
+    const auto viewportState = [&controller, &viewportId]() {
+        const QJsonObject listed = controller.actor()->executeTool(QStringLiteral("list_viewports"), {});
+        for (const QJsonValue& item : listed.value(QStringLiteral("viewports")).toArray()) {
+            const QJsonObject entry = item.toObject();
+            if (entry.value(QStringLiteral("viewportId")).toString() == viewportId)
+                return entry;
+        }
+        return QJsonObject{};
+    };
+    const QJsonObject emptyViewport = viewportState();
+    QVERIFY(!emptyViewport.isEmpty());
+    QCOMPARE(emptyViewport.value(QStringLiteral("mode")).toString(), QStringLiteral("2d"));
+    QCOMPARE(emptyViewport.value(QStringLiteral("hasImage")).toBool(), false);
+
+    QTemporaryDir fallbackCaptureDir;
+    QVERIFY(fallbackCaptureDir.isValid());
+    const QString captureDir = qEnvironmentVariable("DEEPLUX_AGENT_CAPTURE_DIR").isEmpty()
+                                   ? fallbackCaptureDir.path()
+                                   : qEnvironmentVariable("DEEPLUX_AGENT_CAPTURE_DIR");
+    QVERIFY(QDir().mkpath(captureDir));
+    const QString beforePath = QDir(captureDir).filePath(QStringLiteral("quick-measure-no-image-before.png"));
+    QVERIFY(window.grab().save(beforePath));
+    QVERIFY(QFileInfo(beforePath).size() > 0);
+
+    const QJsonObject params{{QStringLiteral("viewportId"), viewportId},
+                             {QStringLiteral("dimension"), QStringLiteral("2d")},
+                             {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}};
+    const QJsonObject rejected = controller.actor()->executeTool(QStringLiteral("begin_quick_measurement"), params);
+    QCOMPARE(rejected.value(QStringLiteral("errorCode")).toString(), QStringLiteral("VIEWPORT_CONTENT_UNAVAILABLE"));
+    QVERIFY(rejected.contains(QStringLiteral("retryable")));
+    QVERIFY(rejected.value(QStringLiteral("retryable")).isBool());
+    QCOMPARE(rejected.value(QStringLiteral("retryable")).toBool(), false);
+    for (const QString& field : {QStringLiteral("requestId"), QStringLiteral("status"), QStringLiteral("steps"),
+                                 QStringLiteral("completedSteps"), QStringLiteral("remainingSteps"),
+                                 QStringLiteral("nextStep"), QStringLiteral("pickedCoordinates")})
+        QVERIFY(!rejected.contains(field));
+    const QString afterPath = QDir(captureDir).filePath(QStringLiteral("quick-measure-no-image-after.png"));
+    QVERIFY(window.grab().save(afterPath));
+    QVERIFY(QFileInfo(afterPath).size() > 0);
+
+    QImage image(64, 48, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    target->displayImage(image);
+    const QJsonObject loadedViewport = viewportState();
+    QCOMPARE(loadedViewport.value(QStringLiteral("mode")).toString(), QStringLiteral("2d"));
+    QCOMPARE(loadedViewport.value(QStringLiteral("hasImage")).toBool(), true);
+
+    const QJsonObject accepted = controller.actor()->executeTool(QStringLiteral("begin_quick_measurement"), params);
+    QCOMPARE(accepted.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QVERIFY(!accepted.value(QStringLiteral("requestId")).toString().isEmpty());
+    QCOMPARE(accepted.value(QStringLiteral("steps")).toArray().size(), 2);
+    const QJsonObject cancelled = controller.actor()->executeTool(
+        QStringLiteral("cancel_quick_measurement"),
+        QJsonObject{{QStringLiteral("requestId"), accepted.value(QStringLiteral("requestId"))}});
+    QCOMPARE(cancelled.value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+}
+
+void TestMainWindow::testObserverCannotStartGuiQuickMeasurement() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    ToolSchema::instance().registerDefaultTools();
+
+    QTemporaryDir appData;
+    QVERIFY(appData.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appData.path().toLocal8Bit());
+    QTemporaryDir fallbackCaptureDir;
+    QVERIFY(fallbackCaptureDir.isValid());
+    const QString captureDir = qEnvironmentVariable("DEEPLUX_AGENT_CAPTURE_DIR").isEmpty()
+                                   ? fallbackCaptureDir.path()
+                                   : qEnvironmentVariable("DEEPLUX_AGENT_CAPTURE_DIR");
+    QVERIFY(QDir().mkpath(captureDir));
+
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    QCOMPARE(controller.permissionLevel(), AgentController::PermissionLevel::Observer);
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* target = viewports.first();
+    QVERIFY(target);
+    QImage image(64, 48, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    target->displayImage(image);
+    const QString viewportId = target->viewportId();
+    const QJsonObject viewportList = controller.actor()->executeTool(QStringLiteral("list_viewports"), {});
+    bool foundTarget = false;
+    for (const QJsonValue& value : viewportList.value(QStringLiteral("viewports")).toArray()) {
+        const QJsonObject viewport = value.toObject();
+        if (viewport.value(QStringLiteral("viewportId")).toString() == viewportId) {
+            QCOMPARE(viewport.value(QStringLiteral("mode")).toString(), QStringLiteral("2d"));
+            QCOMPARE(viewport.value(QStringLiteral("hasImage")).toBool(), true);
+            foundTarget = true;
+            break;
+        }
+    }
+    QVERIFY(foundTarget);
+
+    const QString beforePath =
+        QDir(captureDir).filePath(QStringLiteral("quick-measurement-before-observer-denial.png"));
+    QVERIFY(window.grab().save(beforePath));
+    QVERIFY(QFileInfo(beforePath).size() > 0);
+    const QJsonObject params{{QStringLiteral("viewportId"), viewportId},
+                             {QStringLiteral("dimension"), QStringLiteral("2d")},
+                             {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}};
+    QCOMPARE(controller.evaluateToolGate(QStringLiteral("begin_quick_measurement"), params),
+             AgentController::ToolGate::Deny);
+    const QJsonObject denied = controller.handleToolCall(QStringLiteral("begin_quick_measurement"), params);
+    QCOMPARE(denied.value(QStringLiteral("errorCode")).toString(), QStringLiteral("PERMISSION_DENIED"));
+    QVERIFY(denied.value(QStringLiteral("retryable")).isBool());
+    QCOMPARE(denied.value(QStringLiteral("retryable")).toBool(), false);
+    for (const QString& field : {QStringLiteral("requestId"), QStringLiteral("status"), QStringLiteral("steps"),
+                                 QStringLiteral("completedSteps"), QStringLiteral("remainingSteps"),
+                                 QStringLiteral("nextStep"), QStringLiteral("pickedCoordinates")})
+        QVERIFY(!denied.contains(field));
+    QVERIFY(controller.pendingConfirmationId().isEmpty());
+    QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+
+    const QString afterPath = QDir(captureDir).filePath(QStringLiteral("quick-measurement-after-observer-denial.png"));
+    QVERIFY(window.grab().save(afterPath));
+    QVERIFY(QFileInfo(afterPath).size() > 0);
+
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+    const QJsonObject accepted = controller.handleToolCall(QStringLiteral("begin_quick_measurement"), params);
+    QCOMPARE(accepted.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    const QString requestId = accepted.value(QStringLiteral("requestId")).toString();
+    QVERIFY(!requestId.isEmpty());
+    const QJsonObject cancelled = controller.handleToolCall(QStringLiteral("cancel_quick_measurement"),
+                                                            QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(cancelled.value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+}
+
+void TestMainWindow::testAgent3DQuickMeasurementUsesWorldPicksAndDropsStaleReleases() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    ViewportWidget* target = displayManager->allViewports().first();
+    const QString otherId = displayManager->createViewport(QStringLiteral("3D pick isolation"));
+    ViewportWidget* other = displayManager->viewport(otherId);
+    QVERIFY(target != nullptr);
+    QVERIFY(other != nullptr);
+
+    const auto begin = [&controller](const QString& viewportId) {
+        return controller.actor()->executeTool(
+            QStringLiteral("begin_quick_measurement"),
+            QJsonObject{{QStringLiteral("viewportId"), viewportId},
+                        {QStringLiteral("dimension"), QStringLiteral("3d")},
+                        {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}});
+    };
+    const QJsonObject noCloud = begin(target->viewportId());
+    QCOMPARE(noCloud.value(QStringLiteral("errorCode")).toString(), QStringLiteral("VIEWPORT_CONTENT_UNAVAILABLE"));
+
+    const auto cloudAt = [](const Eigen::Vector3d& center) {
+        PointCloudData cloud;
+        cloud.points = {{center.x(), center.y(), center.z()},       {center.x() + 2.0, center.y(), center.z()},
+                        {center.x() - 2.0, center.y(), center.z()}, {center.x(), center.y() + 2.0, center.z()},
+                        {center.x(), center.y() - 2.0, center.z()}, {center.x(), center.y(), center.z() + 2.0},
+                        {center.x(), center.y(), center.z() - 2.0}};
+        return cloud;
+    };
+    const Eigen::Vector3d centerA(5.0, -3.0, 2.0);
+    const Eigen::Vector3d centerB(16777217.0, 6.0, 3.125);
+    DisplayData cloudA;
+    cloudA.variant() = cloudAt(centerA);
+    DisplayData cloudB;
+    cloudB.variant() = cloudAt(centerB);
+    target->displayData(cloudA);
+    other->displayData(cloudB);
+    Viewport3DContent* target3D = target->viewport3D();
+    Viewport3DContent* other3D = other->viewport3D();
+    QVERIFY(target3D != nullptr);
+    QVERIFY(other3D != nullptr);
+
+    const auto sendPress = [](Viewport3DContent* widget, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+        const QPoint position = widget->rect().center();
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(position), Qt::LeftButton, Qt::LeftButton, modifiers);
+        QApplication::sendEvent(widget, &press);
+    };
+    const auto sendRelease = [](Viewport3DContent* widget, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+        const QPoint position = widget->rect().center();
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(position), Qt::LeftButton, Qt::NoButton, modifiers);
+        QApplication::sendEvent(widget, &release);
+    };
+    const auto sendClickAt = [](Viewport3DContent* widget, const QPoint& position,
+                                Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(position), Qt::LeftButton, Qt::LeftButton, modifiers);
+        QApplication::sendEvent(widget, &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(position), Qt::LeftButton, Qt::NoButton, modifiers);
+        QApplication::sendEvent(widget, &release);
+    };
+    const auto sendClick = [&sendPress, &sendRelease](Viewport3DContent* widget,
+                                                      Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+        sendPress(widget, modifiers);
+        sendRelease(widget, modifiers);
+    };
+    const auto projectedCenter = [](Viewport3DContent* widget, const Eigen::Vector3d& center) {
+        const QVector3D boundsMin(static_cast<float>(center.x() - 2.0), static_cast<float>(center.y() - 2.0),
+                                  static_cast<float>(center.z() - 2.0));
+        const QVector3D boundsMax(static_cast<float>(center.x() + 2.0), static_cast<float>(center.y() + 2.0),
+                                  static_cast<float>(center.z() + 2.0));
+        CameraController camera;
+        camera.frameData(boundsMin, boundsMax);
+        const QSize size = widget->size();
+        const QMatrix4x4 projection = camera.projectionMatrix(static_cast<float>(size.width()) / size.height());
+        const QVector3D displayPoint(static_cast<float>(center.x()), static_cast<float>(center.y()),
+                                     static_cast<float>(center.z()));
+        const QVector3D projected =
+            displayPoint.project(camera.viewMatrix(), projection, QRect(0, 0, size.width(), size.height()));
+        return QPoint(projected.x(), size.height() - projected.y());
+    };
+    const auto status = [&controller](const QString& requestId) {
+        return controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                               QJsonObject{{QStringLiteral("requestId"), requestId}});
+    };
+    const auto assertWorldPick = [](const QJsonObject& response, const Eigen::Vector3d& expected) {
+        const QJsonArray picks = response.value(QStringLiteral("pickedCoordinates")).toArray();
+        QCOMPARE(picks.size(), 1);
+        const QJsonObject pick = picks.first().toObject();
+        QCOMPARE(pick.value(QStringLiteral("coordinateFrame")).toString(), QStringLiteral("World3D"));
+        const QJsonArray world = pick.value(QStringLiteral("pointCloudWorld")).toArray();
+        QCOMPARE(world.size(), 3);
+        QCOMPARE(world.at(0).toDouble(), expected.x());
+        QCOMPARE(world.at(1).toDouble(), expected.y());
+        QCOMPARE(world.at(2).toDouble(), expected.z());
+    };
+
+    QJsonObject requestA = begin(target->viewportId());
+    QCOMPARE(requestA.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    const QString requestAId = requestA.value(QStringLiteral("requestId")).toString();
+    sendClickAt(other3D, projectedCenter(other3D, centerB), Qt::ControlModifier);
+    QCOMPARE(status(requestAId).value(QStringLiteral("completedSteps")).toInt(), 0);
+    sendClick(target3D);
+    QJsonObject requestAStatus = status(requestAId);
+    QCOMPARE(requestAStatus.value(QStringLiteral("completedSteps")).toInt(), 1);
+    assertWorldPick(requestAStatus, centerA);
+    sendPress(target3D);
+    QCOMPARE(controller.actor()
+                 ->executeTool(QStringLiteral("cancel_quick_measurement"),
+                               QJsonObject{{QStringLiteral("requestId"), requestAId}})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("cancelled"));
+
+    QJsonObject requestOther = begin(other->viewportId());
+    const QString requestOtherId = requestOther.value(QStringLiteral("requestId")).toString();
+    sendClickAt(other3D, projectedCenter(other3D, centerB));
+    const QJsonObject requestOtherStatus = status(requestOtherId);
+    QCOMPARE(requestOtherStatus.value(QStringLiteral("completedSteps")).toInt(), 1);
+    assertWorldPick(requestOtherStatus, centerB);
+    controller.actor()->executeTool(QStringLiteral("cancel_quick_measurement"),
+                                    QJsonObject{{QStringLiteral("requestId"), requestOtherId}});
+
+    QJsonObject requestB = begin(target->viewportId());
+    const QString requestBId = requestB.value(QStringLiteral("requestId")).toString();
+    sendRelease(target3D); // Request A's pending release arrives after B has enabled pick mode.
+    QJsonObject requestBStatus = status(requestBId);
+    QCOMPARE(requestBStatus.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QCOMPARE(requestBStatus.value(QStringLiteral("completedSteps")).toInt(), 0);
+    QVERIFY(requestBStatus.value(QStringLiteral("pickedCoordinates")).toArray().isEmpty());
+    QVERIFY(target3D->measurementPoints3D().isEmpty());
+    sendClickAt(target3D, projectedCenter(target3D, centerA));
+    requestBStatus = status(requestBId);
+    QCOMPARE(requestBStatus.value(QStringLiteral("completedSteps")).toInt(), 1);
+    assertWorldPick(requestBStatus, centerA);
+    controller.actor()->executeTool(QStringLiteral("cancel_quick_measurement"),
+                                    QJsonObject{{QStringLiteral("requestId"), requestBId}});
+
+    QJsonObject requestC = begin(target->viewportId());
+    const QString requestCId = requestC.value(QStringLiteral("requestId")).toString();
+    sendPress(target3D);
+    target->displayData(cloudB);
+    QCOMPARE(status(requestCId).value(QStringLiteral("status")).toString(), QStringLiteral("expired"));
+
+    QJsonObject requestD = begin(target->viewportId());
+    const QString requestDId = requestD.value(QStringLiteral("requestId")).toString();
+    sendRelease(target3D); // Old-cloud release is delivered after the new-cloud request starts.
+    QJsonObject requestDStatus = status(requestDId);
+    QCOMPARE(requestDStatus.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QCOMPARE(requestDStatus.value(QStringLiteral("completedSteps")).toInt(), 0);
+    QVERIFY(requestDStatus.value(QStringLiteral("pickedCoordinates")).toArray().isEmpty());
+    QVERIFY(target3D->measurementPoints3D().isEmpty());
+    sendClickAt(target3D, projectedCenter(target3D, centerB));
+    requestDStatus = status(requestDId);
+    QCOMPARE(requestDStatus.value(QStringLiteral("completedSteps")).toInt(), 1);
+    assertWorldPick(requestDStatus, centerB);
+}
+
+void TestMainWindow::testAgent3DQuickMeasurementPicksWorldPointsAfterCameraTransforms() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    ViewportWidget* target = displayManager->allViewports().first();
+    QVERIFY(target != nullptr);
+
+    const Eigen::Vector3d first(5.0, -3.0, 2.0);
+    const Eigen::Vector3d second(7.0, -3.0, 2.0);
+    const QList<Eigen::Vector3d> cloudPoints{first,
+                                             second,
+                                             Eigen::Vector3d(3.0, -3.0, 2.0),
+                                             Eigen::Vector3d(5.0, -1.0, 2.0),
+                                             Eigen::Vector3d(5.0, -5.0, 2.0),
+                                             Eigen::Vector3d(5.0, -3.0, 4.0),
+                                             Eigen::Vector3d(5.0, -3.0, 0.0)};
+    PointCloudData cloud;
+    for (const Eigen::Vector3d& point : cloudPoints)
+        cloud.points.push_back(point);
+    DisplayData display;
+    display.variant() = cloud;
+    target->displayData(display);
+    Viewport3DContent* content = target->viewport3D();
+    QVERIFY(content != nullptr);
+    QVERIFY(content->width() > 100);
+    QVERIFY(content->height() > 100);
+
+    const QJsonObject begun = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("3d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}});
+    QCOMPARE(begun.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QCOMPARE(begun.value(QStringLiteral("completedSteps")).toInt(), 0);
+    const QString requestId = begun.value(QStringLiteral("requestId")).toString();
+    QVERIFY(!requestId.isEmpty());
+
+    CameraController oracle;
+    oracle.frameData(QVector3D(3.0f, -5.0f, 0.0f), QVector3D(7.0f, -1.0f, 4.0f));
+    const QPoint wheelPosition = content->rect().center();
+    QWheelEvent wheel(QPointF(wheelPosition), content->mapToGlobal(wheelPosition), QPoint(), QPoint(0, 480),
+                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(content, &wheel);
+    oracle.zoom(0.6f);
+
+    const QPoint orbitStart(100, 100);
+    const QPoint orbitEnd(220, 170);
+    QMouseEvent orbitPress(QEvent::MouseButtonPress, QPointF(orbitStart), Qt::LeftButton, Qt::LeftButton,
+                           Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitPress);
+    QMouseEvent orbitMove(QEvent::MouseMove, QPointF(orbitEnd), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitMove);
+    QMouseEvent orbitRelease(QEvent::MouseButtonRelease, QPointF(orbitEnd), Qt::LeftButton, Qt::NoButton,
+                             Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitRelease);
+    oracle.orbit(120.0f * 0.005f, -70.0f * 0.005f);
+
+    QJsonObject status = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                                         QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(status.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), 0);
+    QVERIFY(status.value(QStringLiteral("pickedCoordinates")).toArray().isEmpty());
+    QVERIFY(content->measurementPoints3D().isEmpty());
+
+    const QSize viewportSize = content->size();
+    const QMatrix4x4 projection =
+        oracle.projectionMatrix(static_cast<float>(viewportSize.width()) / viewportSize.height());
+    const auto project = [&oracle, &projection, &viewportSize](const Eigen::Vector3d& point) {
+        const QVector3D world(static_cast<float>(point.x()), static_cast<float>(point.y()),
+                              static_cast<float>(point.z()));
+        const QVector3D projected =
+            world.project(oracle.viewMatrix(), projection, QRect(0, 0, viewportSize.width(), viewportSize.height()));
+        return QPointF(projected.x(), viewportSize.height() - projected.y());
+    };
+    QList<QPoint> clickPositions;
+    for (const Eigen::Vector3d& expected : {first, second}) {
+        const QPoint projectedClick = project(expected).toPoint();
+        QVERIFY(content->rect().contains(projectedClick));
+        QVERIFY(QLineF(QPointF(projectedClick), project(expected)).length() < 12.0);
+        for (const Eigen::Vector3d& candidate : cloudPoints) {
+            if ((candidate - expected).squaredNorm() == 0.0)
+                continue;
+            QVERIFY2(QLineF(QPointF(projectedClick), project(candidate)).length() >= 14.0,
+                     "Projected click must be at least 14 px from every non-target point");
+        }
+        clickPositions.append(projectedClick);
+    }
+    const auto click = [content](const QPoint& position) {
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(position), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(content, &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(position), Qt::LeftButton, Qt::NoButton,
+                            Qt::NoModifier);
+        QApplication::sendEvent(content, &release);
+    };
+
+    click(clickPositions.at(0));
+    status = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                             QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(status.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), 1);
+    QJsonArray picks = status.value(QStringLiteral("pickedCoordinates")).toArray();
+    QCOMPARE(picks.size(), 1);
+    QCOMPARE(picks.first().toObject().value(QStringLiteral("coordinateFrame")).toString(), QStringLiteral("World3D"));
+    QCOMPARE(picks.first().toObject().value(QStringLiteral("pointCloudWorld")).toArray(),
+             (QJsonArray{first.x(), first.y(), first.z()}));
+    auto overlayPoints = content->measurementPoints3D();
+    QCOMPARE(overlayPoints.size(), 1);
+    QCOMPARE(overlayPoints.first().label, QStringLiteral("P1"));
+    QCOMPARE(overlayPoints.first().pos.x(), first.x());
+    QCOMPARE(overlayPoints.first().pos.y(), first.y());
+    QCOMPARE(overlayPoints.first().pos.z(), first.z());
+
+    click(clickPositions.at(1));
+    status = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                             QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(status.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+    QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), 2);
+    picks = status.value(QStringLiteral("pickedCoordinates")).toArray();
+    QCOMPARE(picks.size(), 2);
+    QCOMPARE(picks.at(1).toObject().value(QStringLiteral("coordinateFrame")).toString(), QStringLiteral("World3D"));
+    QCOMPARE(picks.at(1).toObject().value(QStringLiteral("pointCloudWorld")).toArray(),
+             (QJsonArray{second.x(), second.y(), second.z()}));
+    overlayPoints = content->measurementPoints3D();
+    QCOMPARE(overlayPoints.size(), 2);
+    QCOMPARE(overlayPoints.at(0).label, QStringLiteral("P1"));
+    QCOMPARE(overlayPoints.at(0).pos.x(), first.x());
+    QCOMPARE(overlayPoints.at(0).pos.y(), first.y());
+    QCOMPARE(overlayPoints.at(0).pos.z(), first.z());
+    QCOMPARE(overlayPoints.at(1).label, QStringLiteral("P2"));
+    QCOMPARE(overlayPoints.at(1).pos.x(), second.x());
+    QCOMPARE(overlayPoints.at(1).pos.y(), second.y());
+    QCOMPARE(overlayPoints.at(1).pos.z(), second.z());
+    const auto overlayLines = content->measurementLines3D();
+    QCOMPARE(overlayLines.size(), 1);
+    QCOMPARE(overlayLines.first().p1.x(), first.x());
+    QCOMPARE(overlayLines.first().p1.y(), first.y());
+    QCOMPARE(overlayLines.first().p1.z(), first.z());
+    QCOMPARE(overlayLines.first().p2.x(), second.x());
+    QCOMPARE(overlayLines.first().p2.y(), second.y());
+    QCOMPARE(overlayLines.first().p2.z(), second.z());
+    QVERIFY(overlayLines.first().label.contains(QStringLiteral("2.000")));
+}
+
+void TestMainWindow::testAgent3DQuickPointToLinePicksAfterCameraTransformsAndCancelsSafely() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* target = viewports.first();
+    const QString otherId = displayManager->createViewport(QStringLiteral("point_to_line isolation"));
+    ViewportWidget* other = displayManager->viewport(otherId);
+    QVERIFY(target != nullptr);
+    QVERIFY(other != nullptr);
+
+    const Eigen::Vector3d point(5.0, -3.0, 2.0);
+    const Eigen::Vector3d lineStart(7.0, -3.0, 2.0);
+    const Eigen::Vector3d lineEnd(5.0, -3.0, 4.0);
+    const QList<Eigen::Vector3d> targetPoints{point,
+                                              lineStart,
+                                              lineEnd,
+                                              Eigen::Vector3d(3.0, -3.0, 2.0),
+                                              Eigen::Vector3d(5.0, -1.0, 2.0),
+                                              Eigen::Vector3d(5.0, -5.0, 2.0),
+                                              Eigen::Vector3d(5.0, -3.0, 0.0),
+                                              Eigen::Vector3d(7.0, -5.0, 2.0),
+                                              Eigen::Vector3d(7.0, -3.0, 4.0),
+                                              Eigen::Vector3d(3.0, -3.0, 4.0)};
+    PointCloudData targetCloud;
+    for (const Eigen::Vector3d& candidate : targetPoints)
+        targetCloud.points.push_back(candidate);
+    DisplayData targetDisplay;
+    targetDisplay.variant() = targetCloud;
+    target->displayData(targetDisplay);
+
+    const Eigen::Vector3d otherPoint(105.0, 203.0, 307.0);
+    const QList<Eigen::Vector3d> otherCandidates{otherPoint,
+                                                 Eigen::Vector3d(107.0, 203.0, 307.0),
+                                                 Eigen::Vector3d(103.0, 203.0, 307.0),
+                                                 Eigen::Vector3d(105.0, 205.0, 307.0),
+                                                 Eigen::Vector3d(105.0, 201.0, 307.0),
+                                                 Eigen::Vector3d(105.0, 203.0, 309.0),
+                                                 Eigen::Vector3d(105.0, 203.0, 305.0)};
+    PointCloudData otherCloud;
+    otherCloud.points = {otherPoint,
+                         Eigen::Vector3d(107.0, 203.0, 307.0),
+                         Eigen::Vector3d(103.0, 203.0, 307.0),
+                         Eigen::Vector3d(105.0, 205.0, 307.0),
+                         Eigen::Vector3d(105.0, 201.0, 307.0),
+                         Eigen::Vector3d(105.0, 203.0, 309.0),
+                         Eigen::Vector3d(105.0, 203.0, 305.0)};
+    DisplayData otherDisplay;
+    otherDisplay.variant() = otherCloud;
+    other->displayData(otherDisplay);
+    QCoreApplication::processEvents();
+
+    Viewport3DContent* target3D = target->viewport3D();
+    Viewport3DContent* other3D = other->viewport3D();
+    QVERIFY(target3D != nullptr);
+    QVERIFY(other3D != nullptr);
+    QVERIFY(target3D->width() > 100);
+    QVERIFY(target3D->height() > 100);
+    QTRY_VERIFY(other3D->width() > 100);
+    QTRY_VERIFY(other3D->height() > 100);
+
+    CameraController targetOracle;
+    targetOracle.frameData(QVector3D(3.0f, -5.0f, 0.0f), QVector3D(7.0f, -1.0f, 4.0f));
+    const QPoint wheelPosition = target3D->rect().center();
+    QWheelEvent wheel(QPointF(wheelPosition), target3D->mapToGlobal(wheelPosition), QPoint(), QPoint(0, 480),
+                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(target3D, &wheel);
+    targetOracle.zoom(0.6f);
+    const QPoint orbitStart(100, 100);
+    const QPoint orbitEnd(220, 170);
+    QMouseEvent orbitPress(QEvent::MouseButtonPress, QPointF(orbitStart), Qt::LeftButton, Qt::LeftButton,
+                           Qt::NoModifier);
+    QApplication::sendEvent(target3D, &orbitPress);
+    QMouseEvent orbitMove(QEvent::MouseMove, QPointF(orbitEnd), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(target3D, &orbitMove);
+    QMouseEvent orbitRelease(QEvent::MouseButtonRelease, QPointF(orbitEnd), Qt::LeftButton, Qt::NoButton,
+                             Qt::NoModifier);
+    QApplication::sendEvent(target3D, &orbitRelease);
+    targetOracle.orbit(120.0f * 0.005f, -70.0f * 0.005f);
+
+    const auto projected = [](Viewport3DContent* content, const CameraController& camera,
+                              const Eigen::Vector3d& value) {
+        const QSize size = content->size();
+        const QMatrix4x4 projection = camera.projectionMatrix(static_cast<float>(size.width()) / size.height());
+        const QVector3D world(static_cast<float>(value.x()), static_cast<float>(value.y()),
+                              static_cast<float>(value.z()));
+        const QVector3D pixel =
+            world.project(camera.viewMatrix(), projection, QRect(0, 0, size.width(), size.height()));
+        return QPointF(pixel.x(), size.height() - pixel.y());
+    };
+    const auto assertUniqueTarget = [&projected](Viewport3DContent* content, const CameraController& camera,
+                                                 const Eigen::Vector3d& expected,
+                                                 const QList<Eigen::Vector3d>& candidates, QPoint& clickPosition) {
+        clickPosition = projected(content, camera, expected).toPoint();
+        QVERIFY(content->rect().contains(clickPosition));
+        QVERIFY(QLineF(QPointF(clickPosition), projected(content, camera, expected)).length() < 12.0);
+        for (const Eigen::Vector3d& candidate : candidates) {
+            if ((candidate - expected).squaredNorm() == 0.0)
+                continue;
+            const double distance = QLineF(QPointF(clickPosition), projected(content, camera, candidate)).length();
+            const QByteArray failure = QStringLiteral("Target (%1,%2,%3) is only %4 px from candidate (%5,%6,%7)")
+                                           .arg(expected.x())
+                                           .arg(expected.y())
+                                           .arg(expected.z())
+                                           .arg(distance)
+                                           .arg(candidate.x())
+                                           .arg(candidate.y())
+                                           .arg(candidate.z())
+                                           .toLocal8Bit();
+            QVERIFY2(distance >= 14.0, failure.constData());
+        }
+    };
+
+    CameraController otherOracle;
+    otherOracle.frameData(QVector3D(103.0f, 201.0f, 305.0f), QVector3D(107.0f, 205.0f, 309.0f));
+    const QPoint otherWheelPosition = other3D->rect().center();
+    QWheelEvent otherWheel(QPointF(otherWheelPosition), other3D->mapToGlobal(otherWheelPosition), QPoint(),
+                           QPoint(0, 480), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(other3D, &otherWheel);
+    otherOracle.zoom(0.6f);
+    QMouseEvent otherOrbitPress(QEvent::MouseButtonPress, QPointF(orbitStart), Qt::LeftButton, Qt::LeftButton,
+                                Qt::NoModifier);
+    QApplication::sendEvent(other3D, &otherOrbitPress);
+    QMouseEvent otherOrbitMove(QEvent::MouseMove, QPointF(orbitEnd), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(other3D, &otherOrbitMove);
+    QMouseEvent otherOrbitRelease(QEvent::MouseButtonRelease, QPointF(orbitEnd), Qt::LeftButton, Qt::NoButton,
+                                  Qt::NoModifier);
+    QApplication::sendEvent(other3D, &otherOrbitRelease);
+    otherOracle.orbit(120.0f * 0.005f, -70.0f * 0.005f);
+    QPoint otherPointClick;
+    assertUniqueTarget(other3D, otherOracle, otherPoint, otherCandidates, otherPointClick);
+    QPoint pointClick;
+    QPoint lineStartClick;
+    QPoint lineEndClick;
+    assertUniqueTarget(target3D, targetOracle, point, targetPoints, pointClick);
+    assertUniqueTarget(target3D, targetOracle, lineStart, targetPoints, lineStartClick);
+    assertUniqueTarget(target3D, targetOracle, lineEnd, targetPoints, lineEndClick);
+    const auto click = [](Viewport3DContent* content, const QPoint& position) {
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(position), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(content, &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(position), Qt::LeftButton, Qt::NoButton,
+                            Qt::NoModifier);
+        QApplication::sendEvent(content, &release);
+    };
+    const auto press = [](Viewport3DContent* content, const QPoint& position) {
+        QMouseEvent event(QEvent::MouseButtonPress, QPointF(position), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(content, &event);
+    };
+    const auto release = [](Viewport3DContent* content, const QPoint& position) {
+        QMouseEvent event(QEvent::MouseButtonRelease, QPointF(position), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(content, &event);
+    };
+    const auto begin = [&controller, target]() {
+        return controller.actor()->executeTool(
+            QStringLiteral("begin_quick_measurement"),
+            QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                        {QStringLiteral("dimension"), QStringLiteral("3d")},
+                        {QStringLiteral("measurementType"), QStringLiteral("point_to_line")}});
+    };
+    const auto queryStatus = [&controller](const QString& requestId) {
+        return controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                               QJsonObject{{QStringLiteral("requestId"), requestId}});
+    };
+
+    QJsonObject begun = begin();
+    QCOMPARE(begun.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QCOMPARE(begun.value(QStringLiteral("completedSteps")).toInt(), 0);
+    QString requestId = begun.value(QStringLiteral("requestId")).toString();
+    QVERIFY(!requestId.isEmpty());
+    click(other3D, otherPointClick);
+    QJsonObject status = queryStatus(requestId);
+    QCOMPARE(status.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), 0);
+    QVERIFY(status.value(QStringLiteral("pickedCoordinates")).toArray().isEmpty());
+    QVERIFY(target3D->measurementPoints3D().isEmpty());
+    click(target3D, pointClick);
+    status = queryStatus(requestId);
+    QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), 1);
+    QCOMPARE(status.value(QStringLiteral("pickedCoordinates")).toArray().size(), 1);
+    QCOMPARE(target3D->measurementPoints3D().size(), 1);
+    QCOMPARE(target3D->measurementPoints3D().first().label, QStringLiteral("P1"));
+    QCOMPARE(target3D->measurementPoints3D().first().pos.x(), point.x());
+    QCOMPARE(target3D->measurementPoints3D().first().pos.y(), point.y());
+    QCOMPARE(target3D->measurementPoints3D().first().pos.z(), point.z());
+
+    press(target3D, lineStartClick);
+    const QJsonObject cancelled = controller.actor()->executeTool(
+        QStringLiteral("cancel_quick_measurement"), QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(cancelled.value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+    const auto cancelledOverlayPoints = target3D->measurementPoints3D();
+    const auto cancelledOverlayLines = target3D->measurementLines3D();
+    release(target3D, lineStartClick);
+    status = queryStatus(requestId);
+    QCOMPARE(status.value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+    QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), 1);
+    const QJsonArray cancelledPicks = status.value(QStringLiteral("pickedCoordinates")).toArray();
+    QCOMPARE(cancelledPicks.size(), 1);
+    QCOMPARE(cancelledPicks.first().toObject().value(QStringLiteral("coordinateFrame")).toString(),
+             QStringLiteral("World3D"));
+    QCOMPARE(cancelledPicks.first().toObject().value(QStringLiteral("pointCloudWorld")).toArray(),
+             (QJsonArray{point.x(), point.y(), point.z()}));
+    const auto pointsAfterCancelledRelease = target3D->measurementPoints3D();
+    QCOMPARE(pointsAfterCancelledRelease.size(), cancelledOverlayPoints.size());
+    const auto linesAfterCancelledRelease = target3D->measurementLines3D();
+    QCOMPARE(linesAfterCancelledRelease.size(), cancelledOverlayLines.size());
+
+    begun = begin();
+    QCOMPARE(begun.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    requestId = begun.value(QStringLiteral("requestId")).toString();
+    QVERIFY(!requestId.isEmpty());
+    const QList<Eigen::Vector3d> expectedPoints{point, lineStart, lineEnd};
+    const QList<QPoint> clicks{pointClick, lineStartClick, lineEndClick};
+    for (int index = 0; index < expectedPoints.size(); ++index) {
+        click(target3D, clicks.at(index));
+        status = queryStatus(requestId);
+        QCOMPARE(status.value(QStringLiteral("status")).toString(),
+                 index == 2 ? QStringLiteral("completed") : QStringLiteral("awaiting_user_input"));
+        QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), index + 1);
+        const QJsonArray picks = status.value(QStringLiteral("pickedCoordinates")).toArray();
+        QCOMPARE(picks.size(), index + 1);
+        const QJsonObject picked = picks.at(index).toObject();
+        QCOMPARE(picked.value(QStringLiteral("coordinateFrame")).toString(), QStringLiteral("World3D"));
+        QCOMPARE(
+            picked.value(QStringLiteral("pointCloudWorld")).toArray(),
+            (QJsonArray{expectedPoints.at(index).x(), expectedPoints.at(index).y(), expectedPoints.at(index).z()}));
+    }
+
+    const auto overlayPoints = target3D->measurementPoints3D();
+    QCOMPARE(overlayPoints.size(), 3);
+    for (int index = 0; index < expectedPoints.size(); ++index) {
+        QCOMPARE(overlayPoints.at(index).label, index == 0   ? QStringLiteral("P")
+                                                : index == 1 ? QStringLiteral("L1")
+                                                             : QStringLiteral("L2"));
+        QCOMPARE(overlayPoints.at(index).pos.x(), expectedPoints.at(index).x());
+        QCOMPARE(overlayPoints.at(index).pos.y(), expectedPoints.at(index).y());
+        QCOMPARE(overlayPoints.at(index).pos.z(), expectedPoints.at(index).z());
+    }
+    const auto overlayLines = target3D->measurementLines3D();
+    QCOMPARE(overlayLines.size(), 2);
+    QCOMPARE(overlayLines.at(0).p1.x(), lineStart.x());
+    QCOMPARE(overlayLines.at(0).p1.y(), lineStart.y());
+    QCOMPARE(overlayLines.at(0).p1.z(), lineStart.z());
+    QCOMPARE(overlayLines.at(0).p2.x(), lineEnd.x());
+    QCOMPARE(overlayLines.at(0).p2.y(), lineEnd.y());
+    QCOMPARE(overlayLines.at(0).p2.z(), lineEnd.z());
+    QCOMPARE(overlayLines.at(1).p1.x(), point.x());
+    QCOMPARE(overlayLines.at(1).p1.y(), point.y());
+    QCOMPARE(overlayLines.at(1).p1.z(), point.z());
+    QCOMPARE(overlayLines.at(1).p2.x(), 6.0);
+    QCOMPARE(overlayLines.at(1).p2.y(), -3.0);
+    QCOMPARE(overlayLines.at(1).p2.z(), 3.0);
+    QVERIFY(overlayLines.at(1).label.contains(QStringLiteral("1.414")));
+
+    const QJsonArray completedPicks = status.value(QStringLiteral("pickedCoordinates")).toArray();
+    const auto completedOverlayPoints = target3D->measurementPoints3D();
+    const auto completedOverlayLines = target3D->measurementLines3D();
+    press(target3D, pointClick);
+    release(target3D, pointClick);
+    status = queryStatus(requestId);
+    QCOMPARE(status.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+    QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), 3);
+    QCOMPARE(status.value(QStringLiteral("pickedCoordinates")).toArray(), completedPicks);
+    const auto pointsAfterLateEvent = target3D->measurementPoints3D();
+    QCOMPARE(pointsAfterLateEvent.size(), completedOverlayPoints.size());
+    for (int index = 0; index < completedOverlayPoints.size(); ++index) {
+        QCOMPARE(pointsAfterLateEvent.at(index).label, completedOverlayPoints.at(index).label);
+        QCOMPARE(pointsAfterLateEvent.at(index).pos.x(), completedOverlayPoints.at(index).pos.x());
+        QCOMPARE(pointsAfterLateEvent.at(index).pos.y(), completedOverlayPoints.at(index).pos.y());
+        QCOMPARE(pointsAfterLateEvent.at(index).pos.z(), completedOverlayPoints.at(index).pos.z());
+    }
+    const auto linesAfterLateEvent = target3D->measurementLines3D();
+    QCOMPARE(linesAfterLateEvent.size(), completedOverlayLines.size());
+    for (int index = 0; index < completedOverlayLines.size(); ++index) {
+        QCOMPARE(linesAfterLateEvent.at(index).label, completedOverlayLines.at(index).label);
+        QCOMPARE(linesAfterLateEvent.at(index).p1.x(), completedOverlayLines.at(index).p1.x());
+        QCOMPARE(linesAfterLateEvent.at(index).p1.y(), completedOverlayLines.at(index).p1.y());
+        QCOMPARE(linesAfterLateEvent.at(index).p1.z(), completedOverlayLines.at(index).p1.z());
+        QCOMPARE(linesAfterLateEvent.at(index).p2.x(), completedOverlayLines.at(index).p2.x());
+        QCOMPARE(linesAfterLateEvent.at(index).p2.y(), completedOverlayLines.at(index).p2.y());
+        QCOMPARE(linesAfterLateEvent.at(index).p2.z(), completedOverlayLines.at(index).p2.z());
+    }
+}
+
+void TestMainWindow::testAgent3DSegmentGapPicksAfterCameraTransforms() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* target = viewports.first();
+    QVERIFY(target != nullptr);
+
+    const Eigen::Vector3d a1(4.0, -4.0, 1.0);
+    const Eigen::Vector3d a2(6.0, -4.0, 1.0);
+    const Eigen::Vector3d b1(7.0, -2.0, 3.0);
+    const Eigen::Vector3d b2(7.0, -4.0, 3.0);
+    const QList<Eigen::Vector3d> candidates{
+        a1, a2, b1, b2, Eigen::Vector3d(3.0, -5.0, 0.0), Eigen::Vector3d(8.0, -1.0, 4.0)};
+    PointCloudData cloud;
+    for (const Eigen::Vector3d& candidate : candidates)
+        cloud.points.push_back(candidate);
+    DisplayData display;
+    display.variant() = cloud;
+    target->displayData(display);
+    Viewport3DContent* content = target->viewport3D();
+    QVERIFY(content != nullptr);
+    QVERIFY(content->width() > 100);
+    QVERIFY(content->height() > 100);
+
+    CameraController oracle;
+    oracle.frameData(QVector3D(3.0f, -5.0f, 0.0f), QVector3D(8.0f, -1.0f, 4.0f));
+    const QPoint wheelPosition = content->rect().center();
+    QWheelEvent wheel(QPointF(wheelPosition), content->mapToGlobal(wheelPosition), QPoint(), QPoint(0, 480),
+                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(content, &wheel);
+    oracle.zoom(0.6f);
+    const QPoint orbitStart(100, 100);
+    const QPoint orbitEnd(220, 170);
+    QMouseEvent orbitPress(QEvent::MouseButtonPress, QPointF(orbitStart), Qt::LeftButton, Qt::LeftButton,
+                           Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitPress);
+    QMouseEvent orbitMove(QEvent::MouseMove, QPointF(orbitEnd), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitMove);
+    QMouseEvent orbitRelease(QEvent::MouseButtonRelease, QPointF(orbitEnd), Qt::LeftButton, Qt::NoButton,
+                             Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitRelease);
+    oracle.orbit(120.0f * 0.005f, -70.0f * 0.005f);
+
+    const auto project = [&oracle, content](const Eigen::Vector3d& point) {
+        const QSize size = content->size();
+        const QMatrix4x4 projection = oracle.projectionMatrix(static_cast<float>(size.width()) / size.height());
+        const QVector3D world(static_cast<float>(point.x()), static_cast<float>(point.y()),
+                              static_cast<float>(point.z()));
+        const QVector3D pixel =
+            world.project(oracle.viewMatrix(), projection, QRect(0, 0, size.width(), size.height()));
+        return QPointF(pixel.x(), size.height() - pixel.y());
+    };
+    QList<QPoint> clicks;
+    for (const Eigen::Vector3d& expected : {a1, a2, b1, b2}) {
+        const QPoint click = project(expected).toPoint();
+        QVERIFY(content->rect().contains(click));
+        QVERIFY(QLineF(QPointF(click), project(expected)).length() < 12.0);
+        for (const Eigen::Vector3d& candidate : candidates) {
+            if ((candidate - expected).squaredNorm() == 0.0)
+                continue;
+            QVERIFY2(QLineF(QPointF(click), project(candidate)).length() >= 14.0,
+                     "Projected click must be at least 14 px from every non-target point");
+        }
+        clicks.append(click);
+    }
+
+    const QJsonObject begun = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("3d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("segment_gap")}});
+    QCOMPARE(begun.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QCOMPARE(begun.value(QStringLiteral("completedSteps")).toInt(), 0);
+    const QString requestId = begun.value(QStringLiteral("requestId")).toString();
+    QVERIFY(!requestId.isEmpty());
+    const QList<Eigen::Vector3d> expectedPoints{a1, a2, b1, b2};
+    const QList<QString> expectedLabels{QStringLiteral("L1-1"), QStringLiteral("L1-2"), QStringLiteral("L2-1"),
+                                        QStringLiteral("L2-2")};
+    for (int index = 0; index < expectedPoints.size(); ++index) {
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(clicks.at(index)), Qt::LeftButton, Qt::LeftButton,
+                          Qt::NoModifier);
+        QApplication::sendEvent(content, &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(clicks.at(index)), Qt::LeftButton, Qt::NoButton,
+                            Qt::NoModifier);
+        QApplication::sendEvent(content, &release);
+        const QJsonObject status = controller.actor()->executeTool(
+            QStringLiteral("get_quick_measurement_status"), QJsonObject{{QStringLiteral("requestId"), requestId}});
+        QCOMPARE(status.value(QStringLiteral("status")).toString(),
+                 index == 3 ? QStringLiteral("completed") : QStringLiteral("awaiting_user_input"));
+        QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), index + 1);
+        const QJsonArray picks = status.value(QStringLiteral("pickedCoordinates")).toArray();
+        QCOMPARE(picks.size(), index + 1);
+        const QJsonObject pick = picks.last().toObject();
+        QCOMPARE(pick.value(QStringLiteral("coordinateFrame")).toString(), QStringLiteral("World3D"));
+        QCOMPARE(
+            pick.value(QStringLiteral("pointCloudWorld")).toArray(),
+            (QJsonArray{expectedPoints.at(index).x(), expectedPoints.at(index).y(), expectedPoints.at(index).z()}));
+    }
+
+    QTRY_COMPARE_WITH_TIMEOUT(content->measurementPoints3D().size(), 4, 1000);
+    const auto overlayPoints = content->measurementPoints3D();
+    QCOMPARE(overlayPoints.size(), 4);
+    for (int index = 0; index < expectedPoints.size(); ++index) {
+        QCOMPARE(overlayPoints.at(index).label, expectedLabels.at(index));
+        QCOMPARE(overlayPoints.at(index).pos.x(), expectedPoints.at(index).x());
+        QCOMPARE(overlayPoints.at(index).pos.y(), expectedPoints.at(index).y());
+        QCOMPARE(overlayPoints.at(index).pos.z(), expectedPoints.at(index).z());
+    }
+    const auto overlayLines = content->measurementLines3D();
+    QCOMPARE(overlayLines.size(), 3);
+    const QList<QPair<Eigen::Vector3d, Eigen::Vector3d>> expectedLines{qMakePair(a1, a2), qMakePair(b1, b2),
+                                                                       qMakePair(a2, b2)};
+    for (int index = 0; index < expectedLines.size(); ++index) {
+        QCOMPARE(overlayLines.at(index).p1.x(), expectedLines.at(index).first.x());
+        QCOMPARE(overlayLines.at(index).p1.y(), expectedLines.at(index).first.y());
+        QCOMPARE(overlayLines.at(index).p1.z(), expectedLines.at(index).first.z());
+        QCOMPARE(overlayLines.at(index).p2.x(), expectedLines.at(index).second.x());
+        QCOMPARE(overlayLines.at(index).p2.y(), expectedLines.at(index).second.y());
+        QCOMPARE(overlayLines.at(index).p2.z(), expectedLines.at(index).second.z());
+    }
+    QVERIFY(overlayLines.at(0).label.contains(QStringLiteral("2.000")));
+    QVERIFY(overlayLines.at(1).label.contains(QStringLiteral("2.000")));
+    QVERIFY(overlayLines.at(2).label.contains(QStringLiteral("2.236")));
+}
+
+void TestMainWindow::testAgent3DAnglePicksAfterCameraTransforms() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* target = viewports.first();
+    QVERIFY(target != nullptr);
+
+    const Eigen::Vector3d vertex(5.0, -3.0, 2.0);
+    const Eigen::Vector3d firstEdgePoint(7.0, -3.0, 2.0);
+    const Eigen::Vector3d secondEdgePoint(5.0, -1.0, 2.0);
+    const QList<Eigen::Vector3d> candidates{vertex,
+                                            firstEdgePoint,
+                                            secondEdgePoint,
+                                            Eigen::Vector3d(3.0, -3.0, 2.0),
+                                            Eigen::Vector3d(5.0, -5.0, 2.0),
+                                            Eigen::Vector3d(5.0, -3.0, 0.0),
+                                            Eigen::Vector3d(7.0, -5.0, 2.0),
+                                            Eigen::Vector3d(7.0, -3.0, 4.0),
+                                            Eigen::Vector3d(3.0, -3.0, 4.0)};
+    PointCloudData cloud;
+    for (const Eigen::Vector3d& candidate : candidates)
+        cloud.points.push_back(candidate);
+    DisplayData display;
+    display.variant() = cloud;
+    target->displayData(display);
+    Viewport3DContent* content = target->viewport3D();
+    QVERIFY(content != nullptr);
+    QVERIFY(content->width() > 100);
+    QVERIFY(content->height() > 100);
+
+    CameraController oracle;
+    oracle.frameData(QVector3D(3.0f, -5.0f, 0.0f), QVector3D(7.0f, -1.0f, 4.0f));
+    const QPoint wheelPosition = content->rect().center();
+    QWheelEvent wheel(QPointF(wheelPosition), content->mapToGlobal(wheelPosition), QPoint(), QPoint(0, 480),
+                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(content, &wheel);
+    oracle.zoom(0.6f);
+    const QPoint orbitStart(100, 100);
+    const QPoint orbitEnd(220, 170);
+    QMouseEvent orbitPress(QEvent::MouseButtonPress, QPointF(orbitStart), Qt::LeftButton, Qt::LeftButton,
+                           Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitPress);
+    QMouseEvent orbitMove(QEvent::MouseMove, QPointF(orbitEnd), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitMove);
+    QMouseEvent orbitRelease(QEvent::MouseButtonRelease, QPointF(orbitEnd), Qt::LeftButton, Qt::NoButton,
+                             Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitRelease);
+    oracle.orbit(120.0f * 0.005f, -70.0f * 0.005f);
+
+    const auto project = [&oracle, content](const Eigen::Vector3d& point) {
+        const QSize size = content->size();
+        const QMatrix4x4 projection = oracle.projectionMatrix(static_cast<float>(size.width()) / size.height());
+        const QVector3D world(static_cast<float>(point.x()), static_cast<float>(point.y()),
+                              static_cast<float>(point.z()));
+        const QVector3D pixel =
+            world.project(oracle.viewMatrix(), projection, QRect(0, 0, size.width(), size.height()));
+        return QPointF(pixel.x(), size.height() - pixel.y());
+    };
+    QList<QPoint> clicks;
+    for (const Eigen::Vector3d& expected : {vertex, firstEdgePoint, secondEdgePoint}) {
+        const QPoint click = project(expected).toPoint();
+        QVERIFY(content->rect().contains(click));
+        QVERIFY(QLineF(QPointF(click), project(expected)).length() < 12.0);
+        for (const Eigen::Vector3d& candidate : candidates) {
+            if ((candidate - expected).squaredNorm() == 0.0)
+                continue;
+            QVERIFY2(QLineF(QPointF(click), project(candidate)).length() >= 14.0,
+                     "Projected click must be at least 14 px from every non-target point");
+        }
+        clicks.append(click);
+    }
+
+    const QJsonObject begun = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("3d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("angle_3_points")}});
+    QCOMPARE(begun.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QCOMPARE(begun.value(QStringLiteral("completedSteps")).toInt(), 0);
+    const QString requestId = begun.value(QStringLiteral("requestId")).toString();
+    QVERIFY(!requestId.isEmpty());
+    const QList<Eigen::Vector3d> expectedPoints{vertex, firstEdgePoint, secondEdgePoint};
+    const QList<QString> expectedLabels{QStringLiteral("V"), QStringLiteral("P2"), QStringLiteral("P3")};
+    for (int index = 0; index < expectedPoints.size(); ++index) {
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(clicks.at(index)), Qt::LeftButton, Qt::LeftButton,
+                          Qt::NoModifier);
+        QApplication::sendEvent(content, &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(clicks.at(index)), Qt::LeftButton, Qt::NoButton,
+                            Qt::NoModifier);
+        QApplication::sendEvent(content, &release);
+        const QJsonObject status = controller.actor()->executeTool(
+            QStringLiteral("get_quick_measurement_status"), QJsonObject{{QStringLiteral("requestId"), requestId}});
+        QCOMPARE(status.value(QStringLiteral("status")).toString(),
+                 index == 2 ? QStringLiteral("completed") : QStringLiteral("awaiting_user_input"));
+        QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), index + 1);
+        const QJsonArray picks = status.value(QStringLiteral("pickedCoordinates")).toArray();
+        QCOMPARE(picks.size(), index + 1);
+        const QJsonObject pick = picks.last().toObject();
+        QCOMPARE(pick.value(QStringLiteral("coordinateFrame")).toString(), QStringLiteral("World3D"));
+        QCOMPARE(
+            pick.value(QStringLiteral("pointCloudWorld")).toArray(),
+            (QJsonArray{expectedPoints.at(index).x(), expectedPoints.at(index).y(), expectedPoints.at(index).z()}));
+    }
+
+    const auto overlayPoints = content->measurementPoints3D();
+    QCOMPARE(overlayPoints.size(), 3);
+    for (int index = 0; index < expectedPoints.size(); ++index) {
+        QCOMPARE(overlayPoints.at(index).label, expectedLabels.at(index));
+        QCOMPARE(overlayPoints.at(index).pos.x(), expectedPoints.at(index).x());
+        QCOMPARE(overlayPoints.at(index).pos.y(), expectedPoints.at(index).y());
+        QCOMPARE(overlayPoints.at(index).pos.z(), expectedPoints.at(index).z());
+    }
+    const auto overlayLines = content->measurementLines3D();
+    QCOMPARE(overlayLines.size(), 2);
+    for (int index = 0; index < 2; ++index) {
+        QCOMPARE(overlayLines.at(index).p1.x(), vertex.x());
+        QCOMPARE(overlayLines.at(index).p1.y(), vertex.y());
+        QCOMPARE(overlayLines.at(index).p1.z(), vertex.z());
+        QCOMPARE(overlayLines.at(index).p2.x(), expectedPoints.at(index + 1).x());
+        QCOMPARE(overlayLines.at(index).p2.y(), expectedPoints.at(index + 1).y());
+        QCOMPARE(overlayLines.at(index).p2.z(), expectedPoints.at(index + 1).z());
+    }
+    QVERIFY(overlayLines.at(1).label.contains(QStringLiteral("90.00")));
+}
+
+void TestMainWindow::testAgent3DCirclePicksAfterCameraTransforms() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* target = viewports.first();
+    QVERIFY(target != nullptr);
+
+    const Eigen::Vector3d p1(7.0, -3.0, 2.0);
+    const Eigen::Vector3d p2(5.0, -1.0, 2.0);
+    const Eigen::Vector3d p3(3.0, -3.0, 2.0);
+    const QList<Eigen::Vector3d> candidates{p1,
+                                            p2,
+                                            p3,
+                                            Eigen::Vector3d(5.0, -5.0, 2.0),
+                                            Eigen::Vector3d(5.0, -3.0, 0.0),
+                                            Eigen::Vector3d(5.0, -3.0, 4.0),
+                                            Eigen::Vector3d(7.0, -5.0, 2.0),
+                                            Eigen::Vector3d(7.0, -1.0, 2.0),
+                                            Eigen::Vector3d(3.0, -5.0, 2.0),
+                                            Eigen::Vector3d(3.0, -1.0, 2.0)};
+    PointCloudData cloud;
+    for (const Eigen::Vector3d& candidate : candidates)
+        cloud.points.push_back(candidate);
+    DisplayData display;
+    display.variant() = cloud;
+    target->displayData(display);
+    Viewport3DContent* content = target->viewport3D();
+    QVERIFY(content != nullptr);
+    QVERIFY(content->width() > 100);
+    QVERIFY(content->height() > 100);
+
+    CameraController oracle;
+    oracle.frameData(QVector3D(3.0f, -5.0f, 0.0f), QVector3D(7.0f, -1.0f, 4.0f));
+    const QPoint wheelPosition = content->rect().center();
+    QWheelEvent wheel(QPointF(wheelPosition), content->mapToGlobal(wheelPosition), QPoint(), QPoint(0, 480),
+                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(content, &wheel);
+    oracle.zoom(0.6f);
+    const QPoint orbitStart(100, 100);
+    const QPoint orbitEnd(220, 170);
+    QMouseEvent orbitPress(QEvent::MouseButtonPress, QPointF(orbitStart), Qt::LeftButton, Qt::LeftButton,
+                           Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitPress);
+    QMouseEvent orbitMove(QEvent::MouseMove, QPointF(orbitEnd), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitMove);
+    QMouseEvent orbitRelease(QEvent::MouseButtonRelease, QPointF(orbitEnd), Qt::LeftButton, Qt::NoButton,
+                             Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitRelease);
+    oracle.orbit(120.0f * 0.005f, -70.0f * 0.005f);
+
+    const auto project = [&oracle, content](const Eigen::Vector3d& point) {
+        const QSize size = content->size();
+        const QMatrix4x4 projection = oracle.projectionMatrix(static_cast<float>(size.width()) / size.height());
+        const QVector3D world(static_cast<float>(point.x()), static_cast<float>(point.y()),
+                              static_cast<float>(point.z()));
+        const QVector3D pixel =
+            world.project(oracle.viewMatrix(), projection, QRect(0, 0, size.width(), size.height()));
+        return QPointF(pixel.x(), size.height() - pixel.y());
+    };
+    QList<QPoint> clicks;
+    for (const Eigen::Vector3d& expected : {p1, p2, p3}) {
+        const QPoint click = project(expected).toPoint();
+        QVERIFY(content->rect().contains(click));
+        QVERIFY(QLineF(QPointF(click), project(expected)).length() < 12.0);
+        for (const Eigen::Vector3d& candidate : candidates) {
+            if ((candidate - expected).squaredNorm() == 0.0)
+                continue;
+            QVERIFY2(QLineF(QPointF(click), project(candidate)).length() >= 14.0,
+                     "Projected click must be at least 14 px from every non-target point");
+        }
+        clicks.append(click);
+    }
+
+    const QJsonObject begun = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("3d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("circle_3_points")}});
+    QCOMPARE(begun.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QCOMPARE(begun.value(QStringLiteral("completedSteps")).toInt(), 0);
+    const QString requestId = begun.value(QStringLiteral("requestId")).toString();
+    QVERIFY(!requestId.isEmpty());
+    const QList<Eigen::Vector3d> expectedPicks{p1, p2, p3};
+    for (int index = 0; index < expectedPicks.size(); ++index) {
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(clicks.at(index)), Qt::LeftButton, Qt::LeftButton,
+                          Qt::NoModifier);
+        QApplication::sendEvent(content, &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(clicks.at(index)), Qt::LeftButton, Qt::NoButton,
+                            Qt::NoModifier);
+        QApplication::sendEvent(content, &release);
+        const QJsonObject status = controller.actor()->executeTool(
+            QStringLiteral("get_quick_measurement_status"), QJsonObject{{QStringLiteral("requestId"), requestId}});
+        QCOMPARE(status.value(QStringLiteral("status")).toString(),
+                 index == 2 ? QStringLiteral("completed") : QStringLiteral("awaiting_user_input"));
+        QCOMPARE(status.value(QStringLiteral("completedSteps")).toInt(), index + 1);
+        const QJsonArray picks = status.value(QStringLiteral("pickedCoordinates")).toArray();
+        QCOMPARE(picks.size(), index + 1);
+        const QJsonObject pick = picks.last().toObject();
+        QCOMPARE(pick.value(QStringLiteral("coordinateFrame")).toString(), QStringLiteral("World3D"));
+        QCOMPARE(pick.value(QStringLiteral("pointCloudWorld")).toArray(),
+                 (QJsonArray{expectedPicks.at(index).x(), expectedPicks.at(index).y(), expectedPicks.at(index).z()}));
+    }
+
+    const auto overlayPoints = content->measurementPoints3D();
+    QCOMPARE(overlayPoints.size(), 4);
+    const Eigen::Vector3d center(5.0, -3.0, 2.0);
+    const QList<Eigen::Vector3d> expectedOverlayPoints{p1, p2, p3, center};
+    const QList<QString> expectedLabels{QStringLiteral("P1"), QStringLiteral("P2"), QStringLiteral("P3"),
+                                        QStringLiteral("C")};
+    for (int index = 0; index < expectedOverlayPoints.size(); ++index) {
+        QCOMPARE(overlayPoints.at(index).label, expectedLabels.at(index));
+        QCOMPARE(overlayPoints.at(index).pos.x(), expectedOverlayPoints.at(index).x());
+        QCOMPARE(overlayPoints.at(index).pos.y(), expectedOverlayPoints.at(index).y());
+        QCOMPARE(overlayPoints.at(index).pos.z(), expectedOverlayPoints.at(index).z());
+    }
+
+    const Eigen::Vector3d u = (p2 - p1).normalized();
+    const Eigen::Vector3d normal = u.cross(p3 - p1).normalized();
+    const Eigen::Vector3d v = normal.cross(u).normalized();
+    const auto circlePoint = [&center, &u, &v](int index) {
+        const double angle = 2.0 * M_PI * index / 64.0;
+        return center + 2.0 * (u * cos(angle) + v * sin(angle));
+    };
+    const auto overlayLines = content->measurementLines3D();
+    QCOMPARE(overlayLines.size(), 64);
+    for (int index = 0; index < overlayLines.size(); ++index) {
+        const Eigen::Vector3d expectedStart = circlePoint(index);
+        const Eigen::Vector3d expectedEnd = circlePoint((index + 1) % 64);
+        const auto& line = overlayLines.at(index);
+        QVERIFY((Eigen::Vector3d(line.p1.x(), line.p1.y(), line.p1.z()) - expectedStart).norm() < 1e-9);
+        QVERIFY((Eigen::Vector3d(line.p2.x(), line.p2.y(), line.p2.z()) - expectedEnd).norm() < 1e-9);
+    }
+    QVERIFY(overlayLines.first().label.contains(QStringLiteral("R=2.00")));
+    QVERIFY(overlayLines.first().label.contains(QStringLiteral("C=12.57")));
+}
+
+void TestMainWindow::testAgent3DQuickMeasurementArithmeticUsesDoublePrecision() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    ViewportWidget* target = displayManager->allViewports().first();
+    QVERIFY(target != nullptr);
+    PointCloudData cloud;
+    cloud.points = {Eigen::Vector3d(-2.0, 0.0, 0.0), Eigen::Vector3d(2.0, 0.0, 0.0),  Eigen::Vector3d(0.0, -2.0, 0.0),
+                    Eigen::Vector3d(0.0, 2.0, 0.0),  Eigen::Vector3d(0.0, 0.0, -2.0), Eigen::Vector3d(0.0, 0.0, 2.0)};
+    DisplayData cloudDisplay;
+    cloudDisplay.variant() = cloud;
+    target->displayData(cloudDisplay);
+    Viewport3DContent* content = target->viewport3D();
+    QVERIFY(content != nullptr);
+
+    const auto verifyMeasurement = [&controller, target, content](const QString& type,
+                                                                  const QList<Eigen::Vector3d>& points,
+                                                                  const QString& expectedLabel) {
+        const QJsonObject started = controller.actor()->executeTool(
+            QStringLiteral("begin_quick_measurement"), QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                                                                   {QStringLiteral("dimension"), QStringLiteral("3d")},
+                                                                   {QStringLiteral("measurementType"), type}});
+        QCOMPARE(started.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+        const QString requestId = started.value(QStringLiteral("requestId")).toString();
+        QVERIFY(!requestId.isEmpty());
+        for (const Eigen::Vector3d& point : points)
+            Q_EMIT target->point3DWorldClicked(point.x(), point.y(), point.z());
+
+        const QJsonObject status = controller.actor()->executeTool(
+            QStringLiteral("get_quick_measurement_status"), QJsonObject{{QStringLiteral("requestId"), requestId}});
+        QCOMPARE(status.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+        const QJsonArray picked = status.value(QStringLiteral("pickedCoordinates")).toArray();
+        QCOMPARE(picked.size(), points.size());
+        for (qsizetype i = 0; i < picked.size(); ++i) {
+            const QJsonArray world = picked.at(i).toObject().value(QStringLiteral("pointCloudWorld")).toArray();
+            const QJsonArray expected{points.at(i).x(), points.at(i).y(), points.at(i).z()};
+            QCOMPARE(world, expected);
+        }
+        const QList<MeasurementOverlayPoint3D> overlayPoints = content->measurementPoints3D();
+        QVERIFY(overlayPoints.size() >= points.size());
+        for (qsizetype i = 0; i < points.size(); ++i) {
+            QCOMPARE(overlayPoints.at(i).pos.x(), points.at(i).x());
+            QCOMPARE(overlayPoints.at(i).pos.y(), points.at(i).y());
+            QCOMPARE(overlayPoints.at(i).pos.z(), points.at(i).z());
+        }
+        const QList<MeasurementOverlayLine3D> overlayLines = content->measurementLines3D();
+        if (type == QLatin1String("distance_2_points")) {
+            QCOMPARE(overlayLines.size(), 1);
+            QCOMPARE(overlayLines.first().p1.x(), points.at(0).x());
+            QCOMPARE(overlayLines.first().p1.y(), points.at(0).y());
+            QCOMPARE(overlayLines.first().p1.z(), points.at(0).z());
+            QCOMPARE(overlayLines.first().p2.x(), points.at(1).x());
+            QCOMPARE(overlayLines.first().p2.y(), points.at(1).y());
+            QCOMPARE(overlayLines.first().p2.z(), points.at(1).z());
+        } else if (type == QLatin1String("point_to_line")) {
+            QCOMPARE(overlayLines.size(), 2);
+            QCOMPARE(overlayLines.first().p1.x(), points.at(1).x());
+            QCOMPARE(overlayLines.first().p1.y(), points.at(1).y());
+            QCOMPARE(overlayLines.first().p1.z(), points.at(1).z());
+            QCOMPARE(overlayLines.first().p2.x(), points.at(2).x());
+            QCOMPARE(overlayLines.first().p2.y(), points.at(2).y());
+            QCOMPARE(overlayLines.first().p2.z(), points.at(2).z());
+        } else if (type == QLatin1String("segment_gap")) {
+            QCOMPARE(overlayLines.size(), 3);
+            QCOMPARE(overlayLines.at(0).p1.x(), points.at(0).x());
+            QCOMPARE(overlayLines.at(0).p1.y(), points.at(0).y());
+            QCOMPARE(overlayLines.at(0).p1.z(), points.at(0).z());
+            QCOMPARE(overlayLines.at(0).p2.x(), points.at(1).x());
+            QCOMPARE(overlayLines.at(0).p2.y(), points.at(1).y());
+            QCOMPARE(overlayLines.at(0).p2.z(), points.at(1).z());
+            QCOMPARE(overlayLines.at(1).p1.x(), points.at(2).x());
+            QCOMPARE(overlayLines.at(1).p1.y(), points.at(2).y());
+            QCOMPARE(overlayLines.at(1).p1.z(), points.at(2).z());
+            QCOMPARE(overlayLines.at(1).p2.x(), points.at(3).x());
+            QCOMPARE(overlayLines.at(1).p2.y(), points.at(3).y());
+            QCOMPARE(overlayLines.at(1).p2.z(), points.at(3).z());
+        } else if (type == QLatin1String("angle_3_points")) {
+            QCOMPARE(overlayLines.size(), 2);
+            QCOMPARE(overlayLines.at(0).p1.x(), points.at(0).x());
+            QCOMPARE(overlayLines.at(0).p1.y(), points.at(0).y());
+            QCOMPARE(overlayLines.at(0).p1.z(), points.at(0).z());
+            QCOMPARE(overlayLines.at(0).p2.x(), points.at(1).x());
+            QCOMPARE(overlayLines.at(0).p2.y(), points.at(1).y());
+            QCOMPARE(overlayLines.at(0).p2.z(), points.at(1).z());
+            QCOMPARE(overlayLines.at(1).p1.x(), points.at(0).x());
+            QCOMPARE(overlayLines.at(1).p1.y(), points.at(0).y());
+            QCOMPARE(overlayLines.at(1).p1.z(), points.at(0).z());
+            QCOMPARE(overlayLines.at(1).p2.x(), points.at(2).x());
+            QCOMPARE(overlayLines.at(1).p2.y(), points.at(2).y());
+            QCOMPARE(overlayLines.at(1).p2.z(), points.at(2).z());
+        }
+        bool foundLabel = false;
+        QStringList labels;
+        for (const MeasurementOverlayLine3D& line : content->measurementLines3D())
+            if (!line.label.isEmpty()) {
+                labels.append(line.label);
+                foundLabel = foundLabel || line.label.contains(expectedLabel);
+            }
+        QVERIFY2(foundLabel, qPrintable(QStringLiteral("Missing expected overlay label: %1; got [%2]")
+                                            .arg(expectedLabel,
+                                                 QStringLiteral("%1] points=%2, status=%3, completed=%4, viewport=%5")
+                                                     .arg(labels.join(QStringLiteral(" | ")))
+                                                     .arg(content->measurementPoints3D().size())
+                                                     .arg(status.value(QStringLiteral("status")).toString())
+                                                     .arg(status.value(QStringLiteral("completedSteps")).toInt())
+                                                     .arg(status.value(QStringLiteral("viewportId")).toString()))));
+    };
+
+    constexpr double base = 16777216.0;
+    verifyMeasurement(QStringLiteral("distance_2_points"), {{16777217.125, 12.5, -3.75}, {16777220.125, 16.5, -0.75}},
+                      QStringLiteral("5.831"));
+    verifyMeasurement(QStringLiteral("point_to_line"),
+                      {{base + 3.5, 2.125, 0.125}, {base + 0.125, 0.125, 0.125}, {base + 0.125, 4.125, 0.125}},
+                      QStringLiteral("3.375"));
+    verifyMeasurement(QStringLiteral("segment_gap"),
+                      {{base + 0.125, 0.25, -0.125},
+                       {base + 4.125, 0.25, -0.125},
+                       {base + 4.625, 3.375, 0.25},
+                       {base + 8.625, 3.375, 0.25}},
+                      QStringLiteral("3.187"));
+    verifyMeasurement(QStringLiteral("angle_3_points"),
+                      {{base + 0.125, 0.0, 0.0}, {base + 0.625, 1.0, 0.0}, {base + 1.125, 1.0, 0.0}},
+                      QStringLiteral("18.43"));
+    verifyMeasurement(QStringLiteral("circle_3_points"),
+                      {{base + 0.125, 0.0, 0.0}, {base + 1.125, 0.0, 0.0}, {base + 0.125, 2.0, 0.0}},
+                      QStringLiteral("R=1.12"));
+}
+
+void TestMainWindow::testAgentQuickMeasurementCancellationExpiryAndTerminalStability() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    ViewportWidget* target = displayManager->allViewports().first();
+    QImage image(80, 60, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    target->displayImage(image);
+    const auto beginMeasurement = [&]() {
+        return controller.actor()->executeTool(
+            QStringLiteral("begin_quick_measurement"),
+            QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                        {QStringLiteral("dimension"), QStringLiteral("2d")},
+                        {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}});
+    };
+
+    target->imageWidget()->setMeasurementOverlay({{QPointF(2.0, 3.0), QStringLiteral("existing")}}, {});
+    const QJsonObject cancelledBeforePick = beginMeasurement();
+    const QJsonObject preservedOverlayCancel = controller.actor()->executeTool(
+        QStringLiteral("cancel_quick_measurement"),
+        QJsonObject{{QStringLiteral("requestId"), cancelledBeforePick.value(QStringLiteral("requestId"))}});
+    QCOMPARE(preservedOverlayCancel.value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+    QCOMPARE(target->imageWidget()->measurementPoints().size(), 1);
+    QCOMPARE(target->imageWidget()->measurementPoints().first().label, QStringLiteral("existing"));
+
+    QJsonObject begin = beginMeasurement();
+    QVERIFY(begin.contains(QStringLiteral("requestId")));
+    QString firstId = begin.value(QStringLiteral("requestId")).toString();
+    const QPointF firstLocalPoint(4.0, 5.0);
+    const ImageCoordinateProvenance firstProvenance = target->imageCoordinateProvenance();
+    const auto firstSourcePoint = firstProvenance.mapLocalToSource(firstLocalPoint);
+    QVERIFY(firstSourcePoint);
+    target->point2DSourceClicked(firstLocalPoint, *firstSourcePoint, firstProvenance.sourceImageId, true);
+    QJsonObject cancelled = controller.actor()->executeTool(QStringLiteral("cancel_quick_measurement"),
+                                                            QJsonObject{{QStringLiteral("requestId"), firstId}});
+    QCOMPARE(cancelled.value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+    QVERIFY(target->imageWidget()->measurementPoints().isEmpty());
+    target->displayImage(image);
+    cancelled = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                                QJsonObject{{QStringLiteral("requestId"), firstId}});
+    QCOMPARE(cancelled.value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+
+    begin = beginMeasurement();
+    const QString secondId = begin.value(QStringLiteral("requestId")).toString();
+    QVERIFY(!secondId.isEmpty() && secondId != firstId);
+    const QJsonObject oldRequest = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                                                   QJsonObject{{QStringLiteral("requestId"), firstId}});
+    QCOMPARE(oldRequest.value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("QUICK_MEASURE_REQUEST_NOT_FOUND"));
+
+    target->displayImage(image);
+    QJsonObject expired = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                                          QJsonObject{{QStringLiteral("requestId"), secondId}});
+    QCOMPARE(expired.value(QStringLiteral("status")).toString(), QStringLiteral("expired"));
+    QVERIFY(expired.value(QStringLiteral("reason")).toString().contains(QStringLiteral("content")));
+    target->displayImage(image);
+    expired = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                              QJsonObject{{QStringLiteral("requestId"), secondId}});
+    QCOMPARE(expired.value(QStringLiteral("status")).toString(), QStringLiteral("expired"));
+    QVERIFY(expired.value(QStringLiteral("reason")).toString().contains(QStringLiteral("content")));
+
+    PointCloudData cloud;
+    cloud.points = {{0.0, 0.0, 0.0}, {1.0, 0.0, 1.0}};
+    DisplayData cloudData;
+    cloudData.variant() = cloud;
+    target->setDualData(image, cloudData, ViewportWidget::DisplayMode::Auto2D);
+    begin = beginMeasurement();
+    const QString modeChangedId = begin.value(QStringLiteral("requestId")).toString();
+    QVERIFY(target->setDisplayMode(ViewportWidget::DisplayMode::Auto3D));
+    expired = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                              QJsonObject{{QStringLiteral("requestId"), modeChangedId}});
+    QCOMPARE(expired.value(QStringLiteral("status")).toString(), QStringLiteral("expired"));
+
+    target->setDisplayMode(ViewportWidget::DisplayMode::Auto2D);
+    begin = beginMeasurement();
+    const QString clearedId = begin.value(QStringLiteral("requestId")).toString();
+    target->clearDisplay();
+    expired = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                              QJsonObject{{QStringLiteral("requestId"), clearedId}});
+    QCOMPARE(expired.value(QStringLiteral("status")).toString(), QStringLiteral("expired"));
+
+    target->displayImage(image);
+    const QString extraId = displayManager->createViewport(QStringLiteral("Close during measurement"));
+    ViewportWidget* extra = displayManager->viewport(extraId);
+    QVERIFY(extra != nullptr);
+    extra->displayImage(image);
+    begin = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), extraId},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}});
+    const QString closedId = begin.value(QStringLiteral("requestId")).toString();
+    const QJsonObject closed = controller.actor()->executeTool(QStringLiteral("close_viewport"),
+                                                               QJsonObject{{QStringLiteral("viewportId"), extraId}});
+    QCOMPARE(closed.value(QStringLiteral("status")).toString(), QStringLiteral("closed"));
+    expired = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                              QJsonObject{{QStringLiteral("requestId"), closedId}});
+    QCOMPARE(expired.value(QStringLiteral("status")).toString(), QStringLiteral("expired"));
+
+    target->displayImage(image);
+    begin = beginMeasurement();
+    const QString projectChangedId = begin.value(QStringLiteral("requestId")).toString();
+    QVERIFY(ProjectManager::instance().newProject() != nullptr);
+    expired = controller.actor()->executeTool(QStringLiteral("get_quick_measurement_status"),
+                                              QJsonObject{{QStringLiteral("requestId"), projectChangedId}});
+    QCOMPARE(expired.value(QStringLiteral("status")).toString(), QStringLiteral("expired"));
+
+    target->displayImage(image);
+    begin = beginMeasurement();
+    const QString guiCancelledId = begin.value(QStringLiteral("requestId")).toString();
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
+    const QJsonObject cancelledByGui = controller.actor()->executeTool(
+        QStringLiteral("get_quick_measurement_status"), QJsonObject{{QStringLiteral("requestId"), guiCancelledId}});
+    QCOMPARE(cancelledByGui.value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+    QCOMPARE(cancelledByGui.value(QStringLiteral("reason")).toString(), QStringLiteral("CANCELLED_BY_GUI"));
+}
+
+void TestMainWindow::testAgentQuickMeasurementAdvisorConfirmationBindsViewportContent() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+
+    MainWindow window;
+    // MainWindow loads the persisted permission level during construction; set the test mode afterward.
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    ViewportWidget* target = displayManager->allViewports().first();
+    QImage image(80, 60, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    target->displayImage(image);
+    const QJsonObject params{{QStringLiteral("viewportId"), target->viewportId()},
+                             {QStringLiteral("dimension"), QStringLiteral("2d")},
+                             {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}};
+    const QJsonObject pending = controller.handleToolCall(QStringLiteral("begin_quick_measurement"), params);
+    QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QJsonObject confirmation = pending.value(QStringLiteral("confirmation")).toObject();
+    QVERIFY(confirmation.value(QStringLiteral("context"))
+                .toObject()
+                .value(QStringLiteral("summary"))
+                .toString()
+                .contains(target->viewportId()));
+    const QString confirmationId = confirmation.value(QStringLiteral("confirmationId")).toString();
+    QVERIFY(!confirmationId.isEmpty());
+
+    target->displayImage(image);
+    QVERIFY(confirmPendingToolsAndWait(controller, confirmationId));
+    QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    const QJsonObject afterExpiredApproval =
+        controller.actor()->executeTool(QStringLiteral("begin_quick_measurement"), params);
+    QCOMPARE(afterExpiredApproval.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    const QJsonObject cancel = controller.actor()->executeTool(
+        QStringLiteral("cancel_quick_measurement"),
+        QJsonObject{{QStringLiteral("requestId"), afterExpiredApproval.value(QStringLiteral("requestId"))}});
+    QCOMPARE(cancel.value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+
+    const auto requestAdvisorConfirmation = [&controller, &params]() {
+        return controller.handleToolCall(QStringLiteral("begin_quick_measurement"), params);
+    };
+    QVERIFY(ProjectManager::instance().newProject() != nullptr);
+    QJsonObject projectPending = requestAdvisorConfirmation();
+    QCOMPARE(projectPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString projectConfirmationId = projectPending.value(QStringLiteral("confirmation"))
+                                              .toObject()
+                                              .value(QStringLiteral("confirmationId"))
+                                              .toString();
+    QVERIFY(ProjectManager::instance().newProject() != nullptr);
+    QSignalSpy projectExpiredSignal(&controller, &AgentController::llmResponseReceived);
+    QVERIFY(confirmPendingToolsAndWait(controller, projectConfirmationId));
+    QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    QVERIFY(!projectExpiredSignal.isEmpty());
+    QVERIFY(projectExpiredSignal.last().at(0).toString().contains(QStringLiteral("确认已失效")));
+
+    QJsonObject ownerPending = requestAdvisorConfirmation();
+    QCOMPARE(ownerPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString ownerConfirmationId = ownerPending.value(QStringLiteral("confirmation"))
+                                            .toObject()
+                                            .value(QStringLiteral("confirmationId"))
+                                            .toString();
+    MainWindow replacementOwner;
+    QSignalSpy ownerExpiredSignal(&controller, &AgentController::llmResponseReceived);
+    QVERIFY(confirmPendingToolsAndWait(controller, ownerConfirmationId));
+    QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    QVERIFY(!ownerExpiredSignal.isEmpty());
+    QVERIFY(ownerExpiredSignal.last().at(0).toString().contains(QStringLiteral("确认已失效")));
+}
+
+void TestMainWindow::testAgentQuickMeasurementOwnerDestructionKeepsExpiredStatus() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+    QString requestId;
+    {
+        auto* window = new MainWindow;
+        auto* displayManager = window->findChild<DisplayManager*>();
+        QVERIFY(displayManager != nullptr);
+        ViewportWidget* target = displayManager->allViewports().first();
+        QImage image(80, 60, QImage::Format_RGB32);
+        image.fill(Qt::white);
+        target->displayImage(image);
+        const QJsonObject begun = controller.actor()->executeTool(
+            QStringLiteral("begin_quick_measurement"),
+            QJsonObject{{QStringLiteral("viewportId"), target->viewportId()},
+                        {QStringLiteral("dimension"), QStringLiteral("2d")},
+                        {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}});
+        QCOMPARE(begun.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+        requestId = begun.value(QStringLiteral("requestId")).toString();
+        QVERIFY(!requestId.isEmpty());
+        delete window;
+    }
+
+    const QJsonObject withoutGui = controller.handleToolCall(QStringLiteral("get_quick_measurement_status"),
+                                                             QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(withoutGui.value(QStringLiteral("status")).toString(), QStringLiteral("expired"));
+    QCOMPARE(withoutGui.value(QStringLiteral("reason")).toString(), QStringLiteral("OWNER_DESTROYED"));
+
+    MainWindow replacement;
+    const QJsonObject withReplacement = controller.handleToolCall(
+        QStringLiteral("get_quick_measurement_status"), QJsonObject{{QStringLiteral("requestId"), requestId}});
+    QCOMPARE(withReplacement.value(QStringLiteral("status")).toString(), QStringLiteral("expired"));
+    QCOMPARE(withReplacement.value(QStringLiteral("reason")).toString(), QStringLiteral("OWNER_DESTROYED"));
+}
+
+void TestMainWindow::testAgentAndGuiQuickMeasurementModesAreMutuallyExclusive() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+    MainWindow window;
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    ViewportWidget* viewport = displayManager->allViewports().first();
+    QImage image(80, 60, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    viewport->displayImage(image);
+
+    bool selectedGuiMode = false;
+    QTimer::singleShot(0, &window, [&selectedGuiMode]() {
+        auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        if (!menu || menu->actions().isEmpty())
+            return;
+        selectedGuiMode = true;
+        QAction* action = menu->actions().first();
+        QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, menu->actionGeometry(action).center());
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
+    QVERIFY(selectedGuiMode);
+    const QJsonObject busy = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), viewport->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}});
+    QCOMPARE(busy.value(QStringLiteral("errorCode")).toString(), QStringLiteral("QUICK_MEASURE_BUSY"));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
+    const QJsonObject begin = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), viewport->viewportId()},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}});
+    QCOMPARE(begin.value(QStringLiteral("status")).toString(), QStringLiteral("awaiting_user_input"));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
+    const QJsonObject cancelled = controller.actor()->executeTool(
+        QStringLiteral("get_quick_measurement_status"),
+        QJsonObject{{QStringLiteral("requestId"), begin.value(QStringLiteral("requestId"))}});
+    QCOMPARE(cancelled.value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+}
+
+void TestMainWindow::testGuiQuickMeasureRectangleUsesImageLocalCoordinatesAndSingleRoiConnection() {
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    DisplayManager* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* viewport = viewports.first();
+    QVERIFY(viewport);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget);
+
+    QImage image(200, 150, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    ImageData imageData(image);
+    ImageCoordinateProvenance provenance = imageData.coordinateProvenance();
+    provenance.sourceImageId = QStringLiteral("slice189-parent-image");
+    provenance.sourceSize = QSize(800, 600);
+    provenance.localToSource = ImageCoordinateProvenance::Matrix3{2.0, 0.0, 10.0, 0.0, 3.0, 5.0, 0.0, 0.0, 1.0};
+    provenance.hasLocalToSourceTransform = true;
+    imageData.setCoordinateProvenance(provenance);
+    DisplayData display;
+    display.variant() = imageData;
+    viewport->displayData(display);
+    QCoreApplication::processEvents();
+    QVERIFY(imageWidget->hasImage());
+    imageWidget->setFixedSize(320, 240);
+    imageWidget->actualSize();
+    imageWidget->setZoom(2.0);
+
+    const QPoint panStart = imageWidget->imageToWidget(QPointF(48.0, 36.0)).toPoint();
+    const QPoint panEnd = panStart + QPoint(12, 8);
+    QTest::mousePress(imageWidget, Qt::MiddleButton, Qt::NoModifier, panStart);
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(panEnd), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &panMove);
+    QTest::mouseRelease(imageWidget, Qt::MiddleButton, Qt::NoModifier, panEnd);
+
+    QList<RoiData> createdRois;
+    connect(imageWidget, &HImageWidget::roiCreated, &window,
+            [&createdRois](const RoiData& roi) { createdRois.append(roi); });
+    QSignalSpy logSpy(&Logger::instance(), &Logger::logAdded);
+    const auto rectangleLogCount = [&]() {
+        return std::count_if(logSpy.cbegin(), logSpy.cend(), [](const QList<QVariant>& arguments) {
+            const LogEntry entry = qvariant_cast<LogEntry>(arguments.first());
+            return entry.category == QLatin1String("Measurement") &&
+                   entry.message.contains(QStringLiteral("快速测量: 矩形"));
+        });
+    };
+    const auto selectRectangleArea = [&]() {
+        bool selected = false;
+        QTimer::singleShot(0, &window, [&selected]() {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            if (!menu)
+                return;
+            for (QAction* action : menu->actions()) {
+                if (action->data().toInt() == 5) {
+                    selected = true;
+                    QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, menu->actionGeometry(action).center());
+                    return;
+                }
+            }
+        });
+        QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
+        QVERIFY(selected);
+    };
+    const auto dragImageRectangle = [imageWidget](const QPointF& start, const QPointF& end) {
+        const QPoint screenStart = imageWidget->imageToWidget(start).toPoint();
+        const QPoint screenEnd = imageWidget->imageToWidget(end).toPoint();
+        QVERIFY(imageWidget->rect().contains(screenStart));
+        QVERIFY(imageWidget->rect().contains(screenEnd));
+        QTest::mousePress(imageWidget, Qt::LeftButton, Qt::NoModifier, screenStart);
+        QTest::mouseMove(imageWidget, screenEnd);
+        QTest::mouseRelease(imageWidget, Qt::LeftButton, Qt::NoModifier, screenEnd);
+    };
+
+    selectRectangleArea();
+    dragImageRectangle(QPointF(40.0, 30.0), QPointF(120.0, 90.0));
+    QCOMPARE(createdRois.size(), 1);
+    QCOMPARE(createdRois.first().type, RoiType::Rectangle1);
+    QVERIFY(std::abs(createdRois.first().x1 - 40.0) <= 1.0);
+    QVERIFY(std::abs(createdRois.first().y1 - 30.0) <= 1.0);
+    QVERIFY(std::abs(createdRois.first().x2 - 120.0) <= 1.0);
+    QVERIFY(std::abs(createdRois.first().y2 - 90.0) <= 1.0);
+
+    const QList<MeasurementOverlayPoint> firstPoints = imageWidget->measurementPoints();
+    const QList<MeasurementOverlayLine> firstLines = imageWidget->measurementLines();
+    QCOMPARE(firstPoints.size(), 2);
+    QCOMPARE(firstPoints.at(0).label, QStringLiteral("TL"));
+    QCOMPARE(firstPoints.at(0).pos, QPointF(40.0, 30.0));
+    QCOMPARE(firstPoints.at(1).label, QStringLiteral("BR"));
+    QCOMPARE(firstPoints.at(1).pos, QPointF(120.0, 90.0));
+    QCOMPARE(firstLines.size(), 4);
+    const QList<QPair<QPointF, QPointF>> expectedEdges{
+        qMakePair(QPointF(40.0, 30.0), QPointF(120.0, 30.0)), qMakePair(QPointF(120.0, 30.0), QPointF(120.0, 90.0)),
+        qMakePair(QPointF(120.0, 90.0), QPointF(40.0, 90.0)), qMakePair(QPointF(40.0, 90.0), QPointF(40.0, 30.0))};
+    for (int index = 0; index < expectedEdges.size(); ++index) {
+        QCOMPARE(firstLines.at(index).p1, expectedEdges.at(index).first);
+        QCOMPARE(firstLines.at(index).p2, expectedEdges.at(index).second);
+    }
+    QVERIFY(firstLines.last().label.contains(QStringLiteral("W=80.00, H=60.00, A=4800.00")));
+    QCOMPARE(rectangleLogCount(), 1);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
+    QVERIFY(imageWidget->measurementPoints().isEmpty());
+    QVERIFY(imageWidget->measurementLines().isEmpty());
+    selectRectangleArea();
+    dragImageRectangle(QPointF(20.0, 20.0), QPointF(60.0, 40.0));
+    QCOMPARE(createdRois.size(), 2);
+    QCOMPARE(rectangleLogCount(), 2);
+    QTRY_COMPARE_WITH_TIMEOUT(imageWidget->measurementPoints().size(), 2, 1000);
+    QCOMPARE(imageWidget->measurementLines().size(), 4);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
+    imageWidget->clearImage();
+    selectRectangleArea();
+    dragImageRectangle(QPointF(10.0, 10.0), QPointF(40.0, 35.0));
+    QCOMPARE(createdRois.size(), 2);
+    QCOMPARE(rectangleLogCount(), 2);
+    QVERIFY(imageWidget->measurementPoints().isEmpty());
+    QVERIFY(imageWidget->measurementLines().isEmpty());
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
+}
+
+void TestMainWindow::testGuiQuickMeasureDistanceUsesImageLocalCoordinatesAfterViewportTransform() {
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    DisplayManager* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* viewport = viewports.first();
+    QVERIFY(viewport);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget);
+
+    QImage image(200, 150, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    ImageData imageData(image);
+    ImageCoordinateProvenance provenance = imageData.coordinateProvenance();
+    provenance.sourceImageId = QStringLiteral("slice190-parent-image");
+    provenance.sourceSize = QSize(800, 600);
+    provenance.localToSource = ImageCoordinateProvenance::Matrix3{2.0, 0.0, 10.0, 0.0, 3.0, 5.0, 0.0, 0.0, 1.0};
+    provenance.hasLocalToSourceTransform = true;
+    imageData.setCoordinateProvenance(provenance);
+    DisplayData display;
+    display.variant() = imageData;
+    viewport->displayData(display);
+    QCoreApplication::processEvents();
+    QVERIFY(imageWidget->hasImage());
+    imageWidget->setFixedSize(320, 240);
+    imageWidget->actualSize();
+    imageWidget->setZoom(2.0);
+
+    const QPoint panStart = imageWidget->imageToWidget(QPointF(48.0, 36.0)).toPoint();
+    const QPoint panEnd = panStart + QPoint(12, 8);
+    QTest::mousePress(imageWidget, Qt::MiddleButton, Qt::NoModifier, panStart);
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(panEnd), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &panMove);
+    QTest::mouseRelease(imageWidget, Qt::MiddleButton, Qt::NoModifier, panEnd);
+
+    bool selected = false;
+    QTimer::singleShot(0, &window, [&selected]() {
+        auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        if (!menu)
+            return;
+        for (QAction* action : menu->actions()) {
+            if (action->data().toInt() == 0) {
+                selected = true;
+                QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, menu->actionGeometry(action).center());
+                return;
+            }
+        }
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
+    QVERIFY(selected);
+
+    QSignalSpy logSpy(&Logger::instance(), &Logger::logAdded);
+    const auto distanceResultMessages = [&]() {
+        QStringList messages;
+        for (const QList<QVariant>& arguments : logSpy) {
+            const LogEntry entry = qvariant_cast<LogEntry>(arguments.first());
+            if (entry.category == QLatin1String("Measurement") && entry.message.startsWith(QStringLiteral("快速测量:")))
+                messages.append(entry.message);
+        }
+        return messages;
+    };
+    const auto clickImagePoint = [imageWidget](const QPointF& point) {
+        const QPoint screen = imageWidget->imageToWidget(point).toPoint();
+        QVERIFY(imageWidget->rect().contains(screen));
+        QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, screen);
+    };
+
+    QCOMPARE(imageWidget->imageToWidget(QPointF(40.0, 30.0)).toPoint(), QPoint(152, 113));
+    QCOMPARE(imageWidget->imageToWidget(QPointF(80.0, 70.0)).toPoint(), QPoint(232, 193));
+    clickImagePoint(QPointF(40.0, 30.0));
+    QCOMPARE(imageWidget->measurementPoints().size(), 1);
+    QCOMPARE(imageWidget->measurementPoints().first().label, QStringLiteral("P1"));
+    QCOMPARE(imageWidget->measurementPoints().first().pos, QPointF(40.0, 30.0));
+    QVERIFY(imageWidget->measurementLines().isEmpty());
+
+    clickImagePoint(QPointF(80.0, 70.0));
+    const QList<MeasurementOverlayPoint> points = imageWidget->measurementPoints();
+    const QList<MeasurementOverlayLine> lines = imageWidget->measurementLines();
+    QCOMPARE(points.size(), 2);
+    QCOMPARE(points.at(0).label, QStringLiteral("P1"));
+    QCOMPARE(points.at(0).pos, QPointF(40.0, 30.0));
+    QCOMPARE(points.at(1).label, QStringLiteral("P2"));
+    QCOMPARE(points.at(1).pos, QPointF(80.0, 70.0));
+    QCOMPARE(lines.size(), 1);
+    QCOMPARE(lines.first().p1, QPointF(40.0, 30.0));
+    QCOMPARE(lines.first().p2, QPointF(80.0, 70.0));
+    QVERIFY(lines.first().label.contains(QStringLiteral("56.569")));
+    const QStringList resultMessages = distanceResultMessages();
+    QCOMPARE(resultMessages.size(), 1);
+    QCOMPARE(resultMessages.first(), QStringLiteral("快速测量: 40.00,30.00 → 80.00,70.00 = 距离: 56.569"));
+    QVERIFY(!resultMessages.first().contains(QStringLiteral("152.00,113.00")));
+    QVERIFY(!resultMessages.first().contains(QStringLiteral("232.00,193.00")));
+
+    const std::optional<QPointF> sourcePoint1 = provenance.mapLocalToSource(QPointF(40.0, 30.0));
+    const std::optional<QPointF> sourcePoint2 = provenance.mapLocalToSource(QPointF(80.0, 70.0));
+    QVERIFY(sourcePoint1.has_value());
+    QVERIFY(sourcePoint2.has_value());
+    QCOMPARE(*sourcePoint1, QPointF(90.0, 95.0));
+    QCOMPARE(*sourcePoint2, QPointF(170.0, 215.0));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
+}
+
+void TestMainWindow::testGuiQuickMeasurePointLineAndSegmentGapUseImageLocalCoordinatesAfterViewportTransform() {
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    DisplayManager* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* viewport = viewports.first();
+    QVERIFY(viewport);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget);
+
+    QImage image(200, 150, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    ImageData imageData(image);
+    ImageCoordinateProvenance provenance = imageData.coordinateProvenance();
+    provenance.sourceImageId = QStringLiteral("slice191-parent-image");
+    provenance.sourceSize = QSize(800, 600);
+    provenance.localToSource = ImageCoordinateProvenance::Matrix3{2.0, 0.0, 10.0, 0.0, 3.0, 5.0, 0.0, 0.0, 1.0};
+    provenance.hasLocalToSourceTransform = true;
+    imageData.setCoordinateProvenance(provenance);
+    DisplayData display;
+    display.variant() = imageData;
+    viewport->displayData(display);
+    QCoreApplication::processEvents();
+    QVERIFY(imageWidget->hasImage());
+    imageWidget->setFixedSize(320, 240);
+    imageWidget->actualSize();
+    imageWidget->setZoom(2.0);
+
+    const QPoint panStart = imageWidget->imageToWidget(QPointF(48.0, 36.0)).toPoint();
+    const QPoint panEnd = panStart + QPoint(12, 8);
+    QTest::mousePress(imageWidget, Qt::MiddleButton, Qt::NoModifier, panStart);
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(panEnd), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &panMove);
+    QTest::mouseRelease(imageWidget, Qt::MiddleButton, Qt::NoModifier, panEnd);
+
+    QSignalSpy logSpy(&Logger::instance(), &Logger::logAdded);
+    const auto resultMessages = [&]() {
+        QStringList messages;
+        for (const QList<QVariant>& arguments : logSpy) {
+            const LogEntry entry = qvariant_cast<LogEntry>(arguments.first());
+            if (entry.category == QLatin1String("Measurement") && entry.message.startsWith(QStringLiteral("快速测量:")))
+                messages.append(entry.message);
+        }
+        return messages;
+    };
+    const auto selectMode = [&window](int mode) {
+        bool selected = false;
+        QTimer::singleShot(0, &window, [&selected, mode]() {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            if (!menu)
+                return;
+            for (QAction* action : menu->actions()) {
+                if (action->data().toInt() == mode) {
+                    selected = true;
+                    QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, menu->actionGeometry(action).center());
+                    return;
+                }
+            }
+        });
+        QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
+        QVERIFY(selected);
+    };
+    const auto clickImagePoint = [imageWidget](const QPointF& point) {
+        const QPoint screen = imageWidget->imageToWidget(point).toPoint();
+        QVERIFY(imageWidget->rect().contains(screen));
+        QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, screen);
+    };
+
+    selectMode(1);
+    QCOMPARE(imageWidget->imageToWidget(QPointF(40.0, 30.0)).toPoint(), QPoint(152, 113));
+    QCOMPARE(imageWidget->imageToWidget(QPointF(20.0, 70.0)).toPoint(), QPoint(112, 193));
+    QCOMPARE(imageWidget->imageToWidget(QPointF(100.0, 70.0)).toPoint(), QPoint(272, 193));
+    clickImagePoint(QPointF(40.0, 30.0));
+    QCOMPARE(imageWidget->measurementPoints().size(), 1);
+    QCOMPARE(imageWidget->measurementPoints().first().pos, QPointF(40.0, 30.0));
+    QCOMPARE(imageWidget->measurementPoints().first().label, QStringLiteral("P1"));
+    QVERIFY(imageWidget->measurementLines().isEmpty());
+    clickImagePoint(QPointF(20.0, 70.0));
+    clickImagePoint(QPointF(100.0, 70.0));
+    const QList<MeasurementOverlayPoint> pointLinePoints = imageWidget->measurementPoints();
+    const QList<MeasurementOverlayLine> pointLineLines = imageWidget->measurementLines();
+    QCOMPARE(pointLinePoints.size(), 3);
+    QCOMPARE(pointLinePoints.at(0).label, QStringLiteral("P"));
+    QCOMPARE(pointLinePoints.at(0).pos, QPointF(40.0, 30.0));
+    QCOMPARE(pointLinePoints.at(1).label, QStringLiteral("L1"));
+    QCOMPARE(pointLinePoints.at(1).pos, QPointF(20.0, 70.0));
+    QCOMPARE(pointLinePoints.at(2).label, QStringLiteral("L2"));
+    QCOMPARE(pointLinePoints.at(2).pos, QPointF(100.0, 70.0));
+    QCOMPARE(pointLineLines.size(), 2);
+    QCOMPARE(pointLineLines.at(0).p1, QPointF(20.0, 70.0));
+    QCOMPARE(pointLineLines.at(0).p2, QPointF(100.0, 70.0));
+    QCOMPARE(pointLineLines.at(1).p1, QPointF(40.0, 30.0));
+    QCOMPARE(pointLineLines.at(1).p2, QPointF(40.0, 70.0));
+    QCOMPARE(pointLineLines.at(1).label, QStringLiteral("距离: 40.000"));
+    const QStringList expectedPointLineMessages{QStringLiteral("快速测量: 点到线 = 距离: 40.000")};
+    QCOMPARE(resultMessages(), expectedPointLineMessages);
+    for (const QString& screenPoint :
+         {QStringLiteral("152.00,113.00"), QStringLiteral("112.00,193.00"), QStringLiteral("272.00,193.00")})
+        QVERIFY(!resultMessages().first().contains(screenPoint));
+
+    const QList<QPointF> pointLineLocal{{40.0, 30.0}, {20.0, 70.0}, {100.0, 70.0}};
+    const QList<QPointF> pointLineSource{{90.0, 95.0}, {50.0, 215.0}, {210.0, 215.0}};
+    for (int i = 0; i < pointLineLocal.size(); ++i) {
+        const std::optional<QPointF> mapped = provenance.mapLocalToSource(pointLineLocal.at(i));
+        QVERIFY(mapped.has_value());
+        QCOMPARE(*mapped, pointLineSource.at(i));
+    }
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
+    QVERIFY(imageWidget->measurementPoints().isEmpty());
+    QVERIFY(imageWidget->measurementLines().isEmpty());
+    selectMode(2);
+    QCOMPARE(imageWidget->imageToWidget(QPointF(20.0, 30.0)).toPoint(), QPoint(112, 113));
+    QCOMPARE(imageWidget->imageToWidget(QPointF(60.0, 30.0)).toPoint(), QPoint(192, 113));
+    QCOMPARE(imageWidget->imageToWidget(QPointF(80.0, 50.0)).toPoint(), QPoint(232, 153));
+    QCOMPARE(imageWidget->imageToWidget(QPointF(80.0, 90.0)).toPoint(), QPoint(232, 233));
+    const QList<QPointF> segmentLocal{{20.0, 30.0}, {60.0, 30.0}, {80.0, 50.0}, {80.0, 90.0}};
+    const QStringList segmentLabels{QStringLiteral("L1-1"), QStringLiteral("L1-2"), QStringLiteral("L2-1"),
+                                    QStringLiteral("L2-2")};
+    for (int i = 0; i < segmentLocal.size(); ++i) {
+        clickImagePoint(segmentLocal.at(i));
+        QCOMPARE(imageWidget->measurementPoints().size(), i + 1);
+        QCOMPARE(imageWidget->measurementPoints().last().pos, segmentLocal.at(i));
+        QCOMPARE(imageWidget->measurementPoints().last().label, segmentLabels.at(i));
+    }
+    const QList<MeasurementOverlayLine> segmentLines = imageWidget->measurementLines();
+    QCOMPARE(segmentLines.size(), 3);
+    QCOMPARE(segmentLines.at(0).p1, QPointF(20.0, 30.0));
+    QCOMPARE(segmentLines.at(0).p2, QPointF(60.0, 30.0));
+    QCOMPARE(segmentLines.at(0).label, QStringLiteral("线1: 40.000"));
+    QCOMPARE(segmentLines.at(1).p1, QPointF(80.0, 50.0));
+    QCOMPARE(segmentLines.at(1).p2, QPointF(80.0, 90.0));
+    QCOMPARE(segmentLines.at(1).label, QStringLiteral("线2: 40.000"));
+    QCOMPARE(segmentLines.at(2).p1, QPointF(60.0, 30.0));
+    QCOMPARE(segmentLines.at(2).p2, QPointF(80.0, 50.0));
+    QCOMPARE(segmentLines.at(2).label, QStringLiteral("间距: 28.284"));
+    const QStringList expectedMessages{
+        QStringLiteral("快速测量: 点到线 = 距离: 40.000"),
+        QStringLiteral("快速测量: 两线段最近距离=28.284 (线1长度=40.000, 线2长度=40.000)")};
+    QCOMPARE(resultMessages(), expectedMessages);
+    const QString& segmentResult = resultMessages().last();
+    for (const QString& screenPoint : {QStringLiteral("112.00,113.00"), QStringLiteral("192.00,113.00"),
+                                       QStringLiteral("232.00,153.00"), QStringLiteral("232.00,233.00")})
+        QVERIFY(!segmentResult.contains(screenPoint));
+
+    const QList<QPointF> segmentSource{{50.0, 95.0}, {130.0, 95.0}, {170.0, 155.0}, {170.0, 275.0}};
+    for (int i = 0; i < segmentLocal.size(); ++i) {
+        const std::optional<QPointF> mapped = provenance.mapLocalToSource(segmentLocal.at(i));
+        QVERIFY(mapped.has_value());
+        QCOMPARE(*mapped, segmentSource.at(i));
+    }
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
+}
+
+void TestMainWindow::testGuiQuickMeasureAngleAndCircleUseImageLocalCoordinatesAfterViewportTransform() {
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    DisplayManager* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* viewport = viewports.first();
+    QVERIFY(viewport);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget);
+
+    QImage image(200, 150, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    ImageData imageData(image);
+    ImageCoordinateProvenance provenance = imageData.coordinateProvenance();
+    provenance.sourceImageId = QStringLiteral("slice192-parent-image");
+    provenance.sourceSize = QSize(800, 600);
+    provenance.localToSource = ImageCoordinateProvenance::Matrix3{2.0, 0.0, 10.0, 0.0, 3.0, 5.0, 0.0, 0.0, 1.0};
+    provenance.hasLocalToSourceTransform = true;
+    imageData.setCoordinateProvenance(provenance);
+    DisplayData display;
+    display.variant() = imageData;
+    viewport->displayData(display);
+    QCoreApplication::processEvents();
+    QVERIFY(imageWidget->hasImage());
+    imageWidget->setFixedSize(320, 240);
+    imageWidget->actualSize();
+    imageWidget->setZoom(2.0);
+
+    const QPoint panStart = imageWidget->imageToWidget(QPointF(48.0, 36.0)).toPoint();
+    const QPoint panEnd = panStart + QPoint(12, 8);
+    QTest::mousePress(imageWidget, Qt::MiddleButton, Qt::NoModifier, panStart);
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(panEnd), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &panMove);
+    QTest::mouseRelease(imageWidget, Qt::MiddleButton, Qt::NoModifier, panEnd);
+
+    QSignalSpy logSpy(&Logger::instance(), &Logger::logAdded);
+    const auto resultMessages = [&]() {
+        QStringList messages;
+        for (const QList<QVariant>& arguments : logSpy) {
+            const LogEntry entry = qvariant_cast<LogEntry>(arguments.first());
+            if (entry.category == QLatin1String("Measurement") && entry.message.startsWith(QStringLiteral("快速测量:")))
+                messages.append(entry.message);
+        }
+        return messages;
+    };
+    const auto selectMode = [&window](int mode) {
+        bool selected = false;
+        QTimer::singleShot(0, &window, [&selected, mode]() {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            if (!menu)
+                return;
+            for (QAction* action : menu->actions()) {
+                if (action->data().toInt() == mode) {
+                    selected = true;
+                    QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, menu->actionGeometry(action).center());
+                    return;
+                }
+            }
+        });
+        QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
+        QVERIFY(selected);
+    };
+    const auto clickImagePoint = [imageWidget](const QPointF& point) {
+        const QPoint screen = imageWidget->imageToWidget(point).toPoint();
+        QVERIFY(imageWidget->rect().contains(screen));
+        QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, screen);
+    };
+
+    selectMode(3);
+    const QList<QPointF> angleLocal{{40.0, 30.0}, {80.0, 30.0}, {40.0, 70.0}};
+    const QList<QPoint> angleScreen{{152, 113}, {232, 113}, {152, 193}};
+    const QStringList angleLabels{QStringLiteral("V"), QStringLiteral("P2"), QStringLiteral("P3")};
+    for (int i = 0; i < angleLocal.size(); ++i) {
+        QCOMPARE(imageWidget->imageToWidget(angleLocal.at(i)).toPoint(), angleScreen.at(i));
+        clickImagePoint(angleLocal.at(i));
+        QCOMPARE(imageWidget->measurementPoints().size(), i + 1);
+        QCOMPARE(imageWidget->measurementPoints().last().pos, angleLocal.at(i));
+    }
+    const QList<MeasurementOverlayPoint> anglePoints = imageWidget->measurementPoints();
+    for (int i = 0; i < angleLabels.size(); ++i)
+        QCOMPARE(anglePoints.at(i).label, angleLabels.at(i));
+    QCOMPARE(anglePoints.at(0).pos, QPointF(40.0, 30.0));
+    QCOMPARE(anglePoints.at(1).pos, QPointF(80.0, 30.0));
+    QCOMPARE(anglePoints.at(2).pos, QPointF(40.0, 70.0));
+    const QList<MeasurementOverlayLine> angleLines = imageWidget->measurementLines();
+    QCOMPARE(angleLines.size(), 2);
+    QCOMPARE(angleLines.at(0).p1, QPointF(40.0, 30.0));
+    QCOMPARE(angleLines.at(0).p2, QPointF(80.0, 30.0));
+    QVERIFY(angleLines.at(0).label.isEmpty());
+    QCOMPARE(angleLines.at(1).p1, QPointF(40.0, 30.0));
+    QCOMPARE(angleLines.at(1).p2, QPointF(40.0, 70.0));
+    QCOMPARE(angleLines.at(1).label, QStringLiteral("角度: 90.00°"));
+    const QStringList expectedAngleMessages{QStringLiteral("快速测量: 三点角度 = 90.00°")};
+    QCOMPARE(resultMessages(), expectedAngleMessages);
+    for (const QPoint screenPoint : angleScreen) {
+        const QString screenText = QStringLiteral("%1,%2")
+                                       .arg(static_cast<double>(screenPoint.x()), 0, 'f', 2)
+                                       .arg(static_cast<double>(screenPoint.y()), 0, 'f', 2);
+        QVERIFY(!resultMessages().first().contains(screenText));
+    }
+    const QList<QPointF> angleSource{{90.0, 95.0}, {170.0, 95.0}, {90.0, 215.0}};
+    for (int i = 0; i < angleLocal.size(); ++i) {
+        const std::optional<QPointF> mapped = provenance.mapLocalToSource(angleLocal.at(i));
+        QVERIFY(mapped.has_value());
+        QCOMPARE(*mapped, angleSource.at(i));
+    }
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
+    QVERIFY(imageWidget->measurementPoints().isEmpty());
+    QVERIFY(imageWidget->measurementLines().isEmpty());
+    selectMode(4);
+    const QList<QPointF> circleLocal{{50.0, 40.0}, {70.0, 60.0}, {50.0, 80.0}};
+    const QList<QPoint> circleScreen{{172, 133}, {212, 173}, {172, 213}};
+    const QStringList circleLabels{QStringLiteral("P1"), QStringLiteral("P2"), QStringLiteral("P3")};
+    for (int i = 0; i < circleLocal.size(); ++i) {
+        QCOMPARE(imageWidget->imageToWidget(circleLocal.at(i)).toPoint(), circleScreen.at(i));
+        clickImagePoint(circleLocal.at(i));
+        if (i < circleLocal.size() - 1) {
+            QCOMPARE(imageWidget->measurementPoints().size(), i + 1);
+            QCOMPARE(imageWidget->measurementPoints().last().pos, circleLocal.at(i));
+        } else {
+            QCOMPARE(imageWidget->measurementPoints().size(), 4);
+        }
+    }
+    const QList<MeasurementOverlayPoint> circlePoints = imageWidget->measurementPoints();
+    QCOMPARE(circlePoints.size(), 4);
+    for (int i = 0; i < circleLabels.size(); ++i)
+        QCOMPARE(circlePoints.at(i).label, circleLabels.at(i));
+    QCOMPARE(circlePoints.at(0).pos, QPointF(50.0, 40.0));
+    QCOMPARE(circlePoints.at(1).pos, QPointF(70.0, 60.0));
+    QCOMPARE(circlePoints.at(2).pos, QPointF(50.0, 80.0));
+    QCOMPARE(circlePoints.at(3).label, QStringLiteral("C"));
+    QCOMPARE(circlePoints.at(3).pos, QPointF(50.0, 60.0));
+
+    const QList<MeasurementOverlayLine> circleLines = imageWidget->measurementLines();
+    QCOMPARE(circleLines.size(), 64);
+    const double pi = std::acos(-1.0);
+    const auto expectedCirclePoint = [pi](int index) {
+        const double theta = 2.0 * pi * index / 64.0;
+        return QPointF(50.0 + 20.0 * std::cos(theta), 60.0 + 20.0 * std::sin(theta));
+    };
+    for (int i = 0; i < circleLines.size(); ++i) {
+        const QPointF expectedStart = expectedCirclePoint(i);
+        const QPointF expectedEnd = expectedCirclePoint(i + 1);
+        QVERIFY(std::abs(circleLines.at(i).p1.x() - expectedStart.x()) <= 1e-9);
+        QVERIFY(std::abs(circleLines.at(i).p1.y() - expectedStart.y()) <= 1e-9);
+        QVERIFY(std::abs(circleLines.at(i).p2.x() - expectedEnd.x()) <= 1e-9);
+        QVERIFY(std::abs(circleLines.at(i).p2.y() - expectedEnd.y()) <= 1e-9);
+    }
+    QCOMPARE(circleLines.first().label, QStringLiteral("R=20.00, C=125.66"));
+    QVERIFY(std::abs(circleLines.last().p2.x() - circleLines.first().p1.x()) <= 1e-9);
+    QVERIFY(std::abs(circleLines.last().p2.y() - circleLines.first().p1.y()) <= 1e-9);
+    const QStringList expectedMessages{QStringLiteral("快速测量: 三点角度 = 90.00°"),
+                                       QStringLiteral("快速测量: 拟合圆 半径=20.000, 周长=125.664, 圆心=(50.0, 60.0)")};
+    QCOMPARE(resultMessages(), expectedMessages);
+    for (const QPoint screenPoint : circleScreen) {
+        const QString screenText = QStringLiteral("%1,%2")
+                                       .arg(static_cast<double>(screenPoint.x()), 0, 'f', 2)
+                                       .arg(static_cast<double>(screenPoint.y()), 0, 'f', 2);
+        QVERIFY(!resultMessages().last().contains(screenText));
+    }
+    const QList<QPointF> circleSource{{110.0, 125.0}, {150.0, 185.0}, {110.0, 245.0}};
+    for (int i = 0; i < circleLocal.size(); ++i) {
+        const std::optional<QPointF> mapped = provenance.mapLocalToSource(circleLocal.at(i));
+        QVERIFY(mapped.has_value());
+        QCOMPARE(*mapped, circleSource.at(i));
+    }
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMeasure", Qt::DirectConnection));
+}
+
+void TestMainWindow::testG6MeasurementInputUsesActualCropImageOutputAfterViewportTransform() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath(QStringLiteral("plugins"));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
+
+    CropImagePlugin crop;
+    QVERIFY(crop.initialize());
+    QImage sourceImage(160, 120, QImage::Format_RGB32);
+    sourceImage.fill(Qt::white);
+    ImageData source(sourceImage);
+    ImageCoordinateProvenance sourceProvenance = source.coordinateProvenance();
+    sourceProvenance.sourceImageId = QStringLiteral("slice193-source-image");
+    sourceProvenance.sourceSize = QSize(320, 360);
+    sourceProvenance.localToSource = ImageCoordinateProvenance::Matrix3{2.0, 0.0, 10.0, 0.0, 3.0, 5.0, 0.0, 0.0, 1.0};
+    sourceProvenance.hasLocalToSourceTransform = true;
+    source.setCoordinateProvenance(sourceProvenance);
+    crop.setParams(
+        QJsonObject{{QStringLiteral("rectangles"), QJsonArray{QJsonValue(QJsonArray{80.0, 60.0, 50.0, 40.0, 0.0})}},
+                    {QStringLiteral("outputFirstAsImage"), true}});
+    ImageData cropped;
+    QVERIFY(crop.execute(source, cropped));
+    QCOMPARE(cropped.toQImage().size(), QSize(100, 80));
+    QVERIFY(cropped.hasCoordinateProvenance());
+    const ImageCoordinateProvenance cropProvenance = cropped.coordinateProvenance();
+    QCOMPARE(cropProvenance.sourceImageId, QStringLiteral("slice193-source-image"));
+    QCOMPARE(cropProvenance.sourceSize, QSize(320, 360));
+    QCOMPARE(cropProvenance.localOriginInSource, QPointF(70.0, 65.0));
+    const ImageCoordinateProvenance::Matrix3 expectedCropMatrix{{2.0, 0.0, 70.0, 0.0, 3.0, 65.0, 0.0, 0.0, 1.0}};
+    QCOMPARE(cropProvenance.localToSourceMatrix(), expectedCropMatrix);
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
+    DisplayManager* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* viewport = viewports.first();
+    QVERIFY(viewport);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget);
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice193_measurement_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("CropImage output GUI point pair");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                               {QStringLiteral("point1"), QJsonArray{0.0, 0.0}},
+                               {QStringLiteral("point2"), QJsonArray{0.0, 0.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    ModuleInstance distance;
+    distance.id = QStringLiteral("slice193_distance_pp");
+    distance.moduleId = QStringLiteral("DistancePP");
+    distance.name = QStringLiteral("Crop-local point distance");
+    project->addModule(distance);
+    project->addConnection(
+        {input.id, distance.id, 0, 0, QStringLiteral("point1"), QStringLiteral("point1"), QStringLiteral("data")});
+    project->addConnection(
+        {input.id, distance.id, 0, 1, QStringLiteral("point2"), QStringLiteral("point2"), QStringLiteral("data")});
+
+    DisplayData display;
+    display.variant() = cropped;
+    viewport->displayData(display);
+    QCoreApplication::processEvents();
+    QVERIFY(imageWidget->hasImage());
+    imageWidget->setFixedSize(320, 240);
+    imageWidget->actualSize();
+    imageWidget->setZoom(2.0);
+    const QPoint panStart = imageWidget->imageToWidget(QPointF(50.0, 40.0)).toPoint();
+    const QPoint panEnd = panStart + QPoint(12, 8);
+    QTest::mousePress(imageWidget, Qt::MiddleButton, Qt::NoModifier, panStart);
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(panEnd), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &panMove);
+    QTest::mouseRelease(imageWidget, Qt::MiddleButton, Qt::NoModifier, panEnd);
+
+    QCOMPARE(imageWidget->imageToWidget(QPointF(10.0, 10.0)).toPoint(), QPoint(142, 108));
+    QCOMPARE(imageWidget->imageToWidget(QPointF(70.0, 50.0)).toPoint(), QPoint(262, 188));
+    QSignalSpy sourcePickSpy(viewport, &ViewportWidget::point2DSourceClicked);
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&engine, &RunEngine::runFinished);
+    bool snapshotAvailable = false;
+    RunResult finishedResult{};
+    QMap<QString, QVariant> inputValues;
+    ImageData inputOutput;
+    PortValueMap inputPorts;
+    QMap<QString, QVariant> distanceValues;
+    ImageData distanceOutput;
+    PortValueMap distancePorts;
+    connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&engine, &input, &distance, &snapshotAvailable, &finishedResult, &inputValues, &inputOutput, &inputPorts,
+         &distanceValues, &distanceOutput, &distancePorts](const RunResult& result) {
+            finishedResult = result;
+            snapshotAvailable =
+                engine.runOutputSnapshot(result.runId, input.id, inputOutput, inputValues, inputPorts) &&
+                engine.runOutputSnapshot(result.runId, distance.id, distanceOutput, distanceValues, distancePorts);
+        },
+        Qt::DirectConnection);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(runFinishedSpy.count(), 0);
+
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(142, 108));
+    QCOMPARE(sourcePickSpy.size(), 1);
+    QCOMPARE(sourcePickSpy.at(0).at(0).toPointF(), QPointF(10.0, 10.0));
+    QCOMPARE(sourcePickSpy.at(0).at(1).toPointF(), QPointF(90.0, 95.0));
+    QCOMPARE(sourcePickSpy.at(0).at(2).toString(), QStringLiteral("slice193-source-image"));
+    QVERIFY(sourcePickSpy.at(0).at(3).toBool());
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 2/2"));
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(runFinishedSpy.count(), 0);
+
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(262, 188));
+    QCOMPARE(sourcePickSpy.size(), 2);
+    QCOMPARE(sourcePickSpy.at(1).at(0).toPointF(), QPointF(70.0, 50.0));
+    QCOMPARE(sourcePickSpy.at(1).at(1).toPointF(), QPointF(210.0, 215.0));
+    QCOMPARE(sourcePickSpy.at(1).at(2).toString(), QStringLiteral("slice193-source-image"));
+    QVERIFY(sourcePickSpy.at(1).at(3).toBool());
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), 1, 1000);
+    QVERIFY(finishedResult.success);
+    QVERIFY(snapshotAvailable);
+
+    const ModuleInstance* savedInput = project->findModule(input.id);
+    QVERIFY(savedInput);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point1")).toArray(), (QJsonArray{10.0, 10.0}));
+    QCOMPARE(savedInput->params.value(QStringLiteral("point2")).toArray(), (QJsonArray{70.0, 50.0}));
+    QCOMPARE(inputValues.value(QStringLiteral("point1")).toList(), (QVariantList{10.0, 10.0}));
+    QCOMPARE(inputValues.value(QStringLiteral("point2")).toList(), (QVariantList{70.0, 50.0}));
+    QCOMPARE(inputValues.value(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("ImageLocalPixel"));
+    const double expectedDistance = std::sqrt(5200.0);
+    QCOMPARE(distanceValues.value(QStringLiteral("distance")).toDouble(), expectedDistance);
+    QCOMPARE(distanceOutput.data(QStringLiteral("distance")).toDouble(), expectedDistance);
+
+    QTRY_COMPARE_WITH_TIMEOUT(imageWidget->measurementPoints().size(), 2, 1000);
+    const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
+    QCOMPARE(overlayPoints.size(), 2);
+    QCOMPARE(overlayPoints.at(0).pos, QPointF(10.0, 10.0));
+    QCOMPARE(overlayPoints.at(1).pos, QPointF(70.0, 50.0));
+    const QList<MeasurementOverlayLine> overlayLines = imageWidget->measurementLines();
+    QCOMPARE(overlayLines.size(), 1);
+    QCOMPARE(overlayLines.first().p1, QPointF(10.0, 10.0));
+    QCOMPARE(overlayLines.first().p2, QPointF(70.0, 50.0));
+    QCOMPARE(runStartedSpy.count(), 1);
+    QCOMPARE(runFinishedSpy.count(), 1);
+    engine.clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInputQueuedContinuationRejectsProjectReplacement() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget);
+    QImage image(120, 90, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+
+    const QString targetId = QStringLiteral("slice54_same_measurement_target");
+    Project* oldProject = ProjectManager::instance().newProject();
+    QVERIFY(oldProject);
+    ModuleInstance oldInput;
+    oldInput.id = targetId;
+    oldInput.moduleId = QStringLiteral("MeasurementInput");
+    oldInput.name = QStringLiteral("old project input");
+    oldInput.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                                  {QStringLiteral("point1"), QJsonArray{1.0, 2.0}},
+                                  {QStringLiteral("point2"), QJsonArray{3.0, 4.0}},
+                                  {QStringLiteral("awaitUserPick"), true}};
+    oldProject->addModule(oldInput);
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&engine, &RunEngine::runFinished);
+    QSignalSpy moduleStartedSpy(&engine, &RunEngine::moduleStarted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QCOMPARE(window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"))->topLevelItem(0)->text(1),
+             QStringLiteral("等待拾取 1/2"));
+
+    const QPoint firstClick = imageWidget->imageToWidget(QPointF(20.0, 25.0)).toPoint();
+    const QPoint finalClick = imageWidget->imageToWidget(QPointF(80.0, 60.0)).toPoint();
+    QVERIFY(imageWidget->rect().contains(firstClick));
+    QVERIFY(imageWidget->rect().contains(finalClick));
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, firstClick);
+    QCoreApplication::processEvents();
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, finalClick);
+    const ModuleInstance* completedOldInput = oldProject->findModule(targetId);
+    QVERIFY(completedOldInput);
+    QVERIFY(!completedOldInput->params.value(QStringLiteral("awaitUserPick")).toBool());
+    const QJsonArray completedPoint1 = completedOldInput->params.value(QStringLiteral("point1")).toArray();
+    const QJsonArray completedPoint2 = completedOldInput->params.value(QStringLiteral("point2")).toArray();
+    QCOMPARE(completedPoint1.size(), 2);
+    QCOMPARE(completedPoint2.size(), 2);
+    const QJsonArray initialPoint1{1.0, 2.0};
+    const QJsonArray initialPoint2{3.0, 4.0};
+    QVERIFY(completedPoint1 != initialPoint1);
+    QVERIFY(completedPoint2 != initialPoint2);
+    // The final pick posts the zero-delay continuation; do not drain the event loop yet.
+
+    Project* replacementProject = ProjectManager::instance().newProject();
+    QVERIFY(replacementProject);
+    ModuleInstance replacementInput = oldInput;
+    replacementInput.name = QStringLiteral("replacement project input");
+    replacementInput.params.insert(QStringLiteral("awaitUserPick"), true);
+    replacementInput.params.insert(QStringLiteral("point1"), QJsonArray{11.0, 12.0});
+    replacementInput.params.insert(QStringLiteral("point2"), QJsonArray{13.0, 14.0});
+    replacementProject->addModule(replacementInput);
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    auto* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+    const int runStartedBaseline = runStartedSpy.count();
+    const int runFinishedBaseline = runFinishedSpy.count();
+    const int moduleStartedBaseline = moduleStartedSpy.count();
+
+    QCoreApplication::processEvents();
+    QTest::qWait(50);
+
+    QCOMPARE(runStartedSpy.count(), runStartedBaseline);
+    QCOMPARE(runFinishedSpy.count(), runFinishedBaseline);
+    QCOMPARE(moduleStartedSpy.count(), moduleStartedBaseline);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                      imageWidget->imageToWidget(QPointF(20.0, 25.0)).toPoint());
+    QCoreApplication::processEvents();
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                      imageWidget->imageToWidget(QPointF(80.0, 60.0)).toPoint());
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), runStartedBaseline + 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), runFinishedBaseline + 1, 1000);
+    QCOMPARE(moduleStartedSpy.count(), moduleStartedBaseline + 1);
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInputQueuedContinuationRejectsSameIdModuleReplacement() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget);
+    QImage image(120, 90, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+
+    const QString targetId = QStringLiteral("slice54_same_measurement_target");
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance oldInput;
+    oldInput.id = targetId;
+    oldInput.moduleId = QStringLiteral("MeasurementInput");
+    oldInput.name = QStringLiteral("old module input");
+    oldInput.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                                  {QStringLiteral("point1"), QJsonArray{1.0, 2.0}},
+                                  {QStringLiteral("point2"), QJsonArray{3.0, 4.0}},
+                                  {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(oldInput);
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+
+    QSignalSpy runStartedSpy(&RunEngine::instance(), &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&RunEngine::instance(), &RunEngine::runFinished);
+    QSignalSpy moduleStartedSpy(&RunEngine::instance(), &RunEngine::moduleStarted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QCOMPARE(window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"))->topLevelItem(0)->text(1),
+             QStringLiteral("等待拾取 1/2"));
+
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                      imageWidget->imageToWidget(QPointF(20.0, 25.0)).toPoint());
+    QCoreApplication::processEvents();
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                      imageWidget->imageToWidget(QPointF(80.0, 60.0)).toPoint());
+    const ModuleInstance* completedOldInput = project->findModule(targetId);
+    QVERIFY(completedOldInput);
+    QVERIFY(!completedOldInput->params.value(QStringLiteral("awaitUserPick")).toBool());
+    const ModuleInstance completedSnapshot = *completedOldInput;
+    const quint64 oldGeneration = project->parameterInstanceGeneration(targetId);
+    // Replace the completed input under the same ID before its queued continuation runs.
+    project->removeModule(targetId);
+    QVERIFY(!project->findModule(targetId));
+    project->addModule(completedSnapshot);
+    QCOMPARE(project->findModule(targetId)->toJson(), completedSnapshot.toJson());
+    QVERIFY(project->parameterInstanceGeneration(targetId) != oldGeneration);
+    const int runStartedBaseline = runStartedSpy.count();
+    const int runFinishedBaseline = runFinishedSpy.count();
+    const int moduleStartedBaseline = moduleStartedSpy.count();
+
+    QCoreApplication::processEvents();
+    QTest::qWait(50);
+
+    QCOMPARE(runStartedSpy.count(), runStartedBaseline);
+    QCOMPARE(runFinishedSpy.count(), runFinishedBaseline);
+    QCOMPARE(moduleStartedSpy.count(), moduleStartedBaseline);
+    QVERIFY(!RunEngine::instance().isBusy());
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), runStartedBaseline + 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), runFinishedBaseline + 1, 1000);
+    QCOMPARE(moduleStartedSpy.count(), moduleStartedBaseline + 1);
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInputQueuedContinuationHonorsStop() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget);
+    QImage image(120, 90, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice54_stopped_measurement_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("stopped input");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                               {QStringLiteral("point1"), QJsonArray{1.0, 2.0}},
+                               {QStringLiteral("point2"), QJsonArray{3.0, 4.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+
+    QSignalSpy runStartedSpy(&RunEngine::instance(), &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&RunEngine::instance(), &RunEngine::runFinished);
+    QSignalSpy moduleStartedSpy(&RunEngine::instance(), &RunEngine::moduleStarted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QCOMPARE(window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"))->topLevelItem(0)->text(1),
+             QStringLiteral("等待拾取 1/2"));
+
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                      imageWidget->imageToWidget(QPointF(20.0, 25.0)).toPoint());
+    QCoreApplication::processEvents();
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                      imageWidget->imageToWidget(QPointF(80.0, 60.0)).toPoint());
+    const ModuleInstance* completedInput = project->findModule(input.id);
+    QVERIFY(completedInput);
+    QVERIFY(!completedInput->params.value(QStringLiteral("awaitUserPick")).toBool());
+    QMetaObject::invokeMethod(&window, "onStop", Qt::DirectConnection);
+    QVERIFY(project->setModuleParam(input.id, QStringLiteral("awaitUserPick"), true));
+    QVERIFY(project->setModuleParam(input.id, QStringLiteral("point1"), QJsonArray{1.0, 2.0}));
+    QVERIFY(project->setModuleParam(input.id, QStringLiteral("point2"), QJsonArray{3.0, 4.0}));
+    auto* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+    const int runStartedBaseline = runStartedSpy.count();
+    const int runFinishedBaseline = runFinishedSpy.count();
+    const int moduleStartedBaseline = moduleStartedSpy.count();
+
+    QCoreApplication::processEvents();
+    QTest::qWait(50);
+
+    QCOMPARE(runStartedSpy.count(), runStartedBaseline);
+    QCOMPARE(runFinishedSpy.count(), runFinishedBaseline);
+    QCOMPARE(moduleStartedSpy.count(), moduleStartedBaseline);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                      imageWidget->imageToWidget(QPointF(20.0, 25.0)).toPoint());
+    QCoreApplication::processEvents();
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                      imageWidget->imageToWidget(QPointF(80.0, 60.0)).toPoint());
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), runStartedBaseline + 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), runFinishedBaseline + 1, 1000);
+    QCOMPARE(moduleStartedSpy.count(), moduleStartedBaseline + 1);
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInputQueuedContinuationAllowsUnrelatedProjectChange() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget);
+    QImage image(120, 90, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice54_unrelated_project_change_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("unrelated project change input");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                               {QStringLiteral("point1"), QJsonArray{1.0, 2.0}},
+                               {QStringLiteral("point2"), QJsonArray{3.0, 4.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+
+    QSignalSpy runStartedSpy(&RunEngine::instance(), &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&RunEngine::instance(), &RunEngine::runFinished);
+    QSignalSpy moduleStartedSpy(&RunEngine::instance(), &RunEngine::moduleStarted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                      imageWidget->imageToWidget(QPointF(20.0, 25.0)).toPoint());
+    QCoreApplication::processEvents();
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                      imageWidget->imageToWidget(QPointF(80.0, 60.0)).toPoint());
+    project->setName(QStringLiteral("renamed while continuation queued"));
+
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), 1, 1000);
+    QCOMPARE(moduleStartedSpy.count(), 1);
+    QCOMPARE(project->name(), QStringLiteral("renamed while continuation queued"));
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInputRejectsImageChangeBeforeFirstPick() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget);
+    QImage image(120, 90, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice54_image_change_before_pick");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("image change before pick");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                               {QStringLiteral("point1"), QJsonArray{1.0, 2.0}},
+                               {QStringLiteral("point2"), QJsonArray{3.0, 4.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+    QSignalSpy runStartedSpy(&RunEngine::instance(), &RunEngine::runStarted);
+    QSignalSpy moduleStartedSpy(&RunEngine::instance(), &RunEngine::moduleStarted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QCOMPARE(window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"))->topLevelItem(0)->text(1),
+             QStringLiteral("等待拾取 1/2"));
+
+    QImage replacementImage(120, 90, QImage::Format_RGB32);
+    replacementImage.fill(Qt::black);
+    viewport->displayImage(replacementImage);
+    const ModuleInstance* savedInput = project->findModule(input.id);
+    QVERIFY(savedInput);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point1")).toArray(), QJsonArray({1.0, 2.0}));
+    QCOMPARE(savedInput->params.value(QStringLiteral("point2")).toArray(), QJsonArray({3.0, 4.0}));
+    QVERIFY(savedInput->params.value(QStringLiteral("awaitUserPick")).toBool());
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+    QVERIFY(!RunEngine::instance().isBusy());
+    QCOMPARE(window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"))->topLevelItem(0)->text(1), QString());
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInputRejectsImageChangeAfterBindingViewport() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget);
+    QImage image(120, 90, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice54_image_change_after_pick");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("image change after pick");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                               {QStringLiteral("point1"), QJsonArray{1.0, 2.0}},
+                               {QStringLiteral("point2"), QJsonArray{3.0, 4.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+
+    QSignalSpy runStartedSpy(&RunEngine::instance(), &RunEngine::runStarted);
+    QSignalSpy moduleStartedSpy(&RunEngine::instance(), &RunEngine::moduleStarted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                      imageWidget->imageToWidget(QPointF(20.0, 25.0)).toPoint());
+    QCoreApplication::processEvents();
+    const ModuleInstance* inputAfterFirstPick = project->findModule(input.id);
+    QVERIFY(inputAfterFirstPick);
+    const QJsonObject paramsAfterFirstPick = inputAfterFirstPick->params;
+    QImage replacementImage(120, 90, QImage::Format_RGB32);
+    replacementImage.fill(Qt::black);
+    viewport->displayImage(replacementImage);
+    const auto visibleOverlay = imageWidget->measurementPoints();
+    QCOMPARE(window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"))->topLevelItem(0)->text(1), QString());
+
+    const ModuleInstance* savedInput = project->findModule(input.id);
+    QVERIFY(savedInput);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point1")).toArray(),
+             paramsAfterFirstPick.value(QStringLiteral("point1")).toArray());
+    QCOMPARE(savedInput->params.value(QStringLiteral("point2")).toArray(), QJsonArray({3.0, 4.0}));
+    QCOMPARE(imageWidget->measurementPoints().size(), visibleOverlay.size());
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+    QVERIFY(!RunEngine::instance().isBusy());
+    QCOMPARE(window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"))->topLevelItem(0)->text(1), QString());
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInputRejectsCrossViewportPick() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager);
+    ViewportWidget* viewport = displayManager->allViewports().first();
+    const QString otherViewportId = displayManager->createViewport(QStringLiteral("Slice54 second viewport"));
+    ViewportWidget* otherViewport = displayManager->viewport(otherViewportId);
+    QVERIFY(viewport && otherViewport);
+    QImage image(120, 90, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    viewport->displayImage(image);
+    otherViewport->displayImage(image);
+    QCoreApplication::processEvents();
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice54_cross_viewport_pick");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("cross viewport pick");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                               {QStringLiteral("point1"), QJsonArray{1.0, 2.0}},
+                               {QStringLiteral("point2"), QJsonArray{3.0, 4.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    viewport->displayImage(image);
+    otherViewport->displayImage(image);
+    QCoreApplication::processEvents();
+
+    QSignalSpy runStartedSpy(&RunEngine::instance(), &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&RunEngine::instance(), &RunEngine::runFinished);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    HImageWidget* firstImageWidget = viewport->imageWidget();
+    HImageWidget* secondImageWidget = otherViewport->imageWidget();
+    QVERIFY(firstImageWidget && secondImageWidget);
+    QTest::mouseClick(firstImageWidget, Qt::LeftButton, Qt::NoModifier,
+                      firstImageWidget->imageToWidget(QPointF(20.0, 25.0)).toPoint());
+    QCoreApplication::processEvents();
+    const QJsonObject projectAfterFirstPick = project->toJson();
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 2/2"));
+
+    QTest::mouseClick(secondImageWidget, Qt::LeftButton, Qt::NoModifier,
+                      secondImageWidget->imageToWidget(QPointF(80.0, 60.0)).toPoint());
+    QCoreApplication::processEvents();
+    QCOMPARE(project->toJson(), projectAfterFirstPick);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 2/2"));
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(runFinishedSpy.count(), 0);
+
+    QTest::mouseClick(firstImageWidget, Qt::LeftButton, Qt::NoModifier,
+                      firstImageWidget->imageToWidget(QPointF(80.0, 60.0)).toPoint());
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), 1, 1000);
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInputCancelsImageChangeAndLateRelease() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath(QStringLiteral("plugins")),
+                                 QStringLiteral("MeasurementInput")));
+    QVERIFY(
+        installRuntimePlugin(QDir(appDir.path()).filePath(QStringLiteral("plugins")), QStringLiteral("DistancePP")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* viewport = viewports.first();
+    QVERIFY(viewport);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget);
+
+    const auto makeImageData = [](const QString& sourceId, const QSize& sourceSize,
+                                  const ImageCoordinateProvenance::Matrix3& localToSource) {
+        QImage image(120, 90, QImage::Format_RGB32);
+        image.fill(Qt::white);
+        ImageData data(image);
+        ImageCoordinateProvenance provenance = data.coordinateProvenance();
+        provenance.sourceImageId = sourceId;
+        provenance.sourceSize = sourceSize;
+        provenance.localToSource = localToSource;
+        provenance.hasLocalToSourceTransform = true;
+        data.setCoordinateProvenance(provenance);
+        return data;
+    };
+    const ImageData imageA =
+        makeImageData(QStringLiteral("slice194-image-a"), QSize(600, 450),
+                      ImageCoordinateProvenance::Matrix3{2.0, 0.0, 100.0, 0.0, 2.0, 50.0, 0.0, 0.0, 1.0});
+    const ImageData imageB =
+        makeImageData(QStringLiteral("slice194-image-b"), QSize(720, 540),
+                      ImageCoordinateProvenance::Matrix3{3.0, 0.0, 10.0, 0.0, 4.0, 20.0, 0.0, 0.0, 1.0});
+    const auto displayImageData = [viewport](const ImageData& data) {
+        DisplayData display;
+        display.variant() = data;
+        viewport->displayData(display);
+    };
+    const auto setInteractionTransform = [imageWidget]() {
+        imageWidget->setFixedSize(360, 270);
+        imageWidget->actualSize();
+        imageWidget->setZoom(2.0);
+        const QPoint panStart = imageWidget->imageToWidget(QPointF(40.0, 30.0)).toPoint();
+        const QPoint panEnd = panStart + QPoint(10, 8);
+        QTest::mousePress(imageWidget, Qt::MiddleButton, Qt::NoModifier, panStart);
+        QMouseEvent panMove(QEvent::MouseMove, QPointF(panEnd), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+        QApplication::sendEvent(imageWidget, &panMove);
+        QTest::mouseRelease(imageWidget, Qt::MiddleButton, Qt::NoModifier, panEnd);
+    };
+
+    displayImageData(imageA);
+    QCoreApplication::processEvents();
+    setInteractionTransform();
+    QCOMPARE(imageWidget->imageToWidget(QPointF(20.0, 25.0)).toPoint(), QPoint(170, 148));
+    const QPoint staleReleasePosition(170, 148);
+    const QPointF oldLocalAtRelease = imageWidget->widgetToImage(staleReleasePosition);
+    QCOMPARE(oldLocalAtRelease, QPointF(20.0, 25.0));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice194_measurement_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("2D stale release guard");
+    const QJsonObject initialParams{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                                    {QStringLiteral("point1"), QJsonArray{1.0, 2.0}},
+                                    {QStringLiteral("point2"), QJsonArray{3.0, 4.0}},
+                                    {QStringLiteral("awaitUserPick"), true}};
+    input.params = initialParams;
+    project->addModule(input);
+    ModuleInstance distance;
+    distance.id = QStringLiteral("slice194_distance_pp");
+    distance.moduleId = QStringLiteral("DistancePP");
+    distance.name = QStringLiteral("fresh B image distance");
+    project->addModule(distance);
+    project->addConnection(
+        {input.id, distance.id, 0, 0, QStringLiteral("point1"), QStringLiteral("point1"), QStringLiteral("data")});
+    project->addConnection(
+        {input.id, distance.id, 0, 1, QStringLiteral("point2"), QStringLiteral("point2"), QStringLiteral("data")});
+    const QJsonObject initialProject = project->toJson();
+
+    QSignalSpy sourcePickSpy(viewport, &ViewportWidget::point2DSourceClicked);
+    QSignalSpy generationSpy(viewport, &ViewportWidget::contentGenerationChanged);
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&engine, &RunEngine::runFinished);
+    QSignalSpy moduleStartedSpy(&engine, &RunEngine::moduleStarted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+    QTest::mousePress(imageWidget, Qt::LeftButton, Qt::NoModifier, staleReleasePosition);
+    displayImageData(imageB);
+    QCOMPARE(generationSpy.size(), 1);
+    QVERIFY(!imageWidget->hasImage() || imageWidget->currentImage().size() == QSize(120, 90));
+    setInteractionTransform();
+    QCOMPARE(imageWidget->widgetToImage(staleReleasePosition), oldLocalAtRelease);
+    QTest::mouseRelease(imageWidget, Qt::LeftButton, Qt::NoModifier, staleReleasePosition);
+    QCoreApplication::processEvents();
+
+    QCOMPARE(project->toJson(), initialProject);
+    QCOMPARE(sourcePickSpy.size(), 0);
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(runFinishedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+    QVERIFY(!engine.isBusy());
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QString());
+    QVERIFY(imageWidget->measurementPoints().isEmpty());
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+    QCOMPARE(imageWidget->imageToWidget(QPointF(30.0, 20.0)).toPoint(), QPoint(190, 138));
+    QCOMPARE(imageWidget->imageToWidget(QPointF(60.0, 40.0)).toPoint(), QPoint(250, 178));
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(190, 138));
+    QCOMPARE(sourcePickSpy.size(), 1);
+    QCOMPARE(sourcePickSpy.at(0).at(0).toPointF(), QPointF(30.0, 20.0));
+    QCOMPARE(sourcePickSpy.at(0).at(1).toPointF(), QPointF(100.0, 100.0));
+    QCOMPARE(sourcePickSpy.at(0).at(2).toString(), QStringLiteral("slice194-image-b"));
+    QVERIFY(sourcePickSpy.at(0).at(3).toBool());
+    QCOMPARE(project->findModule(input.id)->params.value(QStringLiteral("point1")).toArray(), (QJsonArray{30.0, 20.0}));
+    QCOMPARE(imageWidget->measurementPoints().size(), 1);
+    const QJsonObject afterFirstPick = project->toJson();
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 2/2"));
+    QTest::mousePress(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(250, 178));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onStop", Qt::DirectConnection));
+    QTest::mouseRelease(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(250, 178));
+    QCoreApplication::processEvents();
+    QCOMPARE(project->toJson(), afterFirstPick);
+    QCOMPARE(sourcePickSpy.size(), 1);
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(runFinishedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+    QCOMPARE(imageWidget->measurementPoints().size(), 1);
+    QCOMPARE(imageWidget->measurementPoints().first().pos, QPointF(30.0, 20.0));
+    QVERIFY(!engine.isBusy());
+
+    QVERIFY(project->setModuleParam(input.id, QStringLiteral("awaitUserPick"), true));
+    QVERIFY(project->setModuleParam(input.id, QStringLiteral("point1"), QJsonArray{1.0, 2.0}));
+    QVERIFY(project->setModuleParam(input.id, QStringLiteral("point2"), QJsonArray{3.0, 4.0}));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QSignalSpy completedRunSpy(&engine, &RunEngine::runFinished);
+    QSignalSpy completedRunStartedSpy(&engine, &RunEngine::runStarted);
+    bool snapshotAvailable = false;
+    RunResult finishedResult{};
+    QMap<QString, QVariant> inputValues;
+    ImageData inputOutput;
+    PortValueMap inputPorts;
+    QMap<QString, QVariant> distanceValues;
+    ImageData distanceOutput;
+    PortValueMap distancePorts;
+    connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&engine, &input, &distance, &snapshotAvailable, &finishedResult, &inputValues, &inputOutput, &inputPorts,
+         &distanceValues, &distanceOutput, &distancePorts](const RunResult& result) {
+            finishedResult = result;
+            snapshotAvailable =
+                engine.runOutputSnapshot(result.runId, input.id, inputOutput, inputValues, inputPorts) &&
+                engine.runOutputSnapshot(result.runId, distance.id, distanceOutput, distanceValues, distancePorts);
+        },
+        Qt::DirectConnection);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(190, 138));
+    QCOMPARE(sourcePickSpy.size(), 2);
+    QCOMPARE(sourcePickSpy.at(1).at(0).toPointF(), QPointF(30.0, 20.0));
+    QCOMPARE(sourcePickSpy.at(1).at(1).toPointF(), QPointF(100.0, 100.0));
+    QCOMPARE(sourcePickSpy.at(1).at(2).toString(), QStringLiteral("slice194-image-b"));
+    QCOMPARE(runStartedSpy.count(), 0);
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(250, 178));
+    QCOMPARE(sourcePickSpy.size(), 3);
+    QCOMPARE(sourcePickSpy.at(2).at(0).toPointF(), QPointF(60.0, 40.0));
+    QCOMPARE(sourcePickSpy.at(2).at(1).toPointF(), QPointF(190.0, 180.0));
+    QCOMPARE(sourcePickSpy.at(2).at(2).toString(), QStringLiteral("slice194-image-b"));
+    QTRY_COMPARE_WITH_TIMEOUT(completedRunStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(completedRunSpy.count(), 1, 1000);
+    QVERIFY(finishedResult.success);
+    QVERIFY(snapshotAvailable);
+    QCOMPARE(project->findModule(input.id)->params.value(QStringLiteral("point1")).toArray(), (QJsonArray{30.0, 20.0}));
+    QCOMPARE(project->findModule(input.id)->params.value(QStringLiteral("point2")).toArray(), (QJsonArray{60.0, 40.0}));
+    QCOMPARE(inputValues.value(QStringLiteral("point1")).toList(), (QVariantList{30.0, 20.0}));
+    QCOMPARE(inputValues.value(QStringLiteral("point2")).toList(), (QVariantList{60.0, 40.0}));
+    QCOMPARE(inputValues.value(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("ImageLocalPixel"));
+    QCOMPARE(distanceValues.value(QStringLiteral("distance")).toDouble(), std::sqrt(1300.0));
+    QCOMPARE(distanceOutput.data(QStringLiteral("distance")).toDouble(), std::sqrt(1300.0));
+    QTRY_COMPARE_WITH_TIMEOUT(imageWidget->measurementPoints().size(), 2, 1000);
+    QCOMPARE(imageWidget->measurementPoints().at(0).pos, QPointF(30.0, 20.0));
+    QCOMPARE(imageWidget->measurementPoints().at(1).pos, QPointF(60.0, 40.0));
+    QCOMPARE(imageWidget->measurementLines().size(), 1);
+    QCOMPARE(imageWidget->measurementLines().first().p1, QPointF(30.0, 20.0));
+    QCOMPARE(imageWidget->measurementLines().first().p2, QPointF(60.0, 40.0));
+    QCOMPARE(completedRunStartedSpy.count(), 1);
+    QCOMPARE(completedRunSpy.count(), 1);
+    engine.clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInputQueuedContinuationRejectsDestroyedViewport() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager);
+    ViewportWidget* viewport = displayManager->allViewports().first();
+    QVERIFY(viewport);
+    const QString viewportId = viewport->viewportId();
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget);
+    QImage image(120, 90, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice54_destroyed_viewport_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("destroyed viewport input");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                               {QStringLiteral("point1"), QJsonArray{1.0, 2.0}},
+                               {QStringLiteral("point2"), QJsonArray{3.0, 4.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+
+    QSignalSpy runStartedSpy(&RunEngine::instance(), &RunEngine::runStarted);
+    QSignalSpy moduleStartedSpy(&RunEngine::instance(), &RunEngine::moduleStarted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                      imageWidget->imageToWidget(QPointF(20.0, 25.0)).toPoint());
+    QCoreApplication::processEvents();
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier,
+                      imageWidget->imageToWidget(QPointF(80.0, 60.0)).toPoint());
+    QVERIFY(!project->findModule(input.id)->params.value(QStringLiteral("awaitUserPick")).toBool());
+
+    displayManager->destroyViewport(viewportId);
+    const QString replacementViewportId = displayManager->createViewport(QStringLiteral("Slice54 replacement"));
+    QVERIFY(replacementViewportId != viewportId);
+    ViewportWidget* replacementViewport = displayManager->viewport(replacementViewportId);
+    QVERIFY(replacementViewport);
+    replacementViewport->displayImage(image);
+    const quint64 replacementGeneration = replacementViewport->contentGeneration();
+    QCoreApplication::processEvents();
+    QTest::qWait(50);
+
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+    QVERIFY(!RunEngine::instance().isBusy());
+    QCOMPARE(replacementViewport->contentGeneration(), replacementGeneration);
+    QCOMPARE(replacementViewport->currentImage(), image);
+    QCOMPARE(window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"))->topLevelItem(0)->text(1), QString());
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(moduleStartedSpy.count(), 1, 1000);
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInput3DWorldCoordinatesReachRunOutput() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* viewport = viewports.first();
+    QVERIFY(viewport);
+    PointCloudData cloud;
+    cloud.points = {Eigen::Vector3d(1.0, 2.0, 3.0), Eigen::Vector3d(4.0, 5.0, 6.0), Eigen::Vector3d(7.0, 8.0, 9.0)};
+    DisplayData cloudDisplay;
+    cloudDisplay.variant() = cloud;
+    viewport->displayData(cloudDisplay);
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice129_3d_measurement_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("3D MeasurementInput");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                               {QStringLiteral("point1"), QJsonArray{0.0, 0.0, 0.0}},
+                               {QStringLiteral("point2"), QJsonArray{10.0, 10.0, 10.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    QCoreApplication::processEvents();
+
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&engine, &RunEngine::runFinished);
+    QSignalSpy moduleStartedSpy(&engine, &RunEngine::moduleStarted);
+    bool snapshotAvailable = false;
+    RunResult finishedResult{};
+    QMap<QString, QVariant> values;
+    ImageData output;
+    PortValueMap ports;
+    connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&engine, &input, &snapshotAvailable, &finishedResult, &values, &output, &ports](const RunResult& result) {
+            finishedResult = result;
+            snapshotAvailable = engine.runOutputSnapshot(result.runId, input.id, output, values, ports);
+        },
+        Qt::DirectConnection);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+
+    constexpr double firstX = 16777217.125;
+    constexpr double firstY = -123.75;
+    constexpr double firstZ = 0.000125;
+    constexpr double secondX = 16777220.125;
+    constexpr double secondY = 456.5;
+    constexpr double secondZ = -0.000375;
+    Q_EMIT viewport->point3DWorldClicked(firstX, firstY, firstZ);
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 2/2"));
+    Q_EMIT viewport->point3DWorldClicked(secondX, secondY, secondZ);
+
+    const auto overlayPoints = viewport->viewport3D()->measurementPoints3D();
+    QCOMPARE(overlayPoints.size(), 2);
+    QCOMPARE(overlayPoints.at(0).label, QStringLiteral("P1"));
+    QCOMPARE(overlayPoints.at(0).pos.x(), firstX);
+    QCOMPARE(overlayPoints.at(0).pos.y(), firstY);
+    QCOMPARE(overlayPoints.at(0).pos.z(), firstZ);
+    QCOMPARE(overlayPoints.at(1).label, QStringLiteral("P2"));
+    QCOMPARE(overlayPoints.at(1).pos.x(), secondX);
+    QCOMPARE(overlayPoints.at(1).pos.y(), secondY);
+    QCOMPARE(overlayPoints.at(1).pos.z(), secondZ);
+    const auto overlayLines = viewport->viewport3D()->measurementLines3D();
+    QCOMPARE(overlayLines.size(), 1);
+    QCOMPARE(overlayLines.first().label, QStringLiteral("P1-P2"));
+    QCOMPARE(overlayLines.first().p1.x(), firstX);
+    QCOMPARE(overlayLines.first().p1.y(), firstY);
+    QCOMPARE(overlayLines.first().p1.z(), firstZ);
+    QCOMPARE(overlayLines.first().p2.x(), secondX);
+    QCOMPARE(overlayLines.first().p2.y(), secondY);
+    QCOMPARE(overlayLines.first().p2.z(), secondZ);
+
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), 1, 1000);
+    QCOMPARE(moduleStartedSpy.count(), 1);
+    QVERIFY(finishedResult.success);
+    QVERIFY(!finishedResult.runId.isEmpty());
+    QVERIFY(snapshotAvailable);
+
+    const QJsonArray expectedPoint1{firstX, firstY, firstZ};
+    const QJsonArray expectedPoint2{secondX, secondY, secondZ};
+    const QVariantList expectedOutputPoint1{firstX, firstY, firstZ};
+    const QVariantList expectedOutputPoint2{secondX, secondY, secondZ};
+    const ModuleInstance* savedInput = project->findModule(input.id);
+    QVERIFY(savedInput);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point1")).toArray(), expectedPoint1);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point2")).toArray(), expectedPoint2);
+    QCOMPARE(values.value(QStringLiteral("point1")).toList(), expectedOutputPoint1);
+    QCOMPARE(values.value(QStringLiteral("point2")).toList(), expectedOutputPoint2);
+    QCOMPARE(values.value(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("World3D"));
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInput3DRealMousePicksAfterCameraTransformsRunOnce() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    DisplayManager* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    ViewportWidget* viewport = displayManager->allViewports().first();
+    QVERIFY(viewport != nullptr);
+
+    const Eigen::Vector3d first(5.0, -3.0, 2.0);
+    const Eigen::Vector3d second(7.0, -3.0, 2.0);
+    const QList<Eigen::Vector3d> candidates{first,
+                                            second,
+                                            Eigen::Vector3d(3.0, -3.0, 2.0),
+                                            Eigen::Vector3d(5.0, -1.0, 2.0),
+                                            Eigen::Vector3d(5.0, -5.0, 2.0),
+                                            Eigen::Vector3d(5.0, -3.0, 4.0),
+                                            Eigen::Vector3d(5.0, -3.0, 0.0)};
+    PointCloudData cloud;
+    for (const Eigen::Vector3d& point : candidates)
+        cloud.points.push_back(point);
+    DisplayData display;
+    display.variant() = cloud;
+    viewport->displayData(display);
+    Viewport3DContent* content = viewport->viewport3D();
+    QVERIFY(content != nullptr);
+    QVERIFY(content->width() > 100);
+    QVERIFY(content->height() > 100);
+    QSignalSpy worldPickSpy(viewport, &ViewportWidget::point3DWorldClicked);
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice170_3d_measurement_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("3D MeasurementInput camera pick");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                               {QStringLiteral("point1"), QJsonArray{0.0, 0.0, 0.0}},
+                               {QStringLiteral("point2"), QJsonArray{10.0, 10.0, 10.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    QCoreApplication::processEvents();
+    viewport->displayData(display);
+    content = viewport->viewport3D();
+    QVERIFY(content != nullptr);
+    QVERIFY(content->isVisible());
+
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&engine, &RunEngine::runFinished);
+    QSignalSpy moduleStartedSpy(&engine, &RunEngine::moduleStarted);
+    bool snapshotAvailable = false;
+    RunResult finishedResult{};
+    QMap<QString, QVariant> values;
+    ImageData output;
+    PortValueMap ports;
+    connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&engine, &input, &snapshotAvailable, &finishedResult, &values, &output, &ports](const RunResult& result) {
+            finishedResult = result;
+            snapshotAvailable = engine.runOutputSnapshot(result.runId, input.id, output, values, ports);
+        },
+        Qt::DirectConnection);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree != nullptr);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+
+    CameraController oracle;
+    oracle.frameData(QVector3D(3.0f, -5.0f, 0.0f), QVector3D(7.0f, -1.0f, 4.0f));
+    const QPoint wheelPosition = content->rect().center();
+    QWheelEvent wheel(QPointF(wheelPosition), content->mapToGlobal(wheelPosition), QPoint(), QPoint(0, 480),
+                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(content, &wheel);
+    oracle.zoom(0.6f);
+    const QPoint orbitStart(100, 100);
+    const QPoint orbitEnd(220, 170);
+    QMouseEvent orbitPress(QEvent::MouseButtonPress, QPointF(orbitStart), Qt::LeftButton, Qt::LeftButton,
+                           Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitPress);
+    QMouseEvent orbitMove(QEvent::MouseMove, QPointF(orbitEnd), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitMove);
+    QTest::qWait(20);
+    QMouseEvent orbitRelease(QEvent::MouseButtonRelease, QPointF(orbitEnd), Qt::LeftButton, Qt::NoButton,
+                             Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitRelease);
+    oracle.orbit(120.0f * 0.005f, -70.0f * 0.005f);
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+
+    const QSize contentSize = content->size();
+    const QMatrix4x4 projection =
+        oracle.projectionMatrix(static_cast<float>(contentSize.width()) / contentSize.height());
+    const auto projectToScreen = [&oracle, &projection, &contentSize](const Eigen::Vector3d& point) {
+        const QVector3D world(static_cast<float>(point.x()), static_cast<float>(point.y()),
+                              static_cast<float>(point.z()));
+        const QVector3D projected =
+            world.project(oracle.viewMatrix(), projection, QRect(0, 0, contentSize.width(), contentSize.height()));
+        return QPointF(projected.x(), contentSize.height() - projected.y());
+    };
+    QList<QPoint> clickPositions;
+    for (const Eigen::Vector3d& expected : {first, second}) {
+        const QPoint click = projectToScreen(expected).toPoint();
+        QVERIFY(content->rect().contains(click));
+        QVERIFY(QLineF(QPointF(click), projectToScreen(expected)).length() < 12.0);
+        for (const Eigen::Vector3d& candidate : candidates) {
+            if ((candidate - expected).squaredNorm() == 0.0)
+                continue;
+            QVERIFY2(QLineF(QPointF(click), projectToScreen(candidate)).length() >= 14.0,
+                     "Projected click must be at least 14 px from every non-target point");
+        }
+        clickPositions.append(click);
+    }
+    const auto sendClick = [content](const QPoint& position) {
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(position), Qt::LeftButton, Qt::LeftButton,
+                          Qt::ControlModifier);
+        QApplication::sendEvent(content, &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(position), Qt::LeftButton, Qt::NoButton,
+                            Qt::ControlModifier);
+        QApplication::sendEvent(content, &release);
+    };
+    sendClick(clickPositions.at(0));
+    QCOMPARE(worldPickSpy.size(), 1);
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 2/2"));
+    sendClick(clickPositions.at(1));
+
+    const auto overlayPoints = content->measurementPoints3D();
+    QCOMPARE(overlayPoints.size(), 2);
+    QCOMPARE(overlayPoints.at(0).label, QStringLiteral("P1"));
+    QCOMPARE(overlayPoints.at(0).pos.x(), first.x());
+    QCOMPARE(overlayPoints.at(0).pos.y(), first.y());
+    QCOMPARE(overlayPoints.at(0).pos.z(), first.z());
+    QCOMPARE(overlayPoints.at(1).label, QStringLiteral("P2"));
+    QCOMPARE(overlayPoints.at(1).pos.x(), second.x());
+    QCOMPARE(overlayPoints.at(1).pos.y(), second.y());
+    QCOMPARE(overlayPoints.at(1).pos.z(), second.z());
+    const auto overlayLines = content->measurementLines3D();
+    QCOMPARE(overlayLines.size(), 1);
+    QCOMPARE(overlayLines.first().p1.x(), first.x());
+    QCOMPARE(overlayLines.first().p1.y(), first.y());
+    QCOMPARE(overlayLines.first().p1.z(), first.z());
+    QCOMPARE(overlayLines.first().p2.x(), second.x());
+    QCOMPARE(overlayLines.first().p2.y(), second.y());
+    QCOMPARE(overlayLines.first().p2.z(), second.z());
+
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(moduleStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), 1, 1000);
+    QCOMPARE(runStartedSpy.count(), 1);
+    QCOMPARE(moduleStartedSpy.count(), 1);
+    QCOMPARE(runFinishedSpy.count(), 1);
+    QVERIFY(finishedResult.success);
+    QVERIFY(!finishedResult.runId.isEmpty());
+    QVERIFY(snapshotAvailable);
+    const QJsonArray expectedPoint1{first.x(), first.y(), first.z()};
+    const QJsonArray expectedPoint2{second.x(), second.y(), second.z()};
+    const ModuleInstance* savedInput = project->findModule(input.id);
+    QVERIFY(savedInput != nullptr);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point1")).toArray(), expectedPoint1);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point2")).toArray(), expectedPoint2);
+    QCOMPARE(values.value(QStringLiteral("point1")).toList(), (QVariantList{first.x(), first.y(), first.z()}));
+    QCOMPARE(values.value(QStringLiteral("point2")).toList(), (QVariantList{second.x(), second.y(), second.z()}));
+    QCOMPARE(values.value(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("World3D"));
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInput3DPointLineRealMousePicksAfterCameraTransforms() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    DisplayManager* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    ViewportWidget* viewport = displayManager->allViewports().first();
+    QVERIFY(viewport != nullptr);
+
+    const Eigen::Vector3d point(5.0, -3.0, 2.0);
+    const Eigen::Vector3d lineFirst(7.0, -3.0, 2.0);
+    const Eigen::Vector3d lineSecond(5.0, -3.0, 4.0);
+    const QList<Eigen::Vector3d> candidates{point,
+                                            lineFirst,
+                                            Eigen::Vector3d(3.0, -3.0, 2.0),
+                                            Eigen::Vector3d(5.0, -1.0, 2.0),
+                                            Eigen::Vector3d(5.0, -5.0, 2.0),
+                                            lineSecond,
+                                            Eigen::Vector3d(5.0, -3.0, 0.0)};
+    PointCloudData cloud;
+    for (const Eigen::Vector3d& candidate : candidates)
+        cloud.points.push_back(candidate);
+    DisplayData display;
+    display.variant() = cloud;
+    viewport->displayData(display);
+    Viewport3DContent* content = viewport->viewport3D();
+    QVERIFY(content != nullptr);
+    QVERIFY(content->width() > 100);
+    QVERIFY(content->height() > 100);
+    QSignalSpy worldPickSpy(viewport, &ViewportWidget::point3DWorldClicked);
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice175_3d_point_line_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("3D point_line camera pick");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_line")},
+                               {QStringLiteral("point"), QJsonArray{0.0, 0.0, 0.0}},
+                               {QStringLiteral("line"), QJsonArray{0.0, 0.0, 1.0, 1.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    QCoreApplication::processEvents();
+    viewport->displayData(display);
+    content = viewport->viewport3D();
+    QVERIFY(content != nullptr);
+    QVERIFY(content->isVisible());
+
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&engine, &RunEngine::runFinished);
+    QSignalSpy moduleStartedSpy(&engine, &RunEngine::moduleStarted);
+    bool snapshotAvailable = false;
+    RunResult finishedResult{};
+    QMap<QString, QVariant> values;
+    ImageData output;
+    PortValueMap ports;
+    connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&engine, &input, &snapshotAvailable, &finishedResult, &values, &output, &ports](const RunResult& result) {
+            finishedResult = result;
+            snapshotAvailable = engine.runOutputSnapshot(result.runId, input.id, output, values, ports);
+        },
+        Qt::DirectConnection);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree != nullptr);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/3"));
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+
+    CameraController oracle;
+    oracle.frameData(QVector3D(3.0f, -5.0f, 0.0f), QVector3D(7.0f, -1.0f, 4.0f));
+    const QPoint wheelPosition = content->rect().center();
+    QWheelEvent wheel(QPointF(wheelPosition), content->mapToGlobal(wheelPosition), QPoint(), QPoint(0, 480),
+                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(content, &wheel);
+    oracle.zoom(0.6f);
+    const QPoint orbitStart(100, 100);
+    const QPoint orbitEnd(220, 170);
+    QMouseEvent orbitPress(QEvent::MouseButtonPress, QPointF(orbitStart), Qt::LeftButton, Qt::LeftButton,
+                           Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitPress);
+    QMouseEvent orbitMove(QEvent::MouseMove, QPointF(orbitEnd), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitMove);
+    QTest::qWait(20);
+    QMouseEvent orbitRelease(QEvent::MouseButtonRelease, QPointF(orbitEnd), Qt::LeftButton, Qt::NoButton,
+                             Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitRelease);
+    oracle.orbit(120.0f * 0.005f, -70.0f * 0.005f);
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/3"));
+
+    const QSize contentSize = content->size();
+    const QMatrix4x4 projection =
+        oracle.projectionMatrix(static_cast<float>(contentSize.width()) / contentSize.height());
+    const auto projectToScreen = [&oracle, &projection, &contentSize](const Eigen::Vector3d& target) {
+        const QVector3D world(static_cast<float>(target.x()), static_cast<float>(target.y()),
+                              static_cast<float>(target.z()));
+        const QVector3D projected =
+            world.project(oracle.viewMatrix(), projection, QRect(0, 0, contentSize.width(), contentSize.height()));
+        return QPointF(projected.x(), contentSize.height() - projected.y());
+    };
+    QList<QPoint> clickPositions;
+    for (const Eigen::Vector3d& target : {point, lineFirst, lineSecond}) {
+        const QPoint click = projectToScreen(target).toPoint();
+        QVERIFY(content->rect().contains(click));
+        QVERIFY(QLineF(QPointF(click), projectToScreen(target)).length() < 12.0);
+        for (const Eigen::Vector3d& candidate : candidates) {
+            if ((candidate - target).squaredNorm() == 0.0)
+                continue;
+            QVERIFY2(QLineF(QPointF(click), projectToScreen(candidate)).length() >= 14.0,
+                     "Projected click must be at least 14 px from every non-target point");
+        }
+        clickPositions.append(click);
+    }
+    const auto sendClick = [content](const QPoint& position) {
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(position), Qt::LeftButton, Qt::LeftButton,
+                          Qt::ControlModifier);
+        QApplication::sendEvent(content, &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(position), Qt::LeftButton, Qt::NoButton,
+                            Qt::ControlModifier);
+        QApplication::sendEvent(content, &release);
+    };
+    sendClick(clickPositions.at(0));
+    QCOMPARE(worldPickSpy.size(), 1);
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 2/3"));
+    sendClick(clickPositions.at(1));
+    QCOMPARE(worldPickSpy.size(), 2);
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 3/3"));
+    sendClick(clickPositions.at(2));
+    QCOMPARE(worldPickSpy.size(), 3);
+
+    const auto overlayPoints = content->measurementPoints3D();
+    QCOMPARE(overlayPoints.size(), 3);
+    for (const auto& [index, expected, label] :
+         {std::tuple<int, Eigen::Vector3d, QString>{0, point, QStringLiteral("P")},
+          std::tuple<int, Eigen::Vector3d, QString>{1, Eigen::Vector3d(7.0, -3.0, 0.0), QStringLiteral("L1")},
+          std::tuple<int, Eigen::Vector3d, QString>{2, Eigen::Vector3d(5.0, -3.0, 0.0), QStringLiteral("L2")}}) {
+        QCOMPARE(overlayPoints.at(index).label, label);
+        QCOMPARE(overlayPoints.at(index).pos.x(), expected.x());
+        QCOMPARE(overlayPoints.at(index).pos.y(), expected.y());
+        QCOMPARE(overlayPoints.at(index).pos.z(), expected.z());
+    }
+    const auto overlayLines = content->measurementLines3D();
+    QCOMPARE(overlayLines.size(), 1);
+    QCOMPARE(overlayLines.first().p1.x(), 7.0);
+    QCOMPARE(overlayLines.first().p1.y(), -3.0);
+    QCOMPARE(overlayLines.first().p1.z(), 0.0);
+    QCOMPARE(overlayLines.first().p2.x(), 5.0);
+    QCOMPARE(overlayLines.first().p2.y(), -3.0);
+    QCOMPARE(overlayLines.first().p2.z(), 0.0);
+
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(moduleStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), 1, 1000);
+    QCOMPARE(runStartedSpy.count(), 1);
+    QCOMPARE(moduleStartedSpy.count(), 1);
+    QCOMPARE(runFinishedSpy.count(), 1);
+    QVERIFY(finishedResult.success);
+    QVERIFY(!finishedResult.runId.isEmpty());
+    QVERIFY(snapshotAvailable);
+    const ModuleInstance* savedInput = project->findModule(input.id);
+    QVERIFY(savedInput != nullptr);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point")).toArray(), QJsonArray({5.0, -3.0, 2.0}));
+    QCOMPARE(savedInput->params.value(QStringLiteral("line")).toArray(), QJsonArray({7.0, -3.0, 5.0, -3.0}));
+    QCOMPARE(savedInput->params.value(QStringLiteral("pick_coordinate_frame")).toString(),
+             QStringLiteral("Unspecified"));
+    QCOMPARE(values.value(QStringLiteral("point")).toList(), (QVariantList{5.0, -3.0, 2.0}));
+    QCOMPARE(values.value(QStringLiteral("line")).toList(), (QVariantList{7.0, -3.0, 5.0, -3.0}));
+    QCOMPARE(values.value(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("Unspecified"));
+    QVERIFY(values.contains(QStringLiteral("source_coordinate_available")));
+    QCOMPARE(values.value(QStringLiteral("source_coordinate_available")).type(), QVariant::Bool);
+    QCOMPARE(values.value(QStringLiteral("source_coordinate_available")).toBool(), false);
+    for (const QString& sourceField :
+         {QStringLiteral("source_image_id"), QStringLiteral("source_image_size"),
+          QStringLiteral("source_coordinate_origin"), QStringLiteral("point_source"), QStringLiteral("line_source")}) {
+        QVERIFY(!values.contains(sourceField));
+    }
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInput3DLinePairRealMousePicksAfterCameraTransforms() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    DisplayManager* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* viewport = viewports.first();
+
+    const Eigen::Vector3d line1First(4.0, -4.0, 1.0);
+    const Eigen::Vector3d line1Second(6.0, -4.0, 1.0);
+    const Eigen::Vector3d line2First(4.0, -2.0, 3.0);
+    const Eigen::Vector3d line2Second(6.0, -2.0, 3.0);
+    const QList<Eigen::Vector3d> targets{line1First, line1Second, line2First, line2Second};
+    const QList<Eigen::Vector3d> candidates{line1First,
+                                            line1Second,
+                                            line2First,
+                                            line2Second,
+                                            Eigen::Vector3d(3.0, -5.0, 0.0),
+                                            Eigen::Vector3d(7.0, -1.0, 4.0)};
+    PointCloudData cloud;
+    for (const Eigen::Vector3d& candidate : candidates)
+        cloud.points.push_back(candidate);
+    DisplayData display;
+    display.variant() = cloud;
+    viewport->displayData(display);
+    Viewport3DContent* content = viewport->viewport3D();
+    QVERIFY(content != nullptr);
+    QVERIFY(content->width() > 100);
+    QVERIFY(content->height() > 100);
+    QSignalSpy worldPickSpy(viewport, &ViewportWidget::point3DWorldClicked);
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice176_3d_line_pair_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("3D line_pair camera pick");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("line_pair")},
+                               {QStringLiteral("line1"), QJsonArray{0.0, 0.0, 1.0, 1.0}},
+                               {QStringLiteral("line2"), QJsonArray{0.0, 0.0, 1.0, 1.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    QCoreApplication::processEvents();
+    viewport->displayData(display);
+    content = viewport->viewport3D();
+    QVERIFY(content != nullptr);
+    QVERIFY(content->isVisible());
+
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&engine, &RunEngine::runFinished);
+    QSignalSpy moduleStartedSpy(&engine, &RunEngine::moduleStarted);
+    bool snapshotAvailable = false;
+    RunResult finishedResult{};
+    QMap<QString, QVariant> values;
+    ImageData output;
+    PortValueMap ports;
+    connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&engine, &input, &snapshotAvailable, &finishedResult, &values, &output, &ports](const RunResult& result) {
+            finishedResult = result;
+            snapshotAvailable = engine.runOutputSnapshot(result.runId, input.id, output, values, ports);
+        },
+        Qt::DirectConnection);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree != nullptr);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/4"));
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+
+    CameraController oracle;
+    oracle.frameData(QVector3D(3.0f, -5.0f, 0.0f), QVector3D(7.0f, -1.0f, 4.0f));
+    const QPoint wheelPosition = content->rect().center();
+    QWheelEvent wheel(QPointF(wheelPosition), content->mapToGlobal(wheelPosition), QPoint(), QPoint(0, 480),
+                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(content, &wheel);
+    oracle.zoom(0.6f);
+    const QPoint orbitStart(100, 100);
+    const QPoint orbitEnd(220, 170);
+    QMouseEvent orbitPress(QEvent::MouseButtonPress, QPointF(orbitStart), Qt::LeftButton, Qt::LeftButton,
+                           Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitPress);
+    QMouseEvent orbitMove(QEvent::MouseMove, QPointF(orbitEnd), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitMove);
+    QTest::qWait(20);
+    QMouseEvent orbitRelease(QEvent::MouseButtonRelease, QPointF(orbitEnd), Qt::LeftButton, Qt::NoButton,
+                             Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitRelease);
+    oracle.orbit(120.0f * 0.005f, -70.0f * 0.005f);
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/4"));
+
+    const QSize contentSize = content->size();
+    const QMatrix4x4 projection =
+        oracle.projectionMatrix(static_cast<float>(contentSize.width()) / contentSize.height());
+    const auto projectToScreen = [&oracle, &projection, &contentSize](const Eigen::Vector3d& target) {
+        const QVector3D world(static_cast<float>(target.x()), static_cast<float>(target.y()),
+                              static_cast<float>(target.z()));
+        const QVector3D projected =
+            world.project(oracle.viewMatrix(), projection, QRect(0, 0, contentSize.width(), contentSize.height()));
+        return QPointF(projected.x(), contentSize.height() - projected.y());
+    };
+    QList<QPoint> clickPositions;
+    for (const Eigen::Vector3d& target : targets) {
+        const QPoint click = projectToScreen(target).toPoint();
+        QVERIFY2(content->rect().contains(click),
+                 qPrintable(QString("Target (%1,%2,%3) projects to (%4,%5) outside viewport %6x%7")
+                                .arg(target.x())
+                                .arg(target.y())
+                                .arg(target.z())
+                                .arg(click.x())
+                                .arg(click.y())
+                                .arg(contentSize.width())
+                                .arg(contentSize.height())));
+        QVERIFY(QLineF(QPointF(click), projectToScreen(target)).length() < 12.0);
+        for (const Eigen::Vector3d& candidate : candidates) {
+            if ((candidate - target).squaredNorm() == 0.0)
+                continue;
+            QVERIFY2(QLineF(QPointF(click), projectToScreen(candidate)).length() >= 14.0,
+                     "Projected click must be at least 14 px from every non-target point");
+        }
+        clickPositions.append(click);
+    }
+    const auto sendClick = [content](const QPoint& position) {
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(position), Qt::LeftButton, Qt::LeftButton,
+                          Qt::ControlModifier);
+        QApplication::sendEvent(content, &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(position), Qt::LeftButton, Qt::NoButton,
+                            Qt::ControlModifier);
+        QApplication::sendEvent(content, &release);
+    };
+    for (int i = 0; i < clickPositions.size(); ++i) {
+        sendClick(clickPositions.at(i));
+        QCOMPARE(worldPickSpy.size(), i + 1);
+        if (i < clickPositions.size() - 1) {
+            QCOMPARE(runStartedSpy.count(), 0);
+            QCOMPARE(moduleStartedSpy.count(), 0);
+            QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 %1/4").arg(i + 2));
+        }
+    }
+
+    const auto overlayPoints = content->measurementPoints3D();
+    QCOMPARE(overlayPoints.size(), 4);
+    const QStringList pointLabels{QStringLiteral("L1-1"), QStringLiteral("L1-2"), QStringLiteral("L2-1"),
+                                  QStringLiteral("L2-2")};
+    for (int i = 0; i < overlayPoints.size(); ++i) {
+        QCOMPARE(overlayPoints.at(i).label, pointLabels.at(i));
+        QCOMPARE(overlayPoints.at(i).pos.x(), targets.at(i).x());
+        QCOMPARE(overlayPoints.at(i).pos.y(), targets.at(i).y());
+        QCOMPARE(overlayPoints.at(i).pos.z(), 0.0);
+    }
+    const auto overlayLines = content->measurementLines3D();
+    QCOMPARE(overlayLines.size(), 2);
+    for (int i = 0; i < overlayLines.size(); ++i) {
+        const Eigen::Vector3d& start = targets.at(i * 2);
+        const Eigen::Vector3d& end = targets.at(i * 2 + 1);
+        QCOMPARE(overlayLines.at(i).p1.x(), start.x());
+        QCOMPARE(overlayLines.at(i).p1.y(), start.y());
+        QCOMPARE(overlayLines.at(i).p1.z(), 0.0);
+        QCOMPARE(overlayLines.at(i).p2.x(), end.x());
+        QCOMPARE(overlayLines.at(i).p2.y(), end.y());
+        QCOMPARE(overlayLines.at(i).p2.z(), 0.0);
+    }
+
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(moduleStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), 1, 1000);
+    QCOMPARE(runStartedSpy.count(), 1);
+    QCOMPARE(moduleStartedSpy.count(), 1);
+    QCOMPARE(runFinishedSpy.count(), 1);
+    QVERIFY(finishedResult.success);
+    QVERIFY(!finishedResult.runId.isEmpty());
+    QVERIFY(snapshotAvailable);
+    const ModuleInstance* savedInput = project->findModule(input.id);
+    QVERIFY(savedInput != nullptr);
+    QCOMPARE(savedInput->params.value(QStringLiteral("line1")).toArray(), QJsonArray({4.0, -4.0, 6.0, -4.0}));
+    QCOMPARE(savedInput->params.value(QStringLiteral("line2")).toArray(), QJsonArray({4.0, -2.0, 6.0, -2.0}));
+    QCOMPARE(savedInput->params.value(QStringLiteral("pick_coordinate_frame")).toString(),
+             QStringLiteral("Unspecified"));
+    QCOMPARE(values.value(QStringLiteral("line1")).toList(), (QVariantList{4.0, -4.0, 6.0, -4.0}));
+    QCOMPARE(values.value(QStringLiteral("line2")).toList(), (QVariantList{4.0, -2.0, 6.0, -2.0}));
+    QCOMPARE(values.value(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("Unspecified"));
+    QVERIFY(values.contains(QStringLiteral("source_coordinate_available")));
+    QCOMPARE(values.value(QStringLiteral("source_coordinate_available")).type(), QVariant::Bool);
+    QCOMPARE(values.value(QStringLiteral("source_coordinate_available")).toBool(), false);
+    for (const QString& sourceField :
+         {QStringLiteral("source_image_id"), QStringLiteral("source_image_size"),
+          QStringLiteral("source_coordinate_origin"), QStringLiteral("line1_source"), QStringLiteral("line2_source")}) {
+        QVERIFY(!values.contains(sourceField));
+    }
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInput3DPickCancelsAfterPointCloudReplacement() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* viewport = viewports.first();
+    QVERIFY(viewport);
+    PointCloudData cloud;
+    cloud.points = {Eigen::Vector3d(0.0, 0.0, 0.0), Eigen::Vector3d(1.0, 0.0, 0.0), Eigen::Vector3d(0.0, 1.0, 0.0)};
+    DisplayData cloudDisplay;
+    cloudDisplay.variant() = cloud;
+    viewport->displayData(cloudDisplay);
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice129_stale_3d_measurement_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("stale 3D MeasurementInput");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                               {QStringLiteral("point1"), QJsonArray{1.0, 2.0, 3.0}},
+                               {QStringLiteral("point2"), QJsonArray{4.0, 5.0, 6.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    QCoreApplication::processEvents();
+
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy moduleStartedSpy(&engine, &RunEngine::moduleStarted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+
+    Q_EMIT viewport->point3DWorldClicked(11.25, 12.5, 13.75);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 2/2"));
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+    PointCloudData replacementCloud;
+    replacementCloud.points = {Eigen::Vector3d(100.0, 200.0, 300.0), Eigen::Vector3d(101.0, 200.0, 300.0),
+                               Eigen::Vector3d(100.0, 201.0, 300.0), Eigen::Vector3d(100.0, 200.0, 301.0)};
+    DisplayData replacementDisplay;
+    replacementDisplay.variant() = replacementCloud;
+    viewport->displayData(replacementDisplay);
+    QLabel* contentInfo = viewport->findChild<QLabel*>(QStringLiteral("ViewportContentInfo"));
+    QVERIFY(contentInfo);
+    QCOMPARE(contentInfo->text(), QStringLiteral("4 点"));
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QString());
+
+    const ModuleInstance* savedInput = project->findModule(input.id);
+    QVERIFY(savedInput);
+    const QJsonArray expectedFirstPoint{11.25, 12.5, 13.75};
+    const QJsonArray unchangedSecondPoint{4.0, 5.0, 6.0};
+    QCOMPARE(savedInput->params.value(QStringLiteral("point1")).toArray(), expectedFirstPoint);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point2")).toArray(), unchangedSecondPoint);
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QString());
+    QVERIFY(!engine.isBusy());
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInput3DCrossViewportPickIsIgnored() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* target = viewports.first();
+    QVERIFY(target);
+    const QString otherId = displayManager->createViewport(QStringLiteral("Slice131 second 3D viewport"));
+    ViewportWidget* other = displayManager->viewport(otherId);
+    QVERIFY(other);
+    QVERIFY(target != other);
+
+    PointCloudData targetCloud;
+    targetCloud.points = {Eigen::Vector3d(0.0, 0.0, 0.0), Eigen::Vector3d(1.0, 0.0, 0.0),
+                          Eigen::Vector3d(0.0, 1.0, 0.0)};
+    PointCloudData otherCloud;
+    otherCloud.points = {Eigen::Vector3d(10.0, 20.0, 30.0), Eigen::Vector3d(11.0, 20.0, 30.0),
+                         Eigen::Vector3d(10.0, 21.0, 30.0), Eigen::Vector3d(10.0, 20.0, 31.0)};
+    DisplayData targetDisplay;
+    targetDisplay.variant() = targetCloud;
+    DisplayData otherDisplay;
+    otherDisplay.variant() = otherCloud;
+    target->displayData(targetDisplay);
+    other->displayData(otherDisplay);
+    QVERIFY(target->viewport3D());
+    QVERIFY(other->viewport3D());
+    QLabel* targetContentInfo = target->findChild<QLabel*>(QStringLiteral("ViewportContentInfo"));
+    QLabel* otherContentInfo = other->findChild<QLabel*>(QStringLiteral("ViewportContentInfo"));
+    QVERIFY(targetContentInfo);
+    QVERIFY(otherContentInfo);
+    QCOMPARE(targetContentInfo->text(), QStringLiteral("3 点"));
+    QCOMPARE(otherContentInfo->text(), QStringLiteral("4 点"));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice131_cross_3d_measurement_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("3D cross viewport input");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                               {QStringLiteral("point1"), QJsonArray{1.0, 2.0, 3.0}},
+                               {QStringLiteral("point2"), QJsonArray{4.0, 5.0, 6.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    QCoreApplication::processEvents();
+
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&engine, &RunEngine::runFinished);
+    QSignalSpy moduleStartedSpy(&engine, &RunEngine::moduleStarted);
+    bool snapshotAvailable = false;
+    RunResult finishedResult{};
+    QMap<QString, QVariant> values;
+    ImageData output;
+    PortValueMap ports;
+    connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&engine, &input, &snapshotAvailable, &finishedResult, &values, &output, &ports](const RunResult& result) {
+            finishedResult = result;
+            snapshotAvailable = engine.runOutputSnapshot(result.runId, input.id, output, values, ports);
+        },
+        Qt::DirectConnection);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+
+    constexpr double firstX = 17.125;
+    constexpr double firstY = -23.75;
+    constexpr double firstZ = 0.000125;
+    constexpr double secondX = 27.125;
+    constexpr double secondY = 43.5;
+    constexpr double secondZ = -0.000375;
+    Q_EMIT target->point3DWorldClicked(firstX, firstY, firstZ);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 2/2"));
+    const QJsonArray expectedPoint1{firstX, firstY, firstZ};
+    const QJsonArray unchangedPoint2{4.0, 5.0, 6.0};
+    const ModuleInstance* savedInput = project->findModule(input.id);
+    QVERIFY(savedInput);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point1")).toArray(), expectedPoint1);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point2")).toArray(), unchangedPoint2);
+
+    Q_EMIT other->point3DWorldClicked(999.0, 998.0, 997.0);
+    QCoreApplication::processEvents();
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 2/2"));
+    savedInput = project->findModule(input.id);
+    QVERIFY(savedInput);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point1")).toArray(), expectedPoint1);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point2")).toArray(), unchangedPoint2);
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(runFinishedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+
+    Q_EMIT target->point3DWorldClicked(secondX, secondY, secondZ);
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), 1, 1000);
+    QCOMPARE(moduleStartedSpy.count(), 1);
+    QVERIFY(finishedResult.success);
+    QVERIFY(!finishedResult.runId.isEmpty());
+    QVERIFY(snapshotAvailable);
+
+    const QJsonArray expectedPoint2{secondX, secondY, secondZ};
+    const QVariantList expectedOutputPoint1{firstX, firstY, firstZ};
+    const QVariantList expectedOutputPoint2{secondX, secondY, secondZ};
+    savedInput = project->findModule(input.id);
+    QVERIFY(savedInput);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point1")).toArray(), expectedPoint1);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point2")).toArray(), expectedPoint2);
+    QCOMPARE(values.value(QStringLiteral("point1")).toList(), expectedOutputPoint1);
+    QCOMPARE(values.value(QStringLiteral("point2")).toList(), expectedOutputPoint2);
+    QCOMPARE(values.value(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("World3D"));
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInput3DPointPlaneRealMousePicksAfterCameraTransforms() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("PointSurfaceDistance")));
+
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("PointSurfaceDistance")));
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* viewport = viewports.first();
+    QVERIFY(viewport != nullptr);
+
+    const Eigen::Vector3d point(4.0, -4.0, 3.0);
+    const Eigen::Vector3d planeA(4.0, -4.0, 0.0);
+    const Eigen::Vector3d planeB(6.0, -4.0, 0.0);
+    const Eigen::Vector3d planeC(4.0, -2.0, 0.0);
+    const QList<Eigen::Vector3d> targets{point, planeA, planeB, planeC};
+    const QList<Eigen::Vector3d> candidates{point,
+                                            planeA,
+                                            planeB,
+                                            planeC,
+                                            Eigen::Vector3d(2.0, -4.0, 0.0),
+                                            Eigen::Vector3d(6.0, -2.0, 0.0),
+                                            Eigen::Vector3d(8.0, -6.0, 4.0),
+                                            Eigen::Vector3d(2.0, 0.0, 4.0),
+                                            Eigen::Vector3d(6.0, -6.0, -1.0)};
+    PointCloudData cloud;
+    for (const Eigen::Vector3d& candidate : candidates)
+        cloud.points.push_back(candidate);
+    DisplayData display;
+    display.variant() = cloud;
+    viewport->displayData(display);
+    Viewport3DContent* content = viewport->viewport3D();
+    QVERIFY(content != nullptr);
+    QVERIFY(content->width() > 100);
+    QVERIFY(content->height() > 100);
+    QSignalSpy worldPickSpy(viewport, &ViewportWidget::point3DWorldClicked);
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice185_measurement_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("3D point-plane GUI input");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_plane")},
+                               {QStringLiteral("point"), QJsonArray{0.0, 0.0, 0.0}},
+                               {QStringLiteral("plane"), QJsonArray{0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    ModuleInstance distance;
+    distance.id = QStringLiteral("slice185_point_surface_distance");
+    distance.moduleId = QStringLiteral("PointSurfaceDistance");
+    distance.name = QStringLiteral("3D point-plane distance");
+    project->addModule(distance);
+    project->addConnection(
+        {input.id, distance.id, 0, 0, QStringLiteral("image"), QStringLiteral("image"), QStringLiteral("data")});
+    project->addConnection(
+        {input.id, distance.id, 3, 1, QStringLiteral("point"), QStringLiteral("point"), QStringLiteral("data")});
+    project->addConnection(
+        {input.id, distance.id, 7, 2, QStringLiteral("plane"), QStringLiteral("plane"), QStringLiteral("data")});
+    QCoreApplication::processEvents();
+    viewport->displayData(display);
+    content = viewport->viewport3D();
+    QVERIFY(content != nullptr);
+    QVERIFY(content->isVisible());
+
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&engine, &RunEngine::runFinished);
+    bool snapshotAvailable = false;
+    RunResult finishedResult{};
+    QMap<QString, QVariant> inputValues;
+    ImageData inputOutput;
+    PortValueMap inputPorts;
+    QMap<QString, QVariant> distanceValues;
+    ImageData distanceOutput;
+    PortValueMap distancePorts;
+    connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&engine, &input, &distance, &snapshotAvailable, &finishedResult, &inputValues, &inputOutput, &inputPorts,
+         &distanceValues, &distanceOutput, &distancePorts](const RunResult& result) {
+            finishedResult = result;
+            const bool inputAvailable =
+                engine.runOutputSnapshot(result.runId, input.id, inputOutput, inputValues, inputPorts);
+            const bool distanceAvailable =
+                engine.runOutputSnapshot(result.runId, distance.id, distanceOutput, distanceValues, distancePorts);
+            snapshotAvailable = inputAvailable && distanceAvailable;
+        },
+        Qt::DirectConnection);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree != nullptr);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/4"));
+    QCOMPARE(runStartedSpy.count(), 0);
+
+    CameraController oracle;
+    oracle.frameData(QVector3D(2.0f, -6.0f, -1.0f), QVector3D(8.0f, 0.0f, 4.0f));
+    const QPoint wheelPosition = content->rect().center();
+    QWheelEvent wheel(QPointF(wheelPosition), content->mapToGlobal(wheelPosition), QPoint(), QPoint(0, 480),
+                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(content, &wheel);
+    oracle.zoom(0.6f);
+    const QPoint orbitStart(100, 100);
+    const QPoint orbitEnd(220, 170);
+    QMouseEvent orbitPress(QEvent::MouseButtonPress, QPointF(orbitStart), Qt::LeftButton, Qt::LeftButton,
+                           Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitPress);
+    QMouseEvent orbitMove(QEvent::MouseMove, QPointF(orbitEnd), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitMove);
+    QTest::qWait(20);
+    QMouseEvent orbitRelease(QEvent::MouseButtonRelease, QPointF(orbitEnd), Qt::LeftButton, Qt::NoButton,
+                             Qt::NoModifier);
+    QApplication::sendEvent(content, &orbitRelease);
+    oracle.orbit(120.0f * 0.005f, -70.0f * 0.005f);
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/4"));
+
+    const QSize contentSize = content->size();
+    const QMatrix4x4 projection =
+        oracle.projectionMatrix(static_cast<float>(contentSize.width()) / contentSize.height());
+    const auto projectToScreen = [&oracle, &projection, &contentSize](const Eigen::Vector3d& target) {
+        const QVector3D world(static_cast<float>(target.x()), static_cast<float>(target.y()),
+                              static_cast<float>(target.z()));
+        const QVector3D projected =
+            world.project(oracle.viewMatrix(), projection, QRect(0, 0, contentSize.width(), contentSize.height()));
+        return QPointF(projected.x(), contentSize.height() - projected.y());
+    };
+    QList<QPoint> clickPositions;
+    for (const Eigen::Vector3d& target : targets) {
+        const QPoint click = projectToScreen(target).toPoint();
+        QVERIFY(content->rect().contains(click));
+        QVERIFY(QLineF(QPointF(click), projectToScreen(target)).length() < 12.0);
+        for (const Eigen::Vector3d& candidate : candidates) {
+            if ((candidate - target).squaredNorm() == 0.0)
+                continue;
+            QVERIFY2(QLineF(QPointF(click), projectToScreen(candidate)).length() >= 14.0,
+                     "Projected click must be at least 14 px from every non-target point");
+        }
+        clickPositions.append(click);
+    }
+    const auto sendClick = [content](const QPoint& position) {
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(position), Qt::LeftButton, Qt::LeftButton,
+                          Qt::ControlModifier);
+        QApplication::sendEvent(content, &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(position), Qt::LeftButton, Qt::NoButton,
+                            Qt::ControlModifier);
+        QApplication::sendEvent(content, &release);
+    };
+    for (int index = 0; index < targets.size(); ++index) {
+        sendClick(clickPositions.at(index));
+        QCOMPARE(worldPickSpy.size(), index + 1);
+        const Eigen::Vector3d& expected = targets.at(index);
+        QCOMPARE(worldPickSpy.at(index).at(0).toDouble(), expected.x());
+        QCOMPARE(worldPickSpy.at(index).at(1).toDouble(), expected.y());
+        QCOMPARE(worldPickSpy.at(index).at(2).toDouble(), expected.z());
+        if (index < 3) {
+            QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 %1/4").arg(index + 2));
+            QCOMPARE(runStartedSpy.count(), 0);
+            QCOMPARE(runFinishedSpy.count(), 0);
+        }
+    }
+
+    const auto overlayPoints = content->measurementPoints3D();
+    QCOMPARE(overlayPoints.size(), 4);
+    const QList<QString> expectedLabels{QStringLiteral("P"), QStringLiteral("A"), QStringLiteral("B"),
+                                        QStringLiteral("C")};
+    for (int index = 0; index < targets.size(); ++index) {
+        QCOMPARE(overlayPoints.at(index).label, expectedLabels.at(index));
+        QCOMPARE(overlayPoints.at(index).pos.x(), targets.at(index).x());
+        QCOMPARE(overlayPoints.at(index).pos.y(), targets.at(index).y());
+        QCOMPARE(overlayPoints.at(index).pos.z(), targets.at(index).z());
+    }
+    const auto overlayLines = content->measurementLines3D();
+    QCOMPARE(overlayLines.size(), 3);
+    const QList<QPair<Eigen::Vector3d, Eigen::Vector3d>> expectedEdges{
+        qMakePair(planeA, planeB), qMakePair(planeB, planeC), qMakePair(planeC, planeA)};
+    for (int index = 0; index < expectedEdges.size(); ++index) {
+        QCOMPARE(overlayLines.at(index).p1.x(), expectedEdges.at(index).first.x());
+        QCOMPARE(overlayLines.at(index).p1.y(), expectedEdges.at(index).first.y());
+        QCOMPARE(overlayLines.at(index).p1.z(), expectedEdges.at(index).first.z());
+        QCOMPARE(overlayLines.at(index).p2.x(), expectedEdges.at(index).second.x());
+        QCOMPARE(overlayLines.at(index).p2.y(), expectedEdges.at(index).second.y());
+        QCOMPARE(overlayLines.at(index).p2.z(), expectedEdges.at(index).second.z());
+    }
+
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), 1, 1000);
+    QCOMPARE(runStartedSpy.count(), 1);
+    QCOMPARE(runFinishedSpy.count(), 1);
+    QVERIFY(finishedResult.success);
+    QVERIFY(!finishedResult.runId.isEmpty());
+    QVERIFY(snapshotAvailable);
+    const ModuleInstance* savedInput = project->findModule(input.id);
+    QVERIFY(savedInput != nullptr);
+    const QJsonArray expectedPoint{4.0, -4.0, 3.0};
+    const QJsonArray expectedPlane{4.0, -4.0, 0.0, 6.0, -4.0, 0.0, 4.0, -2.0, 0.0};
+    QCOMPARE(savedInput->params.value(QStringLiteral("point")).toArray(), expectedPoint);
+    QCOMPARE(savedInput->params.value(QStringLiteral("plane")).toArray(), expectedPlane);
+    QCOMPARE(inputValues.value(QStringLiteral("point")).toList(), (QVariantList{4.0, -4.0, 3.0}));
+    QCOMPARE(inputValues.value(QStringLiteral("plane")).toList(),
+             (QVariantList{4.0, -4.0, 0.0, 6.0, -4.0, 0.0, 4.0, -2.0, 0.0}));
+    QCOMPARE(inputValues.value(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("World3D"));
+    QCOMPARE(distanceValues.value(QStringLiteral("distance")).toDouble(), 3.0);
+    QCOMPARE(distanceOutput.data(QStringLiteral("foot_point")).toList(), (QVariantList{4.0, -4.0, 0.0}));
+    QCOMPARE(distanceOutput.data(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("World3D"));
+    for (const ImageData* output : {&inputOutput, &distanceOutput}) {
+        QVERIFY(output->hasData(QStringLiteral("source_coordinate_available")));
+        QCOMPARE(output->data(QStringLiteral("source_coordinate_available")).type(), QVariant::Bool);
+        QVERIFY(!output->data(QStringLiteral("source_coordinate_available")).toBool());
+        for (const QString& sourceField : {QStringLiteral("source_image_id"), QStringLiteral("source_image_size"),
+                                           QStringLiteral("source_coordinate_origin"), QStringLiteral("point_source"),
+                                           QStringLiteral("plane_source")})
+            QVERIFY(!output->hasData(sourceField));
+    }
+
+    engine.clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInput3DPointPlanePicksAllWorldVertices() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* viewport = viewports.first();
+    QVERIFY(viewport);
+    PointCloudData cloud;
+    cloud.points = {Eigen::Vector3d(1.25, 2.5, -3.75), Eigen::Vector3d(2.25, 2.5, -3.75),
+                    Eigen::Vector3d(1.25, 3.5, -3.75)};
+    DisplayData cloudDisplay;
+    cloudDisplay.variant() = cloud;
+    viewport->displayData(cloudDisplay);
+    QVERIFY(viewport->viewport3D());
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    const QJsonArray initialPoint{100.0, 101.0, 102.0};
+    const QJsonArray initialPlane{0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0};
+    ModuleInstance input;
+    input.id = QStringLiteral("slice132_point_plane_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("3D point plane input");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_plane")},
+                               {QStringLiteral("point"), initialPoint},
+                               {QStringLiteral("plane"), initialPlane},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    QCoreApplication::processEvents();
+
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&engine, &RunEngine::runFinished);
+    QSignalSpy moduleStartedSpy(&engine, &RunEngine::moduleStarted);
+    bool snapshotAvailable = false;
+    RunResult finishedResult{};
+    QMap<QString, QVariant> values;
+    ImageData output;
+    PortValueMap ports;
+    connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&engine, &input, &snapshotAvailable, &finishedResult, &values, &output, &ports](const RunResult& result) {
+            finishedResult = result;
+            snapshotAvailable = engine.runOutputSnapshot(result.runId, input.id, output, values, ports);
+        },
+        Qt::DirectConnection);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/4"));
+
+    constexpr double pointX = 1.25;
+    constexpr double pointY = 2.5;
+    constexpr double pointZ = -3.75;
+    constexpr double plane1X = 10.0;
+    constexpr double plane1Y = 11.0;
+    constexpr double plane1Z = 12.0;
+    constexpr double plane2X = 20.0;
+    constexpr double plane2Y = 11.0;
+    constexpr double plane2Z = 12.0;
+    constexpr double plane3X = 10.0;
+    constexpr double plane3Y = 21.0;
+    constexpr double plane3Z = 12.0;
+    const QJsonArray expectedPoint{pointX, pointY, pointZ};
+
+    Q_EMIT viewport->point3DWorldClicked(pointX, pointY, pointZ);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 2/4"));
+    const ModuleInstance* pickedInput = project->findModule(input.id);
+    QVERIFY(pickedInput);
+    QCOMPARE(pickedInput->params.value(QStringLiteral("point")).toArray(), expectedPoint);
+    QCOMPARE(pickedInput->params.value(QStringLiteral("plane")).toArray(), initialPlane);
+
+    Q_EMIT viewport->point3DWorldClicked(plane1X, plane1Y, plane1Z);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 3/4"));
+    const QJsonArray planeAfterFirstVertex{plane1X, plane1Y, plane1Z, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0};
+    pickedInput = project->findModule(input.id);
+    QVERIFY(pickedInput);
+    QCOMPARE(pickedInput->params.value(QStringLiteral("plane")).toArray(), planeAfterFirstVertex);
+
+    Q_EMIT viewport->point3DWorldClicked(plane2X, plane2Y, plane2Z);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 4/4"));
+    const QJsonArray planeAfterSecondVertex{plane1X, plane1Y, plane1Z, plane2X, plane2Y, plane2Z, 0.0, 1.0, 0.0};
+    pickedInput = project->findModule(input.id);
+    QVERIFY(pickedInput);
+    QCOMPARE(pickedInput->params.value(QStringLiteral("plane")).toArray(), planeAfterSecondVertex);
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(runFinishedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+
+    Q_EMIT viewport->point3DWorldClicked(plane3X, plane3Y, plane3Z);
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), 1, 1000);
+    QCOMPARE(moduleStartedSpy.count(), 1);
+    QVERIFY(finishedResult.success);
+    QVERIFY(!finishedResult.runId.isEmpty());
+    QVERIFY(snapshotAvailable);
+
+    const QJsonArray expectedPlane{plane1X, plane1Y, plane1Z, plane2X, plane2Y, plane2Z, plane3X, plane3Y, plane3Z};
+    const QVariantList expectedOutputPoint{pointX, pointY, pointZ};
+    const QVariantList expectedOutputPlane{plane1X, plane1Y, plane1Z, plane2X, plane2Y,
+                                           plane2Z, plane3X, plane3Y, plane3Z};
+    const ModuleInstance* savedInput = project->findModule(input.id);
+    QVERIFY(savedInput);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point")).toArray(), expectedPoint);
+    QCOMPARE(savedInput->params.value(QStringLiteral("plane")).toArray(), expectedPlane);
+    QCOMPARE(values.value(QStringLiteral("point")).toList(), expectedOutputPoint);
+    QCOMPARE(values.value(QStringLiteral("plane")).toList(), expectedOutputPlane);
+    QCOMPARE(values.value(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("World3D"));
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testAgentActiveSamMaskEditConfirmationPrivacyAndUndo() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+
+    MainWindow window;
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    ViewportWidget* viewport = displayManager->allViewports().first();
+    QImage image(48, 40, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    viewport->displayImage(image);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickAnnotate", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+    SamAnnotatorDialog* dialog = window.findChild<SamAnnotatorDialog*>();
+    QVERIFY(dialog != nullptr);
+    QVERIFY(dialog->isVisible());
+
+    QImage mask(48, 40, QImage::Format_Grayscale8);
+    mask.fill(0);
+    for (int y = 8; y < 32; ++y) {
+        uchar* row = mask.scanLine(y);
+        for (int x = 9; x < 35; ++x)
+            row[x] = 255;
+    }
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString imagePath = directory.filePath(QStringLiteral("image.png"));
+    QVERIFY(image.save(imagePath));
+    AnnotationSession session = dialog->session();
+    session.imagePath = imagePath;
+    session.imageWidth = image.width();
+    session.imageHeight = image.height();
+    session.imageDigest = AnnotationSession::computeImageDigest(image);
+    AnnotationObject object;
+    object.id = QStringLiteral("active_object_1");
+    object.label = QStringLiteral("test-mask");
+    object.polygon = MaskOps::traceContour(mask);
+    object.bbox = MaskOps::foregroundBoundingBox(mask);
+    object.maskRle = MaskOps::encodeRle(mask);
+    object.score = 0.9;
+    session.annotations = {object};
+    const QString sessionPath = directory.filePath(QStringLiteral("active.deeplux-anno.json"));
+    QString error;
+    QVERIFY2(session.save(sessionPath, &error), qPrintable(error));
+    QVERIFY2(dialog->openAnnotationFile(sessionPath, &error), qPrintable(error));
+    const QJsonObject listed = controller.actor()->executeTool(QStringLiteral("list_active_annotation_objects"), {});
+    QCOMPARE(listed.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+    QCOMPARE(listed.value(QStringLiteral("total")).toInt(), 1);
+    const QJsonObject listedObject = listed.value(QStringLiteral("objects")).toArray().first().toObject();
+    QCOMPARE(listedObject.value(QStringLiteral("objectId")).toString(), object.id);
+    QVERIFY(listedObject.contains(QStringLiteral("bbox")));
+    QVERIFY(!listedObject.contains(QStringLiteral("maskRle")));
+    QVERIFY(!listedObject.contains(QStringLiteral("polygon")));
+
+    const QList<QPointF> stroke{QPointF(16.25, 19.75), QPointF(22.25, 19.75), QPointF(29.25, 19.75)};
+    QJsonArray strokeValues;
+    for (const QPointF& point : stroke)
+        strokeValues.append(QJsonArray{point.x(), point.y()});
+    const QJsonObject editParams{{QStringLiteral("operation"), QStringLiteral("erase_stroke")},
+                                 {QStringLiteral("objectIds"), QJsonArray{object.id}},
+                                 {QStringLiteral("radiusPx"), 4},
+                                 {QStringLiteral("strokePoints"), strokeValues}};
+    const QJsonObject pending = controller.handleToolCall(QStringLiteral("edit_active_annotation_masks"), editParams);
+    QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString pendingJson = QString::fromUtf8(QJsonDocument(pending).toJson(QJsonDocument::Compact));
+    QVERIFY(!pendingJson.contains(QStringLiteral("strokePoints")));
+    QVERIFY(!pendingJson.contains(QStringLiteral("16.25")));
+    QVERIFY(!pendingJson.contains(QStringLiteral("22.25")));
+    QCOMPARE(pending.value(QStringLiteral("tools"))
+                 .toArray()
+                 .first()
+                 .toObject()
+                 .value(QStringLiteral("arguments"))
+                 .toObject()
+                 .value(QStringLiteral("strokePointCount"))
+                 .toInt(),
+             3);
+    const QJsonObject confirmation = pending.value(QStringLiteral("confirmation")).toObject();
+    const QString confirmationId = confirmation.value(QStringLiteral("confirmationId")).toString();
+    QVERIFY(!confirmationId.isEmpty());
+    const QString confirmationJson = QString::fromUtf8(QJsonDocument(confirmation).toJson(QJsonDocument::Compact));
+    QVERIFY(!confirmationJson.contains(QStringLiteral("16.25")));
+    QVERIFY(!confirmationJson.contains(QStringLiteral("22.25")));
+    QVERIFY(!confirmationJson.contains(QStringLiteral("strokePoints")));
+    QLabel* preview = window.findChild<QLabel*>(QStringLiteral("AgentToolPreviewContent"));
+    QVERIFY(preview != nullptr);
+    QVERIFY(!preview->text().contains(QStringLiteral("16.25")));
+    QVERIFY(!preview->text().contains(QStringLiteral("22.25")));
+    QVERIFY(preview->text().contains(QStringLiteral("strokePointCount")));
+
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    QVERIFY(confirmPendingToolsAndWait(controller, confirmationId));
+    QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    const AnnotationSession edited = dialog->session();
+    QVERIFY(edited.annotations.first().maskRle != object.maskRle);
+    QVERIFY(!auditSpy.isEmpty());
+    const AgentActionLogEntry audit = auditSpy.last().at(0).value<AgentActionLogEntry>();
+    QVERIFY(!audit.params.contains(QStringLiteral("strokePoints")));
+    QVERIFY(!audit.params.contains(QStringLiteral("16.25")));
+    QVERIFY(!audit.params.contains(QStringLiteral("22.25")));
+    QVERIFY(audit.params.contains(QStringLiteral("strokePointCount")));
+    QVERIFY(!audit.undoable);
+
+    dialog->undoButton()->click();
+    QCOMPARE(dialog->session().annotations.first().maskRle, object.maskRle);
+    dialog->redoButton()->click();
+    QCOMPARE(dialog->session().annotations.first().maskRle, edited.annotations.first().maskRle);
+
+    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    QCOMPARE(controller.actor()
+                 ->executeTool(QStringLiteral("list_active_annotation_categories"), {})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("ok"));
+    const QJsonObject denied =
+        controller.handleToolCall(QStringLiteral("edit_active_annotation_masks"),
+                                  QJsonObject{{QStringLiteral("operation"), QStringLiteral("dilate")},
+                                              {QStringLiteral("objectIds"), QJsonArray{object.id}},
+                                              {QStringLiteral("radiusPx"), 1}});
+    QCOMPARE(denied.value(QStringLiteral("errorCode")).toString(), QStringLiteral("PERMISSION_DENIED"));
+
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+    const QJsonObject categoryPending =
+        controller.handleToolCall(QStringLiteral("edit_active_annotation_masks"),
+                                  QJsonObject{{QStringLiteral("operation"), QStringLiteral("dilate")},
+                                              {QStringLiteral("objectIds"), QJsonArray{object.id}},
+                                              {QStringLiteral("radiusPx"), 1}});
+    QCOMPARE(categoryPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString categoryConfirmationId = categoryPending.value(QStringLiteral("confirmation"))
+                                               .toObject()
+                                               .value(QStringLiteral("confirmationId"))
+                                               .toString();
+    dialog->categoryCombo()->setEditText(QStringLiteral("temporary-category"));
+    dialog->addCategoryButton()->click();
+    QVERIFY(confirmPendingToolsAndWait(controller, categoryConfirmationId));
+    QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+
+    const QJsonObject stalePending =
+        controller.handleToolCall(QStringLiteral("edit_active_annotation_masks"),
+                                  QJsonObject{{QStringLiteral("operation"), QStringLiteral("dilate")},
+                                              {QStringLiteral("objectIds"), QJsonArray{object.id}},
+                                              {QStringLiteral("radiusPx"), 1}});
+    QCOMPARE(stalePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString staleConfirmationId = stalePending.value(QStringLiteral("confirmation"))
+                                            .toObject()
+                                            .value(QStringLiteral("confirmationId"))
+                                            .toString();
+    const AnnotationSession beforeStaleApproval = dialog->session();
+    const int agentUndoIndex = controller.actor()->undoStack()->index();
+    AnnotationSession driftedSession = dialog->session();
+    driftedSession.annotations.first().label = QStringLiteral("changed-during-confirmation");
+    const QString driftedSessionPath = directory.filePath(QStringLiteral("drifted.deeplux-anno.json"));
+    QVERIFY2(driftedSession.save(driftedSessionPath, &error), qPrintable(error));
+    QVERIFY2(dialog->openAnnotationFile(driftedSessionPath, &error), qPrintable(error));
+    QVERIFY(confirmPendingToolsAndWait(controller, staleConfirmationId));
+    QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    QCOMPARE(dialog->session().annotations.first().label, QStringLiteral("changed-during-confirmation"));
+    QCOMPARE(dialog->session().annotations.first().maskRle, beforeStaleApproval.annotations.first().maskRle);
+    QCOMPARE(controller.actor()->undoStack()->index(), agentUndoIndex);
+    QVERIFY(!auditSpy.isEmpty());
+    QCOMPARE(auditSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
+
+    const QJsonObject imagePending =
+        controller.handleToolCall(QStringLiteral("edit_active_annotation_masks"),
+                                  QJsonObject{{QStringLiteral("operation"), QStringLiteral("dilate")},
+                                              {QStringLiteral("objectIds"), QJsonArray{object.id}},
+                                              {QStringLiteral("radiusPx"), 1}});
+    QCOMPARE(imagePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString imageConfirmationId = imagePending.value(QStringLiteral("confirmation"))
+                                            .toObject()
+                                            .value(QStringLiteral("confirmationId"))
+                                            .toString();
+    const int agentUndoIndexBeforeImageDrift = controller.actor()->undoStack()->index();
+    QImage changedImage(48, 40, QImage::Format_RGB32);
+    changedImage.fill(QColor(QStringLiteral("#3B82F6")));
+    const QString changedImagePath = directory.filePath(QStringLiteral("changed.png"));
+    QVERIFY(changedImage.save(changedImagePath));
+    dialog->setImageSnapshot(changedImage, changedImagePath);
+    const AnnotationSession afterImageDrift = dialog->session();
+    QVERIFY(confirmPendingToolsAndWait(controller, imageConfirmationId));
+    QCOMPARE(dialog->session().annotations.size(), afterImageDrift.annotations.size());
+    QCOMPARE(dialog->session().imageDigest, AnnotationSession::computeImageDigest(changedImage));
+    QCOMPARE(controller.actor()->undoStack()->index(), agentUndoIndexBeforeImageDrift);
+    QCOMPARE(auditSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
+
+    AnnotationSession reboundSession = dialog->session();
+    reboundSession.annotations = {object};
+    const QString reboundPath = directory.filePath(QStringLiteral("rebound.deeplux-anno.json"));
+    QVERIFY2(reboundSession.save(reboundPath, &error), qPrintable(error));
+    QVERIFY2(dialog->openAnnotationFile(reboundPath, &error), qPrintable(error));
+    const AnnotationSession beforeDialogClose = dialog->session();
+    const QJsonObject dialogPending =
+        controller.handleToolCall(QStringLiteral("edit_active_annotation_masks"),
+                                  QJsonObject{{QStringLiteral("operation"), QStringLiteral("dilate")},
+                                              {QStringLiteral("objectIds"), QJsonArray{object.id}},
+                                              {QStringLiteral("radiusPx"), 1}});
+    QCOMPARE(dialogPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString dialogConfirmationId = dialogPending.value(QStringLiteral("confirmation"))
+                                             .toObject()
+                                             .value(QStringLiteral("confirmationId"))
+                                             .toString();
+    const int agentUndoIndexBeforeDialogClose = controller.actor()->undoStack()->index();
+    dialog->hide();
+    QVERIFY(confirmPendingToolsAndWait(controller, dialogConfirmationId));
+    QCOMPARE(dialog->session().annotations.first().maskRle, beforeDialogClose.annotations.first().maskRle);
+    QCOMPARE(controller.actor()->undoStack()->index(), agentUndoIndexBeforeDialogClose);
+    QCOMPARE(auditSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
+    dialog->show();
+    QCoreApplication::processEvents();
+
+    const QJsonObject dialogReplacementPending =
+        controller.handleToolCall(QStringLiteral("edit_active_annotation_masks"),
+                                  QJsonObject{{QStringLiteral("operation"), QStringLiteral("dilate")},
+                                              {QStringLiteral("objectIds"), QJsonArray{object.id}},
+                                              {QStringLiteral("radiusPx"), 1}});
+    QCOMPARE(dialogReplacementPending.value(QStringLiteral("status")).toString(),
+             QStringLiteral("pending_confirmation"));
+    const QString dialogReplacementConfirmationId = dialogReplacementPending.value(QStringLiteral("confirmation"))
+                                                        .toObject()
+                                                        .value(QStringLiteral("confirmationId"))
+                                                        .toString();
+    const int agentUndoIndexBeforeDialogReplacement = controller.actor()->undoStack()->index();
+    delete dialog;
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickAnnotate", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+    dialog = window.findChild<SamAnnotatorDialog*>(QStringLiteral("SamAnnotatorDialog"));
+    QVERIFY(dialog != nullptr);
+    QVERIFY(dialog->isVisible());
+    QVERIFY(dialog->session().annotations.isEmpty());
+    QVERIFY(confirmPendingToolsAndWait(controller, dialogReplacementConfirmationId));
+    QVERIFY(dialog->session().annotations.isEmpty());
+    QCOMPARE(controller.actor()->undoStack()->index(), agentUndoIndexBeforeDialogReplacement);
+    QCOMPARE(auditSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
+
+    AnnotationSession replacementSession = dialog->session();
+    replacementSession.annotations = {object};
+    replacementSession.imagePath = changedImagePath;
+    replacementSession.imageWidth = changedImage.width();
+    replacementSession.imageHeight = changedImage.height();
+    replacementSession.imageDigest = AnnotationSession::computeImageDigest(changedImage);
+    const QString replacementSessionPath = directory.filePath(QStringLiteral("replacement.deeplux-anno.json"));
+    QVERIFY2(replacementSession.save(replacementSessionPath, &error), qPrintable(error));
+    QVERIFY2(dialog->openAnnotationFile(replacementSessionPath, &error), qPrintable(error));
+
+    const QJsonObject ownerPending =
+        controller.handleToolCall(QStringLiteral("edit_active_annotation_masks"),
+                                  QJsonObject{{QStringLiteral("operation"), QStringLiteral("dilate")},
+                                              {QStringLiteral("objectIds"), QJsonArray{object.id}},
+                                              {QStringLiteral("radiusPx"), 1}});
+    QCOMPARE(ownerPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString ownerConfirmationId = ownerPending.value(QStringLiteral("confirmation"))
+                                            .toObject()
+                                            .value(QStringLiteral("confirmationId"))
+                                            .toString();
+    const int agentUndoIndexBeforeOwnerDrift = controller.actor()->undoStack()->index();
+    QObject replacementOwner;
+    controller.registerDataSourceViewHandler(&replacementOwner,
+                                             [](const QString&, const QJsonObject&) { return QJsonObject(); });
+    QVERIFY(confirmPendingToolsAndWait(controller, ownerConfirmationId));
+    QCOMPARE(dialog->session().annotations.first().maskRle, beforeDialogClose.annotations.first().maskRle);
+    QCOMPARE(controller.actor()->undoStack()->index(), agentUndoIndexBeforeOwnerDrift);
+    QCOMPARE(auditSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
+    controller.unregisterDataSourceViewHandler(&replacementOwner);
+}
+
+void TestMainWindow::testAgentActiveSamCategoryEditConfirmationAndUndo() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+
+    MainWindow window;
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    QImage image(48, 40, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    displayManager->allViewports().first()->displayImage(image);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickAnnotate", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+    auto* dialog = window.findChild<SamAnnotatorDialog*>(QStringLiteral("SamAnnotatorDialog"));
+    QVERIFY(dialog != nullptr);
+
+    QVERIFY(dialog->isVisible());
+    const quint64 initialDialogInstanceId = dialog->instanceId();
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString imagePath = directory.filePath(QStringLiteral("sam-category-image.png"));
+    QVERIFY(image.save(imagePath));
+    AnnotationSession session = dialog->session();
+    session.imagePath = imagePath;
+    session.imageWidth = image.width();
+    session.imageHeight = image.height();
+    session.imageDigest = AnnotationSession::computeImageDigest(image);
+    AnnotationObject object;
+    object.id = QStringLiteral("sam-category-object");
+    object.label = QStringLiteral("划痕");
+    object.bbox = QRectF(3, 4, 12, 13);
+    object.score = 0.8;
+    object.maskRle = QStringLiteral("private-mask-data");
+    session.annotations = {object};
+    const QString sessionPath = directory.filePath(QStringLiteral("session.deeplux-anno.json"));
+    QString error;
+    QVERIFY2(session.save(sessionPath, &error), qPrintable(error));
+    QVERIFY2(dialog->openAnnotationFile(sessionPath, &error), qPrintable(error));
+    QFile sessionFile(sessionPath);
+    QVERIFY(sessionFile.open(QIODevice::ReadOnly));
+    const QByteArray diskBytesBefore = sessionFile.readAll();
+    sessionFile.close();
+
+    const QJsonObject listed = controller.actor()->executeTool(QStringLiteral("list_active_annotation_categories"), {});
+    QCOMPARE(listed.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+    QVERIFY(listed.value(QStringLiteral("categories")).toArray().size() >= 4);
+    QCOMPARE(listed.value(QStringLiteral("objects"))
+                 .toArray()
+                 .first()
+                 .toObject()
+                 .value(QStringLiteral("objectId"))
+                 .toString(),
+             object.id);
+    QVERIFY(!QJsonDocument(listed).toJson(QJsonDocument::Compact).contains("maskRle"));
+
+    const QJsonObject pending =
+        controller.handleToolCall(QStringLiteral("edit_active_annotation_categories"),
+                                  QJsonObject{{QStringLiteral("operation"), QStringLiteral("add_category")},
+                                              {QStringLiteral("category"), QStringLiteral("  temporary label  ")}});
+    QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    QCOMPARE(pending.value(QStringLiteral("tools"))
+                 .toArray()
+                 .first()
+                 .toObject()
+                 .value(QStringLiteral("arguments"))
+                 .toObject()
+                 .value(QStringLiteral("category"))
+                 .toString(),
+             QStringLiteral("temporary label"));
+    const QString pendingJson = QString::fromUtf8(QJsonDocument(pending).toJson(QJsonDocument::Compact));
+    QVERIFY(!pendingJson.contains(QStringLiteral("private-mask-data")));
+    const QString pendingId =
+        pending.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("confirmationId")).toString();
+    QVERIFY(!confirmPendingToolsAndWait(controller, pendingId + QStringLiteral("stale")));
+    QCOMPARE(controller.state(), AgentController::AgentState::Confirming);
+    QVERIFY(!dialog->categories().contains(QStringLiteral("temporary label")));
+    dialog->addCategory(QStringLiteral("drift-category"));
+    QVERIFY(confirmPendingToolsAndWait(controller, pendingId));
+    QVERIFY(!dialog->categories().contains(QStringLiteral("temporary label")));
+
+    const QJsonObject approvedAdd =
+        controller.handleToolCall(QStringLiteral("edit_active_annotation_categories"),
+                                  QJsonObject{{QStringLiteral("operation"), QStringLiteral("add_category")},
+                                              {QStringLiteral("category"), QStringLiteral("temporary label")}});
+    QCOMPARE(approvedAdd.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    QVERIFY(confirmPendingToolsAndWait(controller, approvedAdd.value(QStringLiteral("confirmation"))
+                                                       .toObject()
+                                                       .value(QStringLiteral("confirmationId"))
+                                                       .toString()));
+    QVERIFY(dialog->categories().contains(QStringLiteral("temporary label")));
+
+    const QJsonObject sessionPending =
+        controller.handleToolCall(QStringLiteral("edit_active_annotation_categories"),
+                                  QJsonObject{{QStringLiteral("operation"), QStringLiteral("set_object_label")},
+                                              {QStringLiteral("objectIds"), QJsonArray{object.id}},
+                                              {QStringLiteral("label"), QStringLiteral("划痕")}});
+    const QString sessionConfirmationId = sessionPending.value(QStringLiteral("confirmation"))
+                                              .toObject()
+                                              .value(QStringLiteral("confirmationId"))
+                                              .toString();
+    QCOMPARE(sessionPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString labelBeforeSessionDrift = dialog->session().annotations.first().label;
+    AnnotationSession changedDuringConfirmation = dialog->session();
+    changedDuringConfirmation.annotations.first().score = 0.81;
+    const QString changedSessionPath = directory.filePath(QStringLiteral("changed-session.deeplux-anno.json"));
+    QVERIFY2(changedDuringConfirmation.save(changedSessionPath, &error), qPrintable(error));
+    QVERIFY2(dialog->openAnnotationFile(changedSessionPath, &error), qPrintable(error));
+    const int undoIndexBeforeSessionExpiry = dialog->undoStackIndex();
+    QVERIFY(confirmPendingToolsAndWait(controller, sessionConfirmationId));
+    QCOMPARE(dialog->session().annotations.first().label, labelBeforeSessionDrift);
+    QCOMPARE(dialog->session().annotations.first().score, 0.81);
+    QCOMPARE(dialog->undoStackIndex(), undoIndexBeforeSessionExpiry);
+
+    dialog->objectList()->setCurrentRow(0);
+    const QJsonObject relabel =
+        controller.handleToolCall(QStringLiteral("edit_active_annotation_categories"),
+                                  QJsonObject{{QStringLiteral("operation"), QStringLiteral("set_object_label")},
+                                              {QStringLiteral("objectIds"), QJsonArray{object.id}},
+                                              {QStringLiteral("label"), QStringLiteral("  temporary label  ")}});
+    QCOMPARE(relabel.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    QVERIFY(confirmPendingToolsAndWait(
+        controller,
+        relabel.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("confirmationId")).toString()));
+    QCOMPARE(dialog->session().annotations.first().label, QStringLiteral("temporary label"));
+    QCOMPARE(dialog->session().annotations.first().maskRle, object.maskRle);
+    QCOMPARE(dialog->objectList()->currentItem()->data(Qt::UserRole).toString(), object.id);
+    dialog->undoButton()->click();
+    QCOMPARE(dialog->session().annotations.first().label, object.label);
+    dialog->redoButton()->click();
+    QCOMPARE(dialog->session().annotations.first().label, QStringLiteral("temporary label"));
+
+    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    QCOMPARE(controller.actor()
+                 ->executeTool(QStringLiteral("list_active_annotation_categories"), {})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("ok"));
+    const QJsonObject denied =
+        controller.handleToolCall(QStringLiteral("edit_active_annotation_categories"),
+                                  QJsonObject{{QStringLiteral("operation"), QStringLiteral("remove_category")},
+                                              {QStringLiteral("category"), QStringLiteral("temporary label")}});
+    QCOMPARE(denied.value(QStringLiteral("errorCode")).toString(), QStringLiteral("PERMISSION_DENIED"));
+    QVERIFY(sessionFile.open(QIODevice::ReadOnly));
+    QCOMPARE(sessionFile.readAll(), diskBytesBefore);
+    sessionFile.close();
+
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+    const QJsonObject dialogPending =
+        controller.handleToolCall(QStringLiteral("edit_active_annotation_categories"),
+                                  QJsonObject{{QStringLiteral("operation"), QStringLiteral("add_category")},
+                                              {QStringLiteral("category"), QStringLiteral("dialog-stale")}});
+    const QString dialogConfirmationId = dialogPending.value(QStringLiteral("confirmation"))
+                                             .toObject()
+                                             .value(QStringLiteral("confirmationId"))
+                                             .toString();
+    QCOMPARE(dialogPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    delete dialog;
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickAnnotate", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+    dialog = window.findChild<SamAnnotatorDialog*>(QStringLiteral("SamAnnotatorDialog"));
+    QVERIFY(dialog != nullptr);
+    QVERIFY(dialog->instanceId() != initialDialogInstanceId);
+    QVERIFY(!dialog->categories().contains(QStringLiteral("dialog-stale")));
+    const int undoIndexBeforeDialogExpiry = dialog->undoStackIndex();
+    QVERIFY(confirmPendingToolsAndWait(controller, dialogConfirmationId));
+    QVERIFY(!dialog->categories().contains(QStringLiteral("dialog-stale")));
+    QCOMPARE(dialog->undoStackIndex(), undoIndexBeforeDialogExpiry);
+
+    const QJsonObject ownerPending =
+        controller.handleToolCall(QStringLiteral("edit_active_annotation_categories"),
+                                  QJsonObject{{QStringLiteral("operation"), QStringLiteral("add_category")},
+                                              {QStringLiteral("category"), QStringLiteral("owner-stale")}});
+    const QString ownerConfirmationId = ownerPending.value(QStringLiteral("confirmation"))
+                                            .toObject()
+                                            .value(QStringLiteral("confirmationId"))
+                                            .toString();
+    const int undoIndexBeforeOwnerExpiry = dialog->undoStackIndex();
+    QObject replacementOwner;
+    controller.registerDataSourceViewHandler(&replacementOwner,
+                                             [](const QString&, const QJsonObject&) { return QJsonObject(); });
+    QVERIFY(confirmPendingToolsAndWait(controller, ownerConfirmationId));
+    QVERIFY(!dialog->categories().contains(QStringLiteral("owner-stale")));
+    QCOMPARE(dialog->undoStackIndex(), undoIndexBeforeOwnerExpiry);
+    controller.unregisterDataSourceViewHandler(&replacementOwner);
+}
+
+void TestMainWindow::testAgentActiveSamPromptCancelPermissionsAndSnapshot() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    MainWindow window;
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    QImage image(48, 40, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    displayManager->allViewports().first()->displayImage(image);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickAnnotate", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+    auto* dialog = window.findChild<SamAnnotatorDialog*>(QStringLiteral("SamAnnotatorDialog"));
+    QVERIFY(dialog != nullptr);
+    QVERIFY(dialog->isVisible());
+    const quint64 initialPromptDialogInstanceId = dialog->instanceId();
+
+    const QPointF point(13.375, 27.625);
+    QVERIFY(QMetaObject::invokeMethod(dialog, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, point),
+                                      Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    const QJsonObject status = controller.handleToolCall(QStringLiteral("get_active_annotation_prompt_status"), {});
+    QCOMPARE(status.keys().size(), 4);
+    QCOMPARE(status.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+    QVERIFY(status.value(QStringLiteral("hasPrompt")).toBool());
+    QVERIFY(!status.value(QStringLiteral("predictionInFlight")).toBool());
+    QCOMPARE(status.value(QStringLiteral("candidateCount")).toInt(), 0);
+    const QJsonObject denied = controller.handleToolCall(QStringLiteral("cancel_active_annotation_prompt"), {});
+    QCOMPARE(denied.value(QStringLiteral("errorCode")).toString(), QStringLiteral("PERMISSION_DENIED"));
+    QVERIFY(dialog->agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+    const QJsonObject stalePending = controller.handleToolCall(QStringLiteral("cancel_active_annotation_prompt"), {});
+    QCOMPARE(stalePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString pendingJson = QString::fromUtf8(QJsonDocument(stalePending).toJson(QJsonDocument::Compact));
+    QVERIFY(!pendingJson.contains(QStringLiteral("13.375")));
+    QVERIFY(!pendingJson.contains(QStringLiteral("27.625")));
+    const QString staleConfirmationId = stalePending.value(QStringLiteral("confirmation"))
+                                            .toObject()
+                                            .value(QStringLiteral("confirmationId"))
+                                            .toString();
+    QCOMPARE(dialog->cancelAgentPrompt().value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+    QVERIFY(QMetaObject::invokeMethod(dialog, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, point),
+                                      Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    const int stackIndexBeforeExpiry = dialog->undoStackIndex();
+    const int stackCountBeforeExpiry = dialog->undoStackCount();
+    QVERIFY(confirmPendingToolsAndWait(controller, staleConfirmationId));
+    QVERIFY(dialog->agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+    QCOMPARE(dialog->undoStackIndex(), stackIndexBeforeExpiry);
+    QCOMPARE(dialog->undoStackCount(), stackCountBeforeExpiry);
+
+    const QJsonObject currentPending = controller.handleToolCall(QStringLiteral("cancel_active_annotation_prompt"), {});
+    QCOMPARE(currentPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString currentConfirmationId = currentPending.value(QStringLiteral("confirmation"))
+                                              .toObject()
+                                              .value(QStringLiteral("confirmationId"))
+                                              .toString();
+    dialog->addCategory(QStringLiteral("category-only-drift"));
+    const int stackIndexBeforeCancel = dialog->undoStackIndex();
+    const int stackCountBeforeCancel = dialog->undoStackCount();
+    QVERIFY(confirmPendingToolsAndWait(controller, currentConfirmationId));
+    QVERIFY(!dialog->agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+    QCOMPARE(dialog->undoStackIndex(), stackIndexBeforeCancel);
+    QCOMPARE(dialog->undoStackCount(), stackCountBeforeCancel);
+
+    const QJsonObject unchanged =
+        controller.actor()->executeTool(QStringLiteral("cancel_active_annotation_prompt"), {});
+    QCOMPARE(unchanged.value(QStringLiteral("status")).toString(), QStringLiteral("unchanged"));
+
+    QVERIFY(QMetaObject::invokeMethod(dialog, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, point),
+                                      Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    const QJsonObject dialogPending = controller.handleToolCall(QStringLiteral("cancel_active_annotation_prompt"), {});
+    const QString dialogConfirmationId = dialogPending.value(QStringLiteral("confirmation"))
+                                             .toObject()
+                                             .value(QStringLiteral("confirmationId"))
+                                             .toString();
+    delete dialog;
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickAnnotate", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+    dialog = window.findChild<SamAnnotatorDialog*>(QStringLiteral("SamAnnotatorDialog"));
+    QVERIFY(dialog != nullptr);
+    QVERIFY(dialog->instanceId() != initialPromptDialogInstanceId);
+    QVERIFY(QMetaObject::invokeMethod(dialog, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, point),
+                                      Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    const int undoIndexBeforeDialogExpiry = dialog->undoStackIndex();
+    QVERIFY(confirmPendingToolsAndWait(controller, dialogConfirmationId));
+    QVERIFY(dialog->agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+    QCOMPARE(dialog->undoStackIndex(), undoIndexBeforeDialogExpiry);
+
+    const QJsonObject ownerPending = controller.handleToolCall(QStringLiteral("cancel_active_annotation_prompt"), {});
+    const QString ownerConfirmationId = ownerPending.value(QStringLiteral("confirmation"))
+                                            .toObject()
+                                            .value(QStringLiteral("confirmationId"))
+                                            .toString();
+    QObject replacementOwner;
+    controller.registerDataSourceViewHandler(&replacementOwner,
+                                             [](const QString&, const QJsonObject&) { return QJsonObject(); });
+    const int undoIndexBeforeOwnerExpiry = dialog->undoStackIndex();
+    QVERIFY(confirmPendingToolsAndWait(controller, ownerConfirmationId));
+    QVERIFY(dialog->agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+    QCOMPARE(dialog->undoStackIndex(), undoIndexBeforeOwnerExpiry);
+    controller.unregisterDataSourceViewHandler(&replacementOwner);
+}
+
+void TestMainWindow::testAgentSaveActiveSamSessionAsNewFile() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+
+    MainWindow window;
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+    const QJsonObject noDialogResult = controller.handleToolCall(
+        QStringLiteral("save_active_annotation_session"),
+        {{QStringLiteral("outputPath"), directory.filePath(QStringLiteral("no-dialog.deeplux-anno.json"))}});
+    QCOMPARE(noDialogResult.value(QStringLiteral("errorCode")).toString(), QStringLiteral("SAM_DIALOG_NOT_OPEN"));
+    const QString imagePath = directory.filePath(QStringLiteral("active-session-image.png"));
+    QImage image(48, 40, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    QVERIFY(image.save(imagePath));
+    displayManager->allViewports().first()->displayImage(image);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickAnnotate", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+    auto* dialog = window.findChild<SamAnnotatorDialog*>(QStringLiteral("SamAnnotatorDialog"));
+    QVERIFY(dialog != nullptr);
+
+    const QString emptySessionPath = directory.filePath(QStringLiteral("empty-active.deeplux-anno.json"));
+    const QJsonObject emptySessionResult = controller.handleToolCall(
+        QStringLiteral("save_active_annotation_session"), {{QStringLiteral("outputPath"), emptySessionPath}});
+    QCOMPARE(emptySessionResult.value(QStringLiteral("errorCode")).toString(), QStringLiteral("NO_ANNOTATIONS"));
+    QVERIFY(!QFileInfo::exists(emptySessionPath));
+
+    AnnotationSession session = dialog->session();
+    session.imagePath = imagePath;
+    session.imageWidth = image.width();
+    session.imageHeight = image.height();
+    session.imageDigest = AnnotationSession::computeImageDigest(image);
+    AnnotationObject object;
+    object.id = QStringLiteral("active-session-object");
+    object.label = QStringLiteral("缺陷A");
+    object.bbox = QRectF(4, 5, 16, 17);
+    object.polygon = {QPointF(4.25, 5.5), QPointF(20.25, 5.5), QPointF(20.25, 22.5)};
+    object.maskRle = QStringLiteral("private-mask-rle-content");
+    object.score = 0.91;
+    session.annotations = {object};
+    const QString sourcePath = directory.filePath(QStringLiteral("source.deeplux-anno.json"));
+    QString error;
+    QVERIFY2(session.save(sourcePath, &error), qPrintable(error));
+    QVERIFY2(dialog->openAnnotationFile(sourcePath, &error), qPrintable(error));
+    QFile sourceFile(sourcePath);
+    QVERIFY(sourceFile.open(QIODevice::ReadOnly));
+    const QByteArray sourceBytesBefore = sourceFile.readAll();
+    sourceFile.close();
+
+    const AnnotationSession inMemoryBefore = dialog->session();
+    const QByteArray expectedBytes = QJsonDocument(inMemoryBefore.toJson()).toJson(QJsonDocument::Indented);
+    const int undoIndexBefore = dialog->undoStackIndex();
+    const int undoCountBefore = dialog->undoStackCount();
+    const QString outputPath = directory.filePath(QStringLiteral("saved-active.deeplux-anno.json"));
+
+    const auto saveCall = [&](const QString& path) {
+        return controller.handleToolCall(QStringLiteral("save_active_annotation_session"),
+                                         {{QStringLiteral("outputPath"), path}});
+    };
+#ifdef Q_OS_LINUX
+    const QString unwritableOutputPath =
+        QStringLiteral("/proc/deeplux-agent-save-%1.deeplux-anno.json").arg(QCoreApplication::applicationPid());
+    const QJsonObject unwritablePending = saveCall(unwritableOutputPath);
+    if (unwritablePending.value(QStringLiteral("status")) == QLatin1String("pending_confirmation")) {
+        QSignalSpy unwritableToolSpy(controller.actor(), &AgentActor::toolExecuted);
+        QVERIFY(confirmPendingToolsAndWait(controller, unwritablePending.value(QStringLiteral("confirmation"))
+                                                           .toObject()
+                                                           .value(QStringLiteral("confirmationId"))
+                                                           .toString()));
+        QVERIFY(!unwritableToolSpy.isEmpty());
+        QCOMPARE(unwritableToolSpy.last().at(1).toJsonObject().value(QStringLiteral("errorCode")).toString(),
+                 QStringLiteral("FILE_WRITE_FAILED"));
+    } else {
+        QCOMPARE(unwritablePending.value(QStringLiteral("errorCode")).toString(),
+                 QStringLiteral("PRECONDITION_FAILED"));
+    }
+    QVERIFY(!QFileInfo::exists(unwritableOutputPath));
+#endif
+#ifdef Q_OS_UNIX
+    const QString symlinkTargetPath = directory.filePath(QStringLiteral("linked-target.deeplux-anno.json"));
+    QVERIFY(QFile::link(sourcePath, symlinkTargetPath));
+    QVERIFY(QFileInfo(symlinkTargetPath).isSymLink());
+    QCOMPARE(saveCall(symlinkTargetPath).value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("OUTPUT_EXISTS"));
+    const QString danglingSymlinkPath = directory.filePath(QStringLiteral("dangling.deeplux-anno.json"));
+    QVERIFY(QFile::link(directory.filePath(QStringLiteral("missing-link-target")), danglingSymlinkPath));
+    QVERIFY(QFileInfo(danglingSymlinkPath).isSymLink());
+    QCOMPARE(saveCall(danglingSymlinkPath).value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("OUTPUT_EXISTS"));
+#endif
+    const QJsonObject relativePathResult = saveCall(QStringLiteral("relative.deeplux-anno.json"));
+    QCOMPARE(relativePathResult.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    const QJsonObject wrongSuffixResult = saveCall(directory.filePath(QStringLiteral("wrong.json")));
+    QCOMPARE(wrongSuffixResult.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    const QJsonObject missingParentResult =
+        saveCall(directory.filePath(QStringLiteral("missing-parent/new.deeplux-anno.json")));
+    QCOMPARE(missingParentResult.value(QStringLiteral("errorCode")).toString(), QStringLiteral("PRECONDITION_FAILED"));
+    const QString tooLongPath =
+        directory.path() + QLatin1Char('/') + QString(4100, QLatin1Char('x')) + QStringLiteral(".deeplux-anno.json");
+    const QJsonObject tooLongPathResult = saveCall(tooLongPath);
+    QCOMPARE(tooLongPathResult.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    QJsonObject wrongThreadResult;
+    std::thread wrongThread([&]() {
+        wrongThreadResult = controller.executeDataSourceViewAction(QStringLiteral("save_active_annotation_session"),
+                                                                   {{QStringLiteral("outputPath"), outputPath}});
+    });
+    wrongThread.join();
+    QCOMPARE(wrongThreadResult.value(QStringLiteral("errorCode")).toString(), QStringLiteral("THREAD_AFFINITY"));
+
+    const QString autopilotRejectedPath = directory.filePath(QStringLiteral("autopilot-rejected.deeplux-anno.json"));
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+    const QJsonObject autopilotPending = saveCall(autopilotRejectedPath);
+    QCOMPARE(autopilotPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    QVERIFY(controller.rejectPendingTools(autopilotPending.value(QStringLiteral("confirmation"))
+                                              .toObject()
+                                              .value(QStringLiteral("confirmationId"))
+                                              .toString()));
+    QVERIFY(!QFileInfo::exists(autopilotRejectedPath));
+
+    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    const QJsonObject denied = saveCall(outputPath);
+    QCOMPARE(denied.value(QStringLiteral("errorCode")).toString(), QStringLiteral("PERMISSION_DENIED"));
+    QVERIFY(!QFileInfo::exists(outputPath));
+
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+    const QJsonObject pending = saveCall(outputPath);
+    QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QByteArray pendingBytes = QJsonDocument(pending).toJson(QJsonDocument::Compact);
+    QVERIFY(pendingBytes.contains(outputPath.toUtf8()));
+    QVERIFY(!pendingBytes.contains("private-mask-rle-content"));
+    QVERIFY(!pendingBytes.contains("4.25"));
+    QVERIFY(!pendingBytes.contains("5.5"));
+    const QJsonArray sideEffects = pending.value(QStringLiteral("confirmation"))
+                                       .toObject()
+                                       .value(QStringLiteral("context"))
+                                       .toObject()
+                                       .value(QStringLiteral("sideEffects"))
+                                       .toArray();
+    QCOMPARE(sideEffects.size(), 1);
+    QVERIFY(sideEffects.first().toString().contains(outputPath));
+    const QString confirmationId =
+        pending.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("confirmationId")).toString();
+
+    dialog->addCategory(QStringLiteral("temporary-category-only"));
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    QSignalSpy toolSpy(controller.actor(), &AgentActor::toolExecuted);
+    QVERIFY(confirmPendingToolsAndWait(controller, confirmationId));
+    QVERIFY(!toolSpy.isEmpty());
+    const QJsonObject toolResult = toolSpy.last().at(1).toJsonObject();
+    QCOMPARE(toolResult.value(QStringLiteral("status")).toString(), QStringLiteral("saved"));
+    QCOMPARE(toolResult.value(QStringLiteral("outputPath")).toString(), outputPath);
+    QCOMPARE(toolResult.value(QStringLiteral("bytes")).toInt(), expectedBytes.size());
+    QCOMPARE(toolResult.value(QStringLiteral("objectCount")).toInt(), inMemoryBefore.annotations.size());
+    QCOMPARE(toolResult.value(QStringLiteral("sha256")).toString(),
+             QString::fromLatin1(QCryptographicHash::hash(expectedBytes, QCryptographicHash::Sha256).toHex()));
+    QVERIFY(!QJsonDocument(toolResult).toJson(QJsonDocument::Compact).contains("private-mask-rle-content"));
+    QFile savedFile(outputPath);
+    QVERIFY(savedFile.open(QIODevice::ReadOnly));
+    const QByteArray savedBytes = savedFile.readAll();
+    savedFile.close();
+    QCOMPARE(savedBytes, expectedBytes);
+    QCOMPARE(AnnotationSession::fromJson(QJsonDocument::fromJson(savedBytes).object()).toJson(),
+             inMemoryBefore.toJson());
+    QVERIFY(!auditSpy.isEmpty());
+    const AgentActionLogEntry saveAudit = auditSpy.last().first().value<AgentActionLogEntry>();
+    QCOMPARE(saveAudit.action, QStringLiteral("save_active_annotation_session"));
+    QVERIFY(!saveAudit.undoable);
+    const QJsonObject auditParams = QJsonDocument::fromJson(saveAudit.params.toUtf8()).object();
+    QCOMPARE(auditParams.value(QStringLiteral("outputPath")).toString(), outputPath);
+    QCOMPARE(auditParams.value(QStringLiteral("objectCount")).toInt(), inMemoryBefore.annotations.size());
+    QCOMPARE(auditParams.value(QStringLiteral("bytes")).toInt(), expectedBytes.size());
+    QCOMPARE(auditParams.value(QStringLiteral("sha256")).toString(),
+             QString::fromLatin1(QCryptographicHash::hash(expectedBytes, QCryptographicHash::Sha256).toHex()));
+    QVERIFY(!saveAudit.params.contains(QStringLiteral("private-mask-rle-content")));
+    QCOMPARE(dialog->session().toJson(), inMemoryBefore.toJson());
+    QCOMPARE(dialog->undoStackIndex(), undoIndexBefore);
+    QCOMPARE(dialog->undoStackCount(), undoCountBefore);
+    QVERIFY(sourceFile.open(QIODevice::ReadOnly));
+    QCOMPARE(sourceFile.readAll(), sourceBytesBefore);
+    sourceFile.close();
+
+    const QString batchSavePath = directory.filePath(QStringLiteral("batch-edit-then-save.deeplux-anno.json"));
+    dialog->addCategory(QStringLiteral("batch-label"));
+    MainWindowReplyClient replyClient;
+    controller.setLLMClient(&replyClient);
+    QSignalSpy batchToolSpy(controller.actor(), &AgentActor::toolExecuted);
+    controller.sendUserMessage(QStringLiteral("Relabel this object and save the session"));
+    AgentResponse batchResponse;
+    batchResponse.success = true;
+    batchResponse.toolCalls.append(
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("save_guard_edit")},
+                    {QStringLiteral("name"), QStringLiteral("edit_active_annotation_categories")},
+                    {QStringLiteral("arguments"),
+                     QJsonObject{{QStringLiteral("operation"), QStringLiteral("set_object_label")},
+                                 {QStringLiteral("objectIds"), QJsonArray{QStringLiteral("active-session-object")}},
+                                 {QStringLiteral("label"), QStringLiteral("batch-label")}}}});
+    batchResponse.toolCalls.append(
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("save_guard_write")},
+                    {QStringLiteral("name"), QStringLiteral("save_active_annotation_session")},
+                    {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("outputPath"), batchSavePath}}}});
+    replyClient.reply(batchResponse);
+    QTRY_COMPARE(controller.state(), AgentController::AgentState::Confirming);
+    const QJsonObject batchPending = controller.pendingConfirmationPayload();
+    QVERIFY(confirmPendingToolsAndWait(controller, batchPending.value(QStringLiteral("confirmationId")).toString()));
+    const auto batchSaveResult = std::find_if(batchToolSpy.cbegin(), batchToolSpy.cend(), [](const auto& call) {
+        return call.at(0).toString() == QLatin1String("save_active_annotation_session");
+    });
+    QVERIFY(batchSaveResult != batchToolSpy.cend());
+    QCOMPARE(batchSaveResult->at(1).toJsonObject().value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("CONFIRMATION_EXPIRED"));
+    QVERIFY(!QFileInfo::exists(batchSavePath));
+
+    const QString racedPath = directory.filePath(QStringLiteral("raced-active.deeplux-anno.json"));
+    const QJsonObject racedPending = controller.handleToolCall(QStringLiteral("save_active_annotation_session"),
+                                                               {{QStringLiteral("outputPath"), racedPath}});
+    QCOMPARE(racedPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString racedConfirmationId = racedPending.value(QStringLiteral("confirmation"))
+                                            .toObject()
+                                            .value(QStringLiteral("confirmationId"))
+                                            .toString();
+    QFile racedFile(racedPath);
+    QVERIFY(racedFile.open(QIODevice::WriteOnly));
+    const QByteArray sentinel("keep-racing-target");
+    QCOMPARE(racedFile.write(sentinel), sentinel.size());
+    racedFile.close();
+    QVERIFY(confirmPendingToolsAndWait(controller, racedConfirmationId));
+    QVERIFY(racedFile.open(QIODevice::ReadOnly));
+    QCOMPARE(racedFile.readAll(), sentinel);
+    racedFile.close();
+
+    QTemporaryDir parentDirectory;
+    QVERIFY(parentDirectory.isValid());
+    const QString firstParent = parentDirectory.filePath(QStringLiteral("first"));
+    const QString secondParent = parentDirectory.filePath(QStringLiteral("second"));
+    QVERIFY(QDir().mkpath(firstParent));
+    QVERIFY(QDir().mkpath(secondParent));
+    const QString changingParentLink = parentDirectory.filePath(QStringLiteral("active-parent"));
+    QVERIFY(QFile::link(firstParent, changingParentLink));
+    if (!QFileInfo(changingParentLink).isSymLink()) {
+        // Windows 上 QFile::link 创建硬链接，父目录切换的符号链接场景不可构造。
+        QWARN("Link creation yields a hard link on this platform; parent-switch symlink scenario skipped");
+        return;
+    }
+    const QString changedParentOutput =
+        QDir(changingParentLink).filePath(QStringLiteral("changed-parent.deeplux-anno.json"));
+    const QJsonObject parentPending = saveCall(changedParentOutput);
+    QCOMPARE(parentPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString parentConfirmationId = parentPending.value(QStringLiteral("confirmation"))
+                                             .toObject()
+                                             .value(QStringLiteral("confirmationId"))
+                                             .toString();
+    QVERIFY(QFile::remove(changingParentLink));
+    QVERIFY(QFile::link(secondParent, changingParentLink));
+    QVERIFY(confirmPendingToolsAndWait(controller, parentConfirmationId));
+    QVERIFY(!QFileInfo::exists(QDir(firstParent).filePath(QStringLiteral("changed-parent.deeplux-anno.json"))));
+    QVERIFY(!QFileInfo::exists(QDir(secondParent).filePath(QStringLiteral("changed-parent.deeplux-anno.json"))));
+
+    const QString stalePath = directory.filePath(QStringLiteral("stale-active.deeplux-anno.json"));
+    const QJsonObject stalePending = controller.handleToolCall(QStringLiteral("save_active_annotation_session"),
+                                                               {{QStringLiteral("outputPath"), stalePath}});
+    QCOMPARE(stalePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString staleConfirmationId = stalePending.value(QStringLiteral("confirmation"))
+                                            .toObject()
+                                            .value(QStringLiteral("confirmationId"))
+                                            .toString();
+    AnnotationSession changedSession = dialog->session();
+    changedSession.annotations[0].label = QStringLiteral("changed-after-confirmation");
+    const QString changedSourcePath = directory.filePath(QStringLiteral("changed.deeplux-anno.json"));
+    QVERIFY2(changedSession.save(changedSourcePath, &error), qPrintable(error));
+    QVERIFY2(dialog->openAnnotationFile(changedSourcePath, &error), qPrintable(error));
+    QVERIFY(confirmPendingToolsAndWait(controller, staleConfirmationId));
+    QVERIFY(!QFileInfo::exists(stalePath));
+
+    const QString noImagePath = directory.filePath(QStringLiteral("no-image.deeplux-anno.json"));
+    dialog->setImageSnapshot(QImage());
+    QCOMPARE(saveCall(noImagePath).value(QStringLiteral("errorCode")).toString(), QStringLiteral("NO_IMAGE"));
+    QVERIFY(!QFileInfo::exists(noImagePath));
+}
+
+void TestMainWindow::testAgentOpenActiveSamSession() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+
+    MainWindow window;
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString sourceImagePath = directory.filePath(QStringLiteral("bound-image.png"));
+    QImage sourceImage(48, 40, QImage::Format_RGB32);
+    sourceImage.fill(QColor("#2a6fdb"));
+    QVERIFY(sourceImage.save(sourceImagePath));
+
+    const auto openCall = [&controller](const QString& path) {
+        return controller.handleToolCall(QStringLiteral("open_active_annotation_session"),
+                                         {{QStringLiteral("sessionPath"), path}});
+    };
+    QCOMPARE(openCall(directory.filePath(QStringLiteral("no-dialog.deeplux-anno.json")))
+                 .value(QStringLiteral("errorCode"))
+                 .toString(),
+             QStringLiteral("SAM_DIALOG_NOT_OPEN"));
+
+    displayManager->allViewports().first()->displayImage(sourceImage);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickAnnotate", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+    auto* dialog = window.findChild<SamAnnotatorDialog*>(QStringLiteral("SamAnnotatorDialog"));
+    QVERIFY(dialog != nullptr);
+
+    AnnotationSession sourceSession = dialog->session();
+    sourceSession.imagePath = sourceImagePath;
+    sourceSession.imageWidth = sourceImage.width();
+    sourceSession.imageHeight = sourceImage.height();
+    sourceSession.imageDigest = AnnotationSession::computeImageDigest(sourceImage);
+    AnnotationObject object;
+    object.id = QStringLiteral("open-session-object");
+    object.label = QStringLiteral("private-label");
+    object.bbox = QRectF(2, 3, 12, 14);
+    object.polygon = {QPointF(2, 3), QPointF(14, 3), QPointF(14, 17)};
+    object.maskRle = QStringLiteral("private-open-mask-content");
+    sourceSession.annotations = {object};
+    const QString sessionPath = directory.filePath(QStringLiteral("source.deeplux-anno.json"));
+    QString sessionError;
+    QVERIFY2(sourceSession.save(sessionPath, &sessionError), qPrintable(sessionError));
+
+    QCOMPARE(openCall(QStringLiteral("relative.deeplux-anno.json")).value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("INVALID_PARAM"));
+    const QString malformedPath = directory.filePath(QStringLiteral("malformed.deeplux-anno.json"));
+    QFile malformedFile(malformedPath);
+    QVERIFY(malformedFile.open(QIODevice::WriteOnly));
+    QCOMPARE(malformedFile.write("not-json"), qint64(8));
+    malformedFile.close();
+    QCOMPARE(openCall(malformedPath).value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_SESSION"));
+    QCOMPARE(openCall(directory.filePath(QStringLiteral("missing.deeplux-anno.json")))
+                 .value(QStringLiteral("errorCode"))
+                 .toString(),
+             QStringLiteral("FILE_NOT_FOUND"));
+#ifdef Q_OS_UNIX
+    const QString linkedSessionPath = directory.filePath(QStringLiteral("linked.deeplux-anno.json"));
+    QVERIFY(QFile::link(sessionPath, linkedSessionPath));
+    QCOMPARE(openCall(linkedSessionPath).value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("INVALID_SESSION"));
+    const QString danglingSessionPath = directory.filePath(QStringLiteral("dangling.deeplux-anno.json"));
+    QVERIFY(QFile::link(directory.filePath(QStringLiteral("missing-target")), danglingSessionPath));
+    QCOMPARE(openCall(danglingSessionPath).value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("INVALID_SESSION"));
+#endif
+    AnnotationSession invalidImageSession = sourceSession;
+    invalidImageSession.imageDigest = QString(64, QLatin1Char('0'));
+    const QString invalidImageSessionPath = directory.filePath(QStringLiteral("bad-image-binding.deeplux-anno.json"));
+    QVERIFY(invalidImageSession.save(invalidImageSessionPath, &sessionError));
+    QCOMPARE(openCall(invalidImageSessionPath).value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("IMAGE_BINDING_MISMATCH"));
+    AnnotationSession missingImageSession = sourceSession;
+    missingImageSession.imagePath = directory.filePath(QStringLiteral("missing-image.png"));
+    const QString missingImageSessionPath = directory.filePath(QStringLiteral("missing-image.deeplux-anno.json"));
+    QVERIFY(missingImageSession.save(missingImageSessionPath, &sessionError));
+    QCOMPARE(openCall(missingImageSessionPath).value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("IMAGE_NOT_FOUND"));
+
+    const QByteArray initialSourceBytes = [&]() {
+        QFile f(sessionPath);
+        if (!f.open(QIODevice::ReadOnly))
+            return QByteArray();
+        return f.readAll();
+    }();
+    QVERIFY(!initialSourceBytes.isEmpty());
+
+    const QByteArray activeSessionBeforePermissionChecks =
+        QJsonDocument(dialog->session().toJson()).toJson(QJsonDocument::Compact);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    QCOMPARE(openCall(sessionPath).value(QStringLiteral("errorCode")).toString(), QStringLiteral("PERMISSION_DENIED"));
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+    const QJsonObject autopilotPending = openCall(sessionPath);
+    QCOMPARE(autopilotPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString autopilotConfirmationId = autopilotPending.value(QStringLiteral("confirmation"))
+                                                .toObject()
+                                                .value(QStringLiteral("confirmationId"))
+                                                .toString();
+    QVERIFY(controller.rejectPendingTools(autopilotConfirmationId));
+    QCOMPARE(QJsonDocument(dialog->session().toJson()).toJson(QJsonDocument::Compact),
+             activeSessionBeforePermissionChecks);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+
+    // A confirmed image binding is revalidated before execution; a changed image expires without replacing UI state.
+    const QJsonObject changedImagePending = openCall(sessionPath);
+    QCOMPARE(changedImagePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString changedImageConfirmationId = changedImagePending.value(QStringLiteral("confirmation"))
+                                                   .toObject()
+                                                   .value(QStringLiteral("confirmationId"))
+                                                   .toString();
+    const QByteArray activeSessionBeforeExpiry =
+        QJsonDocument(dialog->session().toJson()).toJson(QJsonDocument::Compact);
+    QImage replacementImage = sourceImage;
+    replacementImage.fill(QColor("#df4411"));
+    QVERIFY(replacementImage.save(sourceImagePath));
+    QVERIFY(confirmPendingToolsAndWait(controller, changedImageConfirmationId));
+    QCOMPARE(QJsonDocument(dialog->session().toJson()).toJson(QJsonDocument::Compact), activeSessionBeforeExpiry);
+    QCOMPARE(AnnotationSession::computeImageDigest(dialog->imageSnapshot()),
+             AnnotationSession::computeImageDigest(sourceImage));
+    QVERIFY(sourceImage.save(sourceImagePath));
+
+    // Replacing the session file after the card was shown also expires the approval.
+    const QJsonObject changedSessionPending = openCall(sessionPath);
+    QCOMPARE(changedSessionPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString changedSessionConfirmationId = changedSessionPending.value(QStringLiteral("confirmation"))
+                                                     .toObject()
+                                                     .value(QStringLiteral("confirmationId"))
+                                                     .toString();
+    AnnotationSession changedSourceSession = sourceSession;
+    changedSourceSession.annotations[0].label = QStringLiteral("changed-after-approval");
+    QVERIFY(changedSourceSession.save(sessionPath, &sessionError));
+    QVERIFY(confirmPendingToolsAndWait(controller, changedSessionConfirmationId));
+    QCOMPARE(QJsonDocument(dialog->session().toJson()).toJson(QJsonDocument::Compact), activeSessionBeforeExpiry);
+    QVERIFY(sourceSession.save(sessionPath, &sessionError));
+
+    // A normal open is confirmed, privacy bounded, and uses a stable backend snapshot.
+    const int undoIndexBeforeOpen = dialog->undoStackIndex();
+    const QJsonObject pending = openCall(sessionPath);
+    QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QByteArray pendingBytes = QJsonDocument(pending).toJson(QJsonDocument::Compact);
+    QVERIFY(pendingBytes.contains(sessionPath.toUtf8()));
+    QVERIFY(!pendingBytes.contains("private-open-mask-content"));
+    QVERIFY(!pendingBytes.contains("private-label"));
+    const QJsonObject context =
+        pending.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("context")).toObject();
+    QVERIFY(context.value(QStringLiteral("summary")).toString().contains(QStringLiteral("1 个对象")));
+    QVERIFY(context.value(QStringLiteral("summary")).toString().contains(QStringLiteral("临时图像快照")));
+    QVERIFY(!context.value(QStringLiteral("sideEffects")).toArray().isEmpty());
+    QSignalSpy toolSpy(controller.actor(), &AgentActor::toolExecuted);
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    const QString confirmationId =
+        pending.value(QStringLiteral("confirmation")).toObject().value(QStringLiteral("confirmationId")).toString();
+    QVERIFY(confirmPendingToolsAndWait(controller, confirmationId));
+    auto openedCall = std::find_if(toolSpy.cbegin(), toolSpy.cend(), [](const auto& call) {
+        return call.at(0).toString() == QLatin1String("open_active_annotation_session");
+    });
+    QVERIFY(openedCall != toolSpy.cend());
+    const QJsonObject opened = openedCall->at(1).toJsonObject();
+    QCOMPARE(opened.value(QStringLiteral("status")).toString(), QStringLiteral("opened"));
+    QCOMPARE(opened.value(QStringLiteral("objectCount")).toInt(), 1);
+    QVERIFY(opened.value(QStringLiteral("imageBound")).toBool());
+    QCOMPARE(dialog->session().toJson(), sourceSession.toJson());
+    QVERIFY(!auditSpy.isEmpty());
+    const AgentActionLogEntry openAudit = auditSpy.last().first().value<AgentActionLogEntry>();
+    QCOMPARE(openAudit.action, QStringLiteral("open_active_annotation_session"));
+    QVERIFY(!openAudit.undoable);
+    QVERIFY(!openAudit.params.contains(QStringLiteral("private-open-mask-content")));
+    QVERIFY(!openAudit.params.contains(QStringLiteral("private-label")));
+    QVERIFY(dialog->undoStackIndex() <= undoIndexBeforeOpen);
+    const QString backendImagePath = dialog->backendImagePathForTest();
+    QVERIFY(!backendImagePath.isEmpty());
+    QVERIFY(QFileInfo::exists(backendImagePath));
+    QVERIFY(QFileInfo(backendImagePath).isSymLink() == false);
+    QVERIFY(QFileInfo(backendImagePath).canonicalFilePath() != QFileInfo(sourceImagePath).canonicalFilePath());
+    QCOMPARE(AnnotationSession::computeImageDigest(QImage(backendImagePath)),
+             AnnotationSession::computeImageDigest(sourceImage));
+
+    // Delayed environment/Ready callbacks must keep using the exact verified pixels after the source changes.
+    QVERIFY(replacementImage.save(sourceImagePath));
+    const QByteArray previousSamModel = qgetenv("DEEPLUX_SAM_MODEL");
+    const bool hadSamModel = qEnvironmentVariableIsSet("DEEPLUX_SAM_MODEL");
+    struct SamModelEnvironmentRestore {
+        QByteArray value;
+        bool wasSet = false;
+        ~SamModelEnvironmentRestore() {
+            if (wasSet)
+                qputenv("DEEPLUX_SAM_MODEL", value);
+            else
+                qunsetenv("DEEPLUX_SAM_MODEL");
+        }
+    } modelEnvironmentRestore{previousSamModel, hadSamModel};
+    qputenv("DEEPLUX_SAM_MODEL", QByteArray("test-model-placeholder"));
+    auto* backend = dialog->findChild<SamBackendClient*>();
+    QVERIFY(backend != nullptr);
+    backend->environmentInitializationFinished(true, QStringLiteral("initialized"));
+    dialog->refreshBackendImageForTest();
+    QCOMPARE(dialog->backendImagePathForTest(), backendImagePath);
+    QCOMPARE(AnnotationSession::computeImageDigest(QImage(dialog->backendImagePathForTest())),
+             AnnotationSession::computeImageDigest(sourceImage));
+    QVERIFY(sourceImage.save(sourceImagePath));
+    QVERIFY(sourceSession.save(sessionPath, &sessionError));
+
+    // An empty unbound draft preserves every source binding field and the visible background.
+    AnnotationSession unboundDraft;
+    unboundDraft.imageWidth = 17;
+    unboundDraft.imageHeight = 19;
+    unboundDraft.imageDigest = QString::fromLatin1(
+        QCryptographicHash::hash(QByteArray("unbound-draft-metadata"), QCryptographicHash::Sha256).toHex());
+    const QString unboundPath = directory.filePath(QStringLiteral("unbound.deeplux-anno.json"));
+    QVERIFY(unboundDraft.save(unboundPath, &sessionError));
+    const QImage backgroundBeforeUnbound = dialog->imageSnapshot();
+    const QString backgroundPathBeforeUnbound = dialog->session().imagePath;
+    const QJsonObject unboundPending = openCall(unboundPath);
+    QCOMPARE(unboundPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString unboundConfirmationId = unboundPending.value(QStringLiteral("confirmation"))
+                                              .toObject()
+                                              .value(QStringLiteral("confirmationId"))
+                                              .toString();
+    QVERIFY(unboundPending.value(QStringLiteral("confirmation"))
+                .toObject()
+                .value(QStringLiteral("context"))
+                .toObject()
+                .value(QStringLiteral("summary"))
+                .toString()
+                .contains(QStringLiteral("未绑定图像，保留当前画面")));
+    QVERIFY(confirmPendingToolsAndWait(controller, unboundConfirmationId));
+    QCOMPARE(dialog->session().imagePath, QString());
+    QCOMPARE(dialog->session().imageWidth, unboundDraft.imageWidth);
+    QCOMPARE(dialog->session().imageHeight, unboundDraft.imageHeight);
+    QCOMPARE(dialog->session().imageDigest, unboundDraft.imageDigest);
+    QCOMPARE(AnnotationSession::computeImageDigest(dialog->imageSnapshot()),
+             AnnotationSession::computeImageDigest(backgroundBeforeUnbound));
+    const QString unboundBackendPath = dialog->backendImagePathForTest();
+    QVERIFY(!unboundBackendPath.isEmpty());
+    QVERIFY(QFileInfo::exists(unboundBackendPath));
+    QVERIFY(!QFileInfo::exists(backendImagePath));
+    QVERIFY(backgroundPathBeforeUnbound == sourceImagePath);
+    QCOMPARE(AnnotationSession::computeImageDigest(QImage(unboundBackendPath)),
+             AnnotationSession::computeImageDigest(backgroundBeforeUnbound));
+
+    // In a confirmed batch, an earlier SAM edit invalidates the later open at its execution boundary.
+    QVERIFY(sourceSession.save(sessionPath, &sessionError));
+    const QJsonObject reopenPending = openCall(sessionPath);
+    QCOMPARE(reopenPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    QVERIFY(confirmPendingToolsAndWait(controller, reopenPending.value(QStringLiteral("confirmation"))
+                                                       .toObject()
+                                                       .value(QStringLiteral("confirmationId"))
+                                                       .toString()));
+    QCOMPARE(dialog->session().toJson(), sourceSession.toJson());
+    const QString existingCategory =
+        dialog->categories().isEmpty() ? QStringLiteral("object") : dialog->categories().first();
+    MainWindowReplyClient replyClient;
+    controller.setLLMClient(&replyClient);
+    QSignalSpy batchToolSpy(controller.actor(), &AgentActor::toolExecuted);
+    controller.sendUserMessage(QStringLiteral("Change the label and then open this session"));
+    AgentResponse response;
+    response.success = true;
+    response.toolCalls.append(QJsonObject{
+        {QStringLiteral("id"), QStringLiteral("open_guard_edit")},
+        {QStringLiteral("name"), QStringLiteral("edit_active_annotation_categories")},
+        {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("operation"), QStringLiteral("set_object_label")},
+                                                  {QStringLiteral("objectIds"), QJsonArray{object.id}},
+                                                  {QStringLiteral("label"), existingCategory}}}});
+    response.toolCalls.append(
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("open_guard_open")},
+                    {QStringLiteral("name"), QStringLiteral("open_active_annotation_session")},
+                    {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("sessionPath"), sessionPath}}}});
+    replyClient.reply(response);
+    QTRY_COMPARE(controller.state(), AgentController::AgentState::Confirming);
+    const QString batchId = controller.pendingConfirmationPayload().value(QStringLiteral("confirmationId")).toString();
+    QVERIFY(confirmPendingToolsAndWait(controller, batchId));
+    auto batchOpen = std::find_if(batchToolSpy.cbegin(), batchToolSpy.cend(), [](const auto& call) {
+        return call.at(0).toString() == QLatin1String("open_active_annotation_session");
+    });
+    QVERIFY(batchOpen != batchToolSpy.cend());
+    QCOMPARE(batchOpen->at(1).toJsonObject().value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("CONFIRMATION_EXPIRED"));
+    QCOMPARE(dialog->session().annotations.first().label, existingCategory);
+    QVERIFY(dialog->undoStackIndex() > undoIndexBeforeOpen);
+    QVERIFY(QFileInfo::exists(sessionPath));
+    // Reply client is stack-owned; detach it before the test scope tears it down.
+    controller.setLLMClient(nullptr);
 }
 
 void TestMainWindow::testQuickAnnotateOpensSamDialogOnMainViewportImage() {
@@ -965,13 +8038,624 @@ void TestMainWindow::testMeasurementConfigButtonCreatesInputNode() {
     QVERIFY(!input->params["awaitUserPick"].toBool());
 
     // 单步执行会清空流程树选择，但不应丢失测量输入目标。（B7：单步异步，逐次等待收尾）
+    QSignalSpy syncJobSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(syncJobSpy.count(), 1, 5000);
     QVERIFY(waitForServiceIdle());
+    project->setModified(false);
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
     QVERIFY(waitForServiceIdle());
     const ImageData output = RunEngine::instance().moduleOutput(QStringLiteral("distance_1"));
     QVERIFY(output.data("distance").isValid());
     QCOMPARE(output.data("distance").toDouble(), QLineF(pickedPoint1, pickedPoint2).length());
+}
+
+void TestMainWindow::testG6MeasurementInput2DPointLineRealMousePicksAndRunsDistancePL() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePL")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePL")));
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* viewport = viewports.first();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice183_measurement_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("2D point-line GUI input");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_line")},
+                               {QStringLiteral("point"), QJsonArray{0.0, 0.0}},
+                               {QStringLiteral("line"), QJsonArray{0.0, 0.0, 0.0, 0.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    ModuleInstance distance;
+    distance.id = QStringLiteral("slice183_distance_pl");
+    distance.moduleId = QStringLiteral("DistancePL");
+    distance.name = QStringLiteral("2D point-line distance");
+    project->addModule(distance);
+    project->addConnection(
+        {input.id, distance.id, 0, 0, QStringLiteral("image"), QStringLiteral("image"), QStringLiteral("data")});
+    project->addConnection(
+        {input.id, distance.id, 3, 1, QStringLiteral("point"), QStringLiteral("point"), QStringLiteral("data")});
+    project->addConnection(
+        {input.id, distance.id, 4, 2, QStringLiteral("line"), QStringLiteral("line"), QStringLiteral("data")});
+
+    QImage image(80, 60, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    ImageData imageData(image);
+    ImageCoordinateProvenance provenance = imageData.coordinateProvenance();
+    provenance.sourceImageId = QStringLiteral("slice183-source-image");
+    provenance.sourceSize = QSize(120, 100);
+    provenance.localOriginInSource = QPointF(10.0, 20.0);
+    imageData.setCoordinateProvenance(provenance);
+    DisplayData display;
+    display.variant() = imageData;
+    viewport->displayData(display);
+    QCoreApplication::processEvents();
+    QVERIFY(imageWidget->hasImage());
+    QCOMPARE(imageWidget->coordinateProvenance().sourceImageId, QStringLiteral("slice183-source-image"));
+    QCOMPARE(imageWidget->coordinateProvenance().sourceSize, QSize(120, 100));
+    imageWidget->setFixedSize(240, 180);
+    imageWidget->actualSize();
+    imageWidget->setZoom(2.0);
+    const QPoint panStart(100, 90);
+    const QPoint panEnd(115, 85);
+    QTest::mousePress(imageWidget, Qt::MiddleButton, Qt::NoModifier, panStart);
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(panEnd), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &panMove);
+    QTest::mouseRelease(imageWidget, Qt::MiddleButton, Qt::NoModifier, panEnd);
+
+    QSignalSpy sourcePickSpy(viewport, &ViewportWidget::point2DSourceClicked);
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&engine, &RunEngine::runFinished);
+    bool snapshotAvailable = false;
+    RunResult finishedResult{};
+    QMap<QString, QVariant> inputValues;
+    ImageData inputOutput;
+    PortValueMap inputPorts;
+    QMap<QString, QVariant> distanceValues;
+    ImageData distanceOutput;
+    PortValueMap distancePorts;
+    connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&engine, &input, &distance, &snapshotAvailable, &finishedResult, &inputValues, &inputOutput, &inputPorts,
+         &distanceValues, &distanceOutput, &distancePorts](const RunResult& result) {
+            finishedResult = result;
+            const bool inputAvailable =
+                engine.runOutputSnapshot(result.runId, input.id, inputOutput, inputValues, inputPorts);
+            const bool distanceAvailable =
+                engine.runOutputSnapshot(result.runId, distance.id, distanceOutput, distanceValues, distancePorts);
+            snapshotAvailable = inputAvailable && distanceAvailable;
+        },
+        Qt::DirectConnection);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree != nullptr);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/3"));
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(runFinishedSpy.count(), 0);
+
+    const QList<QPoint> screenPoints{QPoint(131, 95), QPoint(95, 125), QPoint(175, 125)};
+    const QList<QPointF> localPoints{QPointF(18.0, 20.0), QPointF(0.0, 35.0), QPointF(40.0, 35.0)};
+    const QList<QPointF> sourcePoints{QPointF(28.0, 40.0), QPointF(10.0, 55.0), QPointF(50.0, 55.0)};
+    for (int index = 0; index < screenPoints.size(); ++index) {
+        QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, screenPoints.at(index));
+        QCOMPARE(sourcePickSpy.size(), index + 1);
+        QCOMPARE(sourcePickSpy.at(index).at(0).toPointF(), localPoints.at(index));
+        QCOMPARE(sourcePickSpy.at(index).at(1).toPointF(), sourcePoints.at(index));
+        QCOMPARE(sourcePickSpy.at(index).at(2).toString(), QStringLiteral("slice183-source-image"));
+        QVERIFY(sourcePickSpy.at(index).at(3).toBool());
+        if (index < 2) {
+            QCOMPARE(processTree->topLevelItem(0)->text(1),
+                     index == 0 ? QStringLiteral("等待拾取 2/3") : QStringLiteral("等待拾取 3/3"));
+            QCOMPARE(runStartedSpy.count(), 0);
+            QCOMPARE(runFinishedSpy.count(), 0);
+        }
+    }
+
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), 1, 1000);
+    QCOMPARE(runStartedSpy.count(), 1);
+    QCOMPARE(runFinishedSpy.count(), 1);
+    QVERIFY(finishedResult.success);
+    QVERIFY(!finishedResult.runId.isEmpty());
+    QVERIFY(snapshotAvailable);
+    const ModuleInstance* savedInput = project->findModule(input.id);
+    QVERIFY(savedInput != nullptr);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point")).toArray(), (QJsonArray{18.0, 20.0}));
+    QCOMPARE(savedInput->params.value(QStringLiteral("point")).toArray().size(), 2);
+    QCOMPARE(savedInput->params.value(QStringLiteral("line")).toArray(), (QJsonArray{0.0, 35.0, 40.0, 35.0}));
+    QCOMPARE(savedInput->params.value(QStringLiteral("pick_coordinate_frame")).toString(),
+             QStringLiteral("ImageLocalPixel"));
+    QCOMPARE(inputValues.value(QStringLiteral("point")).toList(), (QVariantList{18.0, 20.0}));
+    QCOMPARE(inputValues.value(QStringLiteral("line")).toList(), (QVariantList{0.0, 35.0, 40.0, 35.0}));
+    QCOMPARE(inputValues.value(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("ImageLocalPixel"));
+    QCOMPARE(distanceValues.value(QStringLiteral("distance")).toDouble(), 15.0);
+    QCOMPARE(distanceOutput.data(QStringLiteral("distance")).toDouble(), 15.0);
+    QCOMPARE(distanceOutput.data(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("ImageLocalPixel"));
+    QCOMPARE(distanceOutput.data(QStringLiteral("foot_point")).toPointF(), QPointF(18.0, 35.0));
+    QVERIFY(inputOutput.hasData(QStringLiteral("source_coordinate_available")));
+    QCOMPARE(inputOutput.data(QStringLiteral("source_coordinate_available")).type(), QVariant::Bool);
+    QVERIFY(!inputOutput.data(QStringLiteral("source_coordinate_available")).toBool());
+    QVERIFY(distanceOutput.hasData(QStringLiteral("source_coordinate_available")));
+    QCOMPARE(distanceOutput.data(QStringLiteral("source_coordinate_available")).type(), QVariant::Bool);
+    QVERIFY(!distanceOutput.data(QStringLiteral("source_coordinate_available")).toBool());
+    for (const QString& sourceField :
+         {QStringLiteral("source_image_id"), QStringLiteral("source_image_size"),
+          QStringLiteral("source_coordinate_origin"), QStringLiteral("point_source"), QStringLiteral("line_source")}) {
+        QVERIFY(!inputOutput.hasData(sourceField));
+        QVERIFY(!distanceOutput.hasData(sourceField));
+    }
+
+    QTRY_COMPARE_WITH_TIMEOUT(imageWidget->measurementPoints().size(), 3, 1000);
+    const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
+    QCOMPARE(overlayPoints.size(), 3);
+    QCOMPARE(overlayPoints.at(0).label, QStringLiteral("P"));
+    QCOMPARE(overlayPoints.at(0).pos, QPointF(18.0, 20.0));
+    QCOMPARE(overlayPoints.at(1).label, QStringLiteral("L1"));
+    QCOMPARE(overlayPoints.at(1).pos, QPointF(0.0, 35.0));
+    QCOMPARE(overlayPoints.at(2).label, QStringLiteral("L2"));
+    QCOMPARE(overlayPoints.at(2).pos, QPointF(40.0, 35.0));
+    QTRY_VERIFY_WITH_TIMEOUT(!imageWidget->measurementLines().isEmpty() &&
+                                 imageWidget->measurementLines().first().label.contains(QStringLiteral("15.000")),
+                             1000);
+    const QList<MeasurementOverlayLine> overlayLines = imageWidget->measurementLines();
+    QCOMPARE(overlayLines.size(), 1);
+    QCOMPARE(overlayLines.first().p1, QPointF(0.0, 35.0));
+    QCOMPARE(overlayLines.first().p2, QPointF(40.0, 35.0));
+    QVERIFY(overlayLines.first().label.contains(QStringLiteral("15.000")));
+    engine.clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInput2DLinePairRealMousePicksAndRunsLinesDistance() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("LinesDistance")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("LinesDistance")));
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* viewport = viewports.first();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice184_measurement_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("2D line-pair GUI input");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("line_pair")},
+                               {QStringLiteral("line1"), QJsonArray{0.0, 0.0, 0.0, 0.0}},
+                               {QStringLiteral("line2"), QJsonArray{0.0, 0.0, 0.0, 0.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    ModuleInstance distance;
+    distance.id = QStringLiteral("slice184_lines_distance");
+    distance.moduleId = QStringLiteral("LinesDistance");
+    distance.name = QStringLiteral("2D segment gap");
+    project->addModule(distance);
+    project->addConnection(
+        {input.id, distance.id, 0, 0, QStringLiteral("image"), QStringLiteral("image"), QStringLiteral("data")});
+    project->addConnection(
+        {input.id, distance.id, 5, 1, QStringLiteral("line1"), QStringLiteral("line1"), QStringLiteral("data")});
+    project->addConnection(
+        {input.id, distance.id, 6, 2, QStringLiteral("line2"), QStringLiteral("line2"), QStringLiteral("data")});
+
+    QImage image(80, 60, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    ImageData imageData(image);
+    ImageCoordinateProvenance provenance = imageData.coordinateProvenance();
+    provenance.sourceImageId = QStringLiteral("slice184-source-image");
+    provenance.sourceSize = QSize(120, 100);
+    provenance.localOriginInSource = QPointF(10.0, 20.0);
+    imageData.setCoordinateProvenance(provenance);
+    DisplayData display;
+    display.variant() = imageData;
+    viewport->displayData(display);
+    QCoreApplication::processEvents();
+    QVERIFY(imageWidget->hasImage());
+    QCOMPARE(imageWidget->coordinateProvenance().sourceImageId, QStringLiteral("slice184-source-image"));
+    QCOMPARE(imageWidget->coordinateProvenance().sourceSize, QSize(120, 100));
+    imageWidget->setFixedSize(240, 180);
+    imageWidget->actualSize();
+    imageWidget->setZoom(2.0);
+    const QPoint panStart(100, 90);
+    const QPoint panEnd(115, 85);
+    QTest::mousePress(imageWidget, Qt::MiddleButton, Qt::NoModifier, panStart);
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(panEnd), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &panMove);
+    QTest::mouseRelease(imageWidget, Qt::MiddleButton, Qt::NoModifier, panEnd);
+
+    QSignalSpy sourcePickSpy(viewport, &ViewportWidget::point2DSourceClicked);
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&engine, &RunEngine::runFinished);
+    bool snapshotAvailable = false;
+    RunResult finishedResult{};
+    QMap<QString, QVariant> inputValues;
+    ImageData inputOutput;
+    PortValueMap inputPorts;
+    QMap<QString, QVariant> distanceValues;
+    ImageData distanceOutput;
+    PortValueMap distancePorts;
+    connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&engine, &input, &distance, &snapshotAvailable, &finishedResult, &inputValues, &inputOutput, &inputPorts,
+         &distanceValues, &distanceOutput, &distancePorts](const RunResult& result) {
+            finishedResult = result;
+            const bool inputAvailable =
+                engine.runOutputSnapshot(result.runId, input.id, inputOutput, inputValues, inputPorts);
+            const bool distanceAvailable =
+                engine.runOutputSnapshot(result.runId, distance.id, distanceOutput, distanceValues, distancePorts);
+            snapshotAvailable = inputAvailable && distanceAvailable;
+        },
+        Qt::DirectConnection);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree != nullptr);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/4"));
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(runFinishedSpy.count(), 0);
+
+    const QList<QPoint> screenPoints{QPoint(115, 75), QPoint(155, 75), QPoint(165, 95), QPoint(165, 135)};
+    const QList<QPointF> localPoints{QPointF(10.0, 10.0), QPointF(30.0, 10.0), QPointF(35.0, 20.0),
+                                     QPointF(35.0, 40.0)};
+    for (int index = 0; index < screenPoints.size(); ++index) {
+        QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, screenPoints.at(index));
+        QCOMPARE(sourcePickSpy.size(), index + 1);
+        QCOMPARE(sourcePickSpy.at(index).at(0).toPointF(), localPoints.at(index));
+        QCOMPARE(sourcePickSpy.at(index).at(1).toPointF(), localPoints.at(index) + QPointF(10.0, 20.0));
+        QCOMPARE(sourcePickSpy.at(index).at(2).toString(), QStringLiteral("slice184-source-image"));
+        QVERIFY(sourcePickSpy.at(index).at(3).toBool());
+        if (index < 3) {
+            QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 %1/4").arg(index + 2));
+            QCOMPARE(runStartedSpy.count(), 0);
+            QCOMPARE(runFinishedSpy.count(), 0);
+        }
+    }
+
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), 1, 1000);
+    QCOMPARE(runStartedSpy.count(), 1);
+    QCOMPARE(runFinishedSpy.count(), 1);
+    QVERIFY(finishedResult.success);
+    QVERIFY(!finishedResult.runId.isEmpty());
+    QVERIFY(snapshotAvailable);
+    const ModuleInstance* savedInput = project->findModule(input.id);
+    QVERIFY(savedInput != nullptr);
+    const QJsonArray expectedLine1{10.0, 10.0, 30.0, 10.0};
+    const QJsonArray expectedLine2{35.0, 20.0, 35.0, 40.0};
+    QCOMPARE(savedInput->params.value(QStringLiteral("line1")).toArray(), expectedLine1);
+    QCOMPARE(savedInput->params.value(QStringLiteral("line2")).toArray(), expectedLine2);
+    QCOMPARE(savedInput->params.value(QStringLiteral("pick_coordinate_frame")).toString(),
+             QStringLiteral("ImageLocalPixel"));
+    QCOMPARE(inputValues.value(QStringLiteral("line1")).toList(), (QVariantList{10.0, 10.0, 30.0, 10.0}));
+    QCOMPARE(inputValues.value(QStringLiteral("line2")).toList(), (QVariantList{35.0, 20.0, 35.0, 40.0}));
+    QCOMPARE(inputValues.value(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("ImageLocalPixel"));
+    const double expectedDistance = std::sqrt(125.0);
+    QCOMPARE(distanceValues.value(QStringLiteral("distance")).toDouble(), expectedDistance);
+    QCOMPARE(distanceOutput.data(QStringLiteral("nearest_segment")).toList(), (QVariantList{30.0, 10.0, 35.0, 20.0}));
+    QVERIFY(inputOutput.hasData(QStringLiteral("source_coordinate_available")));
+    QCOMPARE(inputOutput.data(QStringLiteral("source_coordinate_available")).type(), QVariant::Bool);
+    QVERIFY(!inputOutput.data(QStringLiteral("source_coordinate_available")).toBool());
+    QVERIFY(distanceOutput.hasData(QStringLiteral("source_coordinate_available")));
+    QCOMPARE(distanceOutput.data(QStringLiteral("source_coordinate_available")).type(), QVariant::Bool);
+    QVERIFY(!distanceOutput.data(QStringLiteral("source_coordinate_available")).toBool());
+    for (const QString& sourceField :
+         {QStringLiteral("source_image_id"), QStringLiteral("source_image_size"),
+          QStringLiteral("source_coordinate_origin"), QStringLiteral("line1_source"), QStringLiteral("line2_source")}) {
+        QVERIFY(!inputOutput.hasData(sourceField));
+        QVERIFY(!distanceOutput.hasData(sourceField));
+    }
+
+    QTRY_COMPARE_WITH_TIMEOUT(imageWidget->measurementPoints().size(), 4, 1000);
+    const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
+    QCOMPARE(overlayPoints.size(), 4);
+    const QList<QString> pointLabels{QStringLiteral("L1-1"), QStringLiteral("L1-2"), QStringLiteral("L2-1"),
+                                     QStringLiteral("L2-2")};
+    for (int index = 0; index < overlayPoints.size(); ++index) {
+        QCOMPARE(overlayPoints.at(index).label, pointLabels.at(index));
+        QCOMPARE(overlayPoints.at(index).pos, localPoints.at(index));
+    }
+    QTRY_COMPARE_WITH_TIMEOUT(imageWidget->measurementLines().size(), 3, 1000);
+    const QList<MeasurementOverlayLine> overlayLines = imageWidget->measurementLines();
+    QCOMPARE(overlayLines.at(0).p1, QPointF(10.0, 10.0));
+    QCOMPARE(overlayLines.at(0).p2, QPointF(30.0, 10.0));
+    QCOMPARE(overlayLines.at(1).p1, QPointF(35.0, 20.0));
+    QCOMPARE(overlayLines.at(1).p2, QPointF(35.0, 40.0));
+    QCOMPARE(overlayLines.at(2).p1, QPointF(30.0, 10.0));
+    QCOMPARE(overlayLines.at(2).p2, QPointF(35.0, 20.0));
+    QVERIFY(overlayLines.at(2).label.contains(QStringLiteral("11.180")));
+    engine.clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInput3DQueuedContinuationRejectsSameIdModuleReplacement() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* viewport = viewports.first();
+    QVERIFY(viewport);
+    PointCloudData cloud;
+    cloud.points = {Eigen::Vector3d(0.0, 0.0, 0.0), Eigen::Vector3d(1.0, 0.0, 0.0), Eigen::Vector3d(0.0, 1.0, 0.0)};
+    DisplayData cloudDisplay;
+    cloudDisplay.variant() = cloud;
+    viewport->displayData(cloudDisplay);
+
+    constexpr auto targetId = "slice201_3d_queued_continuation_target";
+    const auto makeInput = [](const QString& name, const QJsonArray& first, const QJsonArray& second) {
+        ModuleInstance input;
+        input.id = QStringLiteral("slice201_3d_queued_continuation_target");
+        input.moduleId = QStringLiteral("MeasurementInput");
+        input.name = name;
+        input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                                   {QStringLiteral("point1"), first},
+                                   {QStringLiteral("point2"), second},
+                                   {QStringLiteral("awaitUserPick"), true}};
+        return input;
+    };
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    project->addModule(
+        makeInput(QStringLiteral("old 3D request"), QJsonArray{1.0, 2.0, 3.0}, QJsonArray{4.0, 5.0, 6.0}));
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&engine, &RunEngine::runFinished);
+    QSignalSpy moduleStartedSpy(&engine, &RunEngine::moduleStarted);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    auto* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+    Q_EMIT viewport->point3DWorldClicked(11.25, 12.5, 13.75);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 2/2"));
+    Q_EMIT viewport->point3DWorldClicked(21.5, 22.75, 23.125);
+
+    const ModuleInstance* completedOldInput = project->findModule(QString::fromLatin1(targetId));
+    QVERIFY(completedOldInput);
+    QVERIFY(!completedOldInput->params.value(QStringLiteral("awaitUserPick")).toBool());
+    const ModuleInstance completedSnapshot = *completedOldInput;
+    const quint64 oldGeneration = project->parameterInstanceGeneration(QString::fromLatin1(targetId));
+    // Preserve serialized module data, project, and viewport while replacing only
+    // this target's runtime identity.
+    project->removeModule(QString::fromLatin1(targetId));
+    project->addModule(completedSnapshot);
+    QVERIFY(project->parameterInstanceGeneration(QString::fromLatin1(targetId)) != oldGeneration);
+    QCOMPARE(project->findModule(QString::fromLatin1(targetId))->toJson(), completedSnapshot.toJson());
+    const int runStartedBaseline = runStartedSpy.count();
+    const int runFinishedBaseline = runFinishedSpy.count();
+    const int moduleStartedBaseline = moduleStartedSpy.count();
+
+    QCoreApplication::processEvents();
+    QTest::qWait(50);
+
+    QCOMPARE(runStartedSpy.count(), runStartedBaseline);
+    QCOMPARE(runFinishedSpy.count(), runFinishedBaseline);
+    QCOMPARE(moduleStartedSpy.count(), moduleStartedBaseline);
+    QVERIFY(!RunEngine::instance().isBusy());
+    const ModuleInstance* replacementInput = project->findModule(QString::fromLatin1(targetId));
+    QVERIFY(replacementInput);
+    QCOMPARE(replacementInput->toJson(), completedSnapshot.toJson());
+    QVERIFY(!replacementInput->params.value(QStringLiteral("awaitUserPick")).toBool());
+
+    project->removeModule(QString::fromLatin1(targetId));
+    project->addModule(
+        makeInput(QStringLiteral("fresh 3D request"), QJsonArray{31.0, 32.0, 33.0}, QJsonArray{34.0, 35.0, 36.0}));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+    const int freshRunStartedBaseline = runStartedSpy.count();
+    const int freshRunFinishedBaseline = runFinishedSpy.count();
+    const int freshModuleStartedBaseline = moduleStartedSpy.count();
+    const QString previousRunId = engine.lastRunId();
+    Q_EMIT viewport->point3DWorldClicked(101.125, 102.25, 103.5);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 2/2"));
+    Q_EMIT viewport->point3DWorldClicked(201.75, 202.875, 203.25);
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), freshRunStartedBaseline + 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), freshRunFinishedBaseline + 1, 1000);
+    QCOMPARE(moduleStartedSpy.count(), freshModuleStartedBaseline + 1);
+    const RunResult freshRunResult = engine.lastRunResult();
+    QVERIFY(freshRunResult.success);
+    QVERIFY(!freshRunResult.runId.isEmpty());
+    QVERIFY(freshRunResult.runId != previousRunId);
+    QCOMPARE(engine.lastRunId(), freshRunResult.runId);
+
+    replacementInput = project->findModule(QString::fromLatin1(targetId));
+    QVERIFY(replacementInput);
+    QVERIFY(!replacementInput->params.value(QStringLiteral("awaitUserPick")).toBool());
+    const QJsonArray expectedReplacementPoint1{101.125, 102.25, 103.5};
+    const QJsonArray expectedReplacementPoint2{201.75, 202.875, 203.25};
+    QCOMPARE(replacementInput->params.value(QStringLiteral("point1")).toArray(), expectedReplacementPoint1);
+    QCOMPARE(replacementInput->params.value(QStringLiteral("point2")).toArray(), expectedReplacementPoint2);
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testG6MeasurementInput2DRealMousePicksWithViewportTransformsAndProvenance() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
+
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    const QVector<ViewportWidget*> viewports = displayManager->allViewports();
+    QVERIFY(!viewports.isEmpty());
+    ViewportWidget* viewport = viewports.first();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance input;
+    input.id = QStringLiteral("slice171_measurement_input");
+    input.moduleId = QStringLiteral("MeasurementInput");
+    input.name = QStringLiteral("2D MeasurementInput provenance pick");
+    input.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                               {QStringLiteral("point1"), QJsonArray{0.0, 0.0}},
+                               {QStringLiteral("point2"), QJsonArray{0.0, 0.0}},
+                               {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(input);
+    ModuleInstance distance;
+    distance.id = QStringLiteral("slice171_distance_pp");
+    distance.moduleId = QStringLiteral("DistancePP");
+    distance.name = QStringLiteral("2D point distance");
+    project->addModule(distance);
+    project->addConnection(
+        {input.id, distance.id, 0, 0, QStringLiteral("point1"), QStringLiteral("point1"), QStringLiteral("data")});
+    project->addConnection(
+        {input.id, distance.id, 0, 1, QStringLiteral("point2"), QStringLiteral("point2"), QStringLiteral("data")});
+
+    QImage image(80, 60, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    ImageData imageData(image);
+    ImageCoordinateProvenance provenance = imageData.coordinateProvenance();
+    provenance.sourceImageId = QStringLiteral("slice171-source-image");
+    provenance.sourceSize = QSize(120, 100);
+    provenance.localOriginInSource = QPointF(10.0, 20.0);
+    imageData.setCoordinateProvenance(provenance);
+    DisplayData display;
+    display.variant() = imageData;
+    viewport->displayData(display);
+    QCoreApplication::processEvents();
+    QVERIFY(imageWidget->hasImage());
+    imageWidget->setFixedSize(240, 180);
+    imageWidget->actualSize();
+    imageWidget->setZoom(2.0);
+
+    const QPoint panStart(100, 90);
+    const QPoint panEnd(115, 85);
+    QTest::mousePress(imageWidget, Qt::MiddleButton, Qt::NoModifier, panStart);
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(panEnd), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &panMove);
+    QTest::mouseRelease(imageWidget, Qt::MiddleButton, Qt::NoModifier, panEnd);
+
+    QSignalSpy sourcePickSpy(viewport, &ViewportWidget::point2DSourceClicked);
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&engine, &RunEngine::runFinished);
+    bool snapshotAvailable = false;
+    RunResult finishedResult{};
+    QMap<QString, QVariant> inputValues;
+    ImageData inputOutput;
+    PortValueMap inputPorts;
+    QMap<QString, QVariant> distanceValues;
+    ImageData distanceOutput;
+    PortValueMap distancePorts;
+    connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&engine, &input, &distance, &snapshotAvailable, &finishedResult, &inputValues, &inputOutput, &inputPorts,
+         &distanceValues, &distanceOutput, &distancePorts](const RunResult& result) {
+            finishedResult = result;
+            const bool inputAvailable =
+                engine.runOutputSnapshot(result.runId, input.id, inputOutput, inputValues, inputPorts);
+            const bool distanceAvailable =
+                engine.runOutputSnapshot(result.runId, distance.id, distanceOutput, distanceValues, distancePorts);
+            snapshotAvailable = inputAvailable && distanceAvailable;
+        },
+        Qt::DirectConnection);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree != nullptr);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/2"));
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(runFinishedSpy.count(), 0);
+
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(121, 89));
+    QCOMPARE(sourcePickSpy.size(), 1);
+    QCOMPARE(sourcePickSpy.at(0).at(0).toPointF(), QPointF(13.0, 17.0));
+    QCOMPARE(sourcePickSpy.at(0).at(1).toPointF(), QPointF(23.0, 37.0));
+    QCOMPARE(sourcePickSpy.at(0).at(2).toString(), QStringLiteral("slice171-source-image"));
+    QVERIFY(sourcePickSpy.at(0).at(3).toBool());
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 2/2"));
+    QCOMPARE(runStartedSpy.count(), 0);
+
+    QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(221, 149));
+    QCOMPARE(sourcePickSpy.size(), 2);
+    QCOMPARE(sourcePickSpy.at(1).at(0).toPointF(), QPointF(63.0, 47.0));
+    QCOMPARE(sourcePickSpy.at(1).at(1).toPointF(), QPointF(73.0, 67.0));
+    QCOMPARE(sourcePickSpy.at(1).at(2).toString(), QStringLiteral("slice171-source-image"));
+    QVERIFY(sourcePickSpy.at(1).at(3).toBool());
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), 1, 1000);
+    QCOMPARE(runStartedSpy.count(), 1);
+    QCOMPARE(runFinishedSpy.count(), 1);
+    QVERIFY(finishedResult.success);
+    QVERIFY(!finishedResult.runId.isEmpty());
+    QVERIFY(snapshotAvailable);
+
+    const ModuleInstance* savedInput = project->findModule(input.id);
+    QVERIFY(savedInput != nullptr);
+    QCOMPARE(savedInput->params.value(QStringLiteral("point1")).toArray(), (QJsonArray{13.0, 17.0}));
+    QCOMPARE(savedInput->params.value(QStringLiteral("point2")).toArray(), (QJsonArray{63.0, 47.0}));
+    QCOMPARE(inputValues.value(QStringLiteral("point1")).toList(), (QVariantList{13.0, 17.0}));
+    QCOMPARE(inputValues.value(QStringLiteral("point2")).toList(), (QVariantList{63.0, 47.0}));
+    QCOMPARE(inputValues.value(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("ImageLocalPixel"));
+    const double expectedDistance = std::sqrt(50.0 * 50.0 + 30.0 * 30.0);
+    QCOMPARE(distanceValues.value(QStringLiteral("distance")).toDouble(), expectedDistance);
+    QCOMPARE(distanceOutput.data(QStringLiteral("distance")).toDouble(), expectedDistance);
+
+    QTRY_COMPARE_WITH_TIMEOUT(imageWidget->measurementPoints().size(), 2, 1000);
+    const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
+    QCOMPARE(overlayPoints.size(), 2);
+    QCOMPARE(overlayPoints.at(0).pos, QPointF(13.0, 17.0));
+    QCOMPARE(overlayPoints.at(1).pos, QPointF(63.0, 47.0));
+    const QList<MeasurementOverlayLine> overlayLines = imageWidget->measurementLines();
+    QCOMPARE(overlayLines.size(), 1);
+    QCOMPARE(overlayLines.first().p1, QPointF(13.0, 17.0));
+    QCOMPARE(overlayLines.first().p2, QPointF(63.0, 47.0));
+    engine.clearModules();
 }
 
 void TestMainWindow::testMeasurementConfigButtonWithInstalledPlugins() {
@@ -1047,6 +8731,24 @@ void TestMainWindow::testRunCreatesMeasurementInputForConsumer() {
     QVERIFY(processTree != nullptr);
     QVERIFY(runButton != nullptr);
     QCOMPARE(processTree->topLevelItemCount(), 1);
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+    QImage image(80, 60, QImage::Format_RGB32);
+    image.fill(QColor("#111827"));
+    ImageData imageData(image);
+    ImageCoordinateProvenance provenance = imageData.coordinateProvenance();
+    provenance.sourceImageId = QStringLiteral("12345678-1234-4234-9234-123456789abc");
+    provenance.sourceSize = QSize(120, 100);
+    provenance.localOriginInSource = QPointF(10.0, 20.0);
+    imageData.setCoordinateProvenance(provenance);
+    DisplayData display;
+    display.variant() = imageData;
+    viewport->displayData(display);
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(imageWidget->hasImage());
+
     QTest::mouseClick(runButton, Qt::LeftButton);
     QCoreApplication::processEvents();
     QCOMPARE(processTree->topLevelItemCount(), 2);
@@ -1058,34 +8760,98 @@ void TestMainWindow::testRunCreatesMeasurementInputForConsumer() {
     QVERIFY(input != nullptr);
     QCOMPARE(input->params["mode"].toString(), QStringLiteral("point_set"));
 
-    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
-    QVERIFY(viewport != nullptr);
-    HImageWidget* imageWidget = viewport->imageWidget();
-    QVERIFY(imageWidget != nullptr);
-    QImage image(640, 480, QImage::Format_RGB32);
-    image.fill(QColor("#111827"));
-    viewport->displayImage(image);
-    QCoreApplication::processEvents();
-    QTRY_VERIFY(imageWidget->hasImage());
+    imageWidget->setFixedSize(240, 180);
+    imageWidget->actualSize();
+    imageWidget->setZoom(2.0);
+    const QPoint panStart(100, 90);
+    const QPoint panEnd(115, 85);
+    QTest::mousePress(imageWidget, Qt::MiddleButton, Qt::NoModifier, panStart);
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(panEnd), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(imageWidget, &panMove);
+    QTest::mouseRelease(imageWidget, Qt::MiddleButton, Qt::NoModifier, panEnd);
 
-    bool runFinished = false;
-    const QMetaObject::Connection runConnection = connect(&RunEngine::instance(), &RunEngine::runFinished, &window,
-                                                          [&](const RunResult&) { runFinished = true; });
-    for (const QPointF& point : {QPointF(420.0, 240.0), QPointF(320.0, 340.0), QPointF(220.0, 240.0)}) {
-        const QPoint widgetPoint = imageWidget->imageToWidget(point).toPoint();
-        QVERIFY(imageWidget->rect().contains(widgetPoint));
-        QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, widgetPoint);
+    QSignalSpy sourcePickSpy(viewport, &ViewportWidget::point2DSourceClicked);
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy runFinishedSpy(&engine, &RunEngine::runFinished);
+    bool snapshotsAvailable = false;
+    RunResult finishedResult{};
+    QMap<QString, QVariant> inputValues;
+    ImageData inputOutput;
+    PortValueMap inputPorts;
+    QMap<QString, QVariant> fitValues;
+    ImageData fitOutput;
+    PortValueMap fitPorts;
+    connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&engine, &inputId, &circle, &snapshotsAvailable, &finishedResult, &inputValues, &inputOutput, &inputPorts,
+         &fitValues, &fitOutput, &fitPorts](const RunResult& result) {
+            finishedResult = result;
+            const bool inputAvailable =
+                engine.runOutputSnapshot(result.runId, inputId, inputOutput, inputValues, inputPorts);
+            const bool fitAvailable = engine.runOutputSnapshot(result.runId, circle.id, fitOutput, fitValues, fitPorts);
+            snapshotsAvailable = inputAvailable && fitAvailable;
+        },
+        Qt::DirectConnection);
+
+    const QList<QPoint> screenPoints{QPoint(215, 115), QPoint(175, 155), QPoint(135, 115)};
+    const QList<QPointF> localPoints{QPointF(60.0, 30.0), QPointF(40.0, 50.0), QPointF(20.0, 30.0)};
+    const QList<QPointF> sourcePoints{QPointF(70.0, 50.0), QPointF(50.0, 70.0), QPointF(30.0, 50.0)};
+    QCOMPARE(runStartedSpy.count(), 0);
+    QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 1/3"));
+    for (int i = 0; i < screenPoints.size(); ++i) {
+        QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, screenPoints.at(i));
+        QCOMPARE(sourcePickSpy.count(), i + 1);
+        QCOMPARE(sourcePickSpy.at(i).at(0).toPointF(), localPoints.at(i));
+        QCOMPARE(sourcePickSpy.at(i).at(1).toPointF(), sourcePoints.at(i));
+        QCOMPARE(sourcePickSpy.at(i).at(2).toString(), provenance.sourceImageId);
+        QVERIFY(sourcePickSpy.at(i).at(3).toBool());
         QCoreApplication::processEvents();
+        if (i < 2) {
+            QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 %1/3").arg(i + 2));
+            QCOMPARE(runStartedSpy.count(), 0);
+        }
     }
-
-    QTRY_VERIFY(runFinished);
-    disconnect(runConnection);
+    QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedSpy.count(), 1, 1000);
+    QCOMPARE(runStartedSpy.count(), 1);
+    QCOMPARE(runFinishedSpy.count(), 1);
+    QVERIFY(finishedResult.success);
+    QVERIFY(!finishedResult.runId.isEmpty());
+    QVERIFY(snapshotsAvailable);
     input = project->findModule(inputId);
     QVERIFY(input != nullptr);
     QCOMPARE(input->params["points"].toArray().size(), 3);
-    const ImageData output = RunEngine::instance().moduleOutput(QStringLiteral("auto_fit_circle_1"));
+    QCOMPARE(input->params.value(QStringLiteral("points")).toArray(),
+             (QJsonArray{QJsonArray{60.0, 30.0}, QJsonArray{40.0, 50.0}, QJsonArray{20.0, 30.0}}));
+    QCOMPARE(inputValues.value(QStringLiteral("coordinate_frame")).toString(), QStringLiteral("ImageLocalPixel"));
+    const QVariant fitPointsValue = inputValues.value(QStringLiteral("fit_points"));
+    QVERIFY(fitPointsValue.canConvert<QVector<QPointF>>());
+    const QVector<QPointF> fitPoints = fitPointsValue.value<QVector<QPointF>>();
+    QCOMPARE(fitPoints.size(), localPoints.size());
+    for (int i = 0; i < localPoints.size(); ++i)
+        QCOMPARE(fitPoints.at(i), localPoints.at(i));
+
+    const ImageData& output = fitOutput;
     QVERIFY(output.hasData("circle_radius"));
-    QVERIFY(qAbs(output.data("circle_radius").toDouble() - 100.0) < 1.0);
+    QVERIFY(qAbs(output.data("circle_center_x").toDouble() - 40.0) < 1e-3);
+    QVERIFY(qAbs(output.data("circle_center_y").toDouble() - 30.0) < 1e-3);
+    QVERIFY(qAbs(output.data("circle_radius").toDouble() - 20.0) < 1e-3);
+    QCOMPARE(inputOutput.data("coordinate_frame").toString(), QStringLiteral("ImageLocalPixel"));
+    QCOMPARE(fitValues.value(QStringLiteral("circle_center_x")).toDouble(), output.data("circle_center_x").toDouble());
+    QCOMPARE(fitValues.value(QStringLiteral("circle_center_y")).toDouble(), output.data("circle_center_y").toDouble());
+    QCOMPARE(fitValues.value(QStringLiteral("circle_radius")).toDouble(), output.data("circle_radius").toDouble());
+
+    QTRY_COMPARE(imageWidget->measurementPoints().size(), 3);
+    const QList<MeasurementOverlayPoint> overlayPoints = imageWidget->measurementPoints();
+    for (int i = 0; i < localPoints.size(); ++i)
+        QCOMPARE(overlayPoints.at(i).pos, localPoints.at(i));
+    QTRY_COMPARE(imageWidget->measurementLines().size(), 64);
+    const QList<MeasurementOverlayLine> overlayLines = imageWidget->measurementLines();
+    for (const MeasurementOverlayLine& line : overlayLines) {
+        QVERIFY(std::abs(QLineF(line.p1, QPointF(40.0, 30.0)).length() - 20.0) < 1e-3);
+        QVERIFY(std::abs(QLineF(line.p2, QPointF(40.0, 30.0)).length() - 20.0) < 1e-3);
+    }
 
     QTRY_VERIFY(imageWidget->hasImage());
     QTest::qWait(50);
@@ -1101,6 +8867,77 @@ void TestMainWindow::testRunCreatesMeasurementInputForConsumer() {
     }
     QVERIFY2(cyanPixels > 100 && orangePixels > 20,
              qPrintable(QString("Missing fit overlay: cyan=%1 orange=%2").arg(cyanPixels).arg(orangePixels)));
+}
+
+void TestMainWindow::testG4CycleAutoCreatesMeasurementInputBeforeSync() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("FitCircle")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("FitCircle")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance circle;
+    circle.id = QStringLiteral("cycle_auto_fit_circle");
+    circle.moduleId = QStringLiteral("FitCircle");
+    circle.name = QStringLiteral("Cycle Circle");
+    project->addModule(circle);
+    QCoreApplication::processEvents();
+
+    QToolButton* cycleButton = window.findChild<QToolButton*>(QStringLiteral("FlowCycleButton"));
+    QVERIFY(cycleButton);
+    RunEngine& engine = RunEngine::instance();
+    AgentActor* actor = AgentController::instance().actor();
+    QVERIFY(actor);
+    QJsonObject stopResult;
+    QString sessionId;
+    bool sessionRemainedCurrent = false;
+    bool ranAfterPick = false;
+    const QMetaObject::Connection stopAfterRun = connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&](const RunResult&) {
+            ranAfterPick = true;
+            sessionRemainedCurrent =
+                !actor
+                     ->executeTool(QStringLiteral("get_run_results"), QJsonObject{{QStringLiteral("runId"), sessionId}})
+                     .value(QStringLiteral("stale"))
+                     .toBool();
+            stopResult = actor->executeTool(QStringLiteral("stop_flow"), QJsonObject{});
+        },
+        Qt::DirectConnection);
+
+    cycleButton->click();
+    QCOMPARE(project->modules().size(), 2);
+    sessionId = engine.cycleSessionId();
+    QVERIFY(!sessionId.isEmpty());
+    QVERIFY(!actor->executeTool(QStringLiteral("get_run_results"), QJsonObject{{QStringLiteral("runId"), sessionId}})
+                 .value(QStringLiteral("stale"))
+                 .toBool());
+    const QString inputId = project->modules().first().moduleId == QStringLiteral("MeasurementInput")
+                                ? project->modules().first().id
+                                : project->modules().last().id;
+    QVERIFY(project->findModule(inputId));
+    QVERIFY(!engine.cycleSessionId().isEmpty());
+    QVERIFY(engine.isBusy());
+    QCOMPARE(engine.modules().size(), project->modules().size());
+    QVERIFY(engine.getModule(inputId));
+    for (const QPointF& point : {QPointF(420.0, 240.0), QPointF(320.0, 340.0), QPointF(220.0, 240.0)}) {
+        QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection, Q_ARG(QPointF, point)));
+    }
+    QTRY_VERIFY_WITH_TIMEOUT(ranAfterPick, 1500);
+    disconnect(stopAfterRun);
+    QCOMPARE(stopResult.value(QStringLiteral("status")).toString(), QStringLiteral("stopped"));
+    QVERIFY(sessionRemainedCurrent);
+    QCOMPARE(engine.modules().size(), project->modules().size());
+    QVERIFY(engine.getModule(inputId));
+    QVERIFY(!engine.isBusy());
 }
 
 void TestMainWindow::testControlFlowRunRendersBranchStates() {
@@ -1698,8 +9535,8 @@ void TestMainWindow::testNoOutputSelectedModuleClearsOverlays() {
     viewport->ensure3DContent();
     Viewport3DContent* content3D = viewport->viewport3D();
     QVERIFY(content3D != nullptr);
-    content3D->setMeasurementOverlay({{QVector3D(1, 1, 1), QStringLiteral("P")}},
-                                     {{QVector3D(0, 0, 0), QVector3D(1, 0, 0), QStringLiteral("L")}});
+    content3D->setMeasurementOverlay({{Eigen::Vector3d(1, 1, 1), QStringLiteral("P")}},
+                                     {{Eigen::Vector3d(0, 0, 0), Eigen::Vector3d(1, 0, 0), QStringLiteral("L")}});
     QCOMPARE(content3D->measurementPoints3D().size(), 1);
 
     // 选中无测量结果的 extraGrab：2D/3D 叠加必须全部清除（不显示伪测量值）
@@ -1788,8 +9625,8 @@ void TestMainWindow::testClearSelectionAndCloseInspectorClearOverlays() {
     viewport->ensure3DContent();
     Viewport3DContent* content3D = viewport->viewport3D();
     QVERIFY(content3D != nullptr);
-    content3D->setMeasurementOverlay({{QVector3D(1, 1, 1), QStringLiteral("P")}},
-                                     {{QVector3D(0, 0, 0), QVector3D(1, 0, 0), QStringLiteral("L")}});
+    content3D->setMeasurementOverlay({{Eigen::Vector3d(1, 1, 1), QStringLiteral("P")}},
+                                     {{Eigen::Vector3d(0, 0, 0), Eigen::Vector3d(1, 0, 0), QStringLiteral("L")}});
     QCOMPARE(content3D->measurementPoints3D().size(), 1);
 
     // 清空选择（与关闭检查器同路径 selectModule(QString())）：2D/3D 叠加清除
@@ -1804,6 +9641,7 @@ void TestMainWindow::testDarkThemeCloseAndDestroyWindowDirectly() {
     // P1-3 回归：历史上截图工具在退出前"切回浅色"以规避深色退出崩溃
     // （main 收尾处 stack smashing）。深色主题下直接关闭窗口并销毁窗口必须干净：
     // 若复现越界内存写，测试进程会 abort，CTest 判失败。
+    ConfigThemeStateRestore restoreTheme;
     MainWindow window;
     window.resize(1024, 700);
     window.show();
@@ -1817,6 +9655,9 @@ void TestMainWindow::testDarkThemeCloseAndDestroyWindowDirectly() {
         }
     }
     QVERIFY(themeAction != nullptr);
+    if (window.styleSheet() != ThemeManager::styleSheet(false))
+        QVERIFY(QMetaObject::invokeMethod(&window, "onToggleTheme", Qt::DirectConnection));
+    QCOMPARE(window.styleSheet(), ThemeManager::styleSheet(false));
     const QString lightSheet = window.styleSheet();
     themeAction->trigger();
     QCoreApplication::processEvents();
@@ -2150,6 +9991,5571 @@ void TestMainWindow::testOpenProjectSyncsProcessTreeAndFlowCanvas() {
     QCOMPARE(canvas->nodeIds().size(), 0);
 }
 
+void TestMainWindow::testG4LegacyControlEdgeIncrementalSyncUsesInferredType() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance source;
+    source.id = QStringLiteral("legacy_live_source");
+    source.moduleId = QStringLiteral("条件分支");
+    source.name = QStringLiteral("Legacy live source");
+    project->addModule(source);
+
+    ModuleInstance target;
+    target.id = QStringLiteral("legacy_live_target");
+    target.moduleId = QStringLiteral("Parallel");
+    target.name = QStringLiteral("Legacy live target");
+    project->addModule(target);
+
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>(QStringLiteral("FlowCanvas"));
+    QVERIFY(canvas != nullptr);
+    QVERIFY(canvas->nodeItem(source.id) != nullptr);
+    QVERIFY(canvas->nodeItem(target.id) != nullptr);
+    const auto hasControlPort = [](const QList<PortSpec>& ports, const QString& portId) {
+        for (const PortSpec& port : ports) {
+            if (port.id == portId && port.control)
+                return true;
+        }
+        return false;
+    };
+    QVERIFY(hasControlPort(canvas->nodeItem(source.id)->outputPortSpecs(), QStringLiteral("true")));
+    QVERIFY(hasControlPort(canvas->nodeItem(target.id)->inputPortSpecs(), QStringLiteral("control")));
+    QVERIFY(PluginManager::instance().pluginInfo(source.moduleId).portsDeclared);
+    QVERIFY(PluginManager::instance().pluginInfo(target.moduleId).portsDeclared);
+
+    AgentActor* actor = AgentController::instance().actor();
+    QVERIFY(actor != nullptr);
+    const int undoCount = actor->undoStack()->count();
+    const int undoIndex = actor->undoStack()->index();
+
+    ModuleConnection legacyControl;
+    legacyControl.fromModuleId = source.id;
+    legacyControl.toModuleId = target.id;
+    legacyControl.fromPort = QStringLiteral("true");
+    legacyControl.toPort = QStringLiteral("control");
+    const QJsonObject before = project->toJson();
+    project->addConnection(legacyControl);
+
+    QCOMPARE(canvas->m_connections.size(), 1);
+    FlowConnectionItem* renderedControl = canvas->m_connections.first();
+    QVERIFY(renderedControl->isControlEdge());
+    QCOMPARE(renderedControl->edgeType(), QStringLiteral("control"));
+    QCOMPARE(project->connections().size(), 1);
+    QVERIFY(project->connections().first().edgeType.isEmpty());
+    QJsonObject expected = before;
+    QJsonArray expectedConnections = expected.value(QStringLiteral("connections")).toArray();
+    expectedConnections.append(legacyControl.toJson());
+    expected.insert(QStringLiteral("connections"), expectedConnections);
+    const QJsonObject actual = project->toJson();
+    expected.insert(QStringLiteral("modified"), actual.value(QStringLiteral("modified")));
+    QCOMPARE(actual, expected);
+    QCOMPARE(actor->undoStack()->count(), undoCount);
+    QCOMPARE(actor->undoStack()->index(), undoIndex);
+
+    ModuleConnection legacyData;
+    legacyData.fromModuleId = source.id;
+    legacyData.toModuleId = target.id;
+    legacyData.fromPort = QStringLiteral("image");
+    legacyData.toPort = QStringLiteral("image");
+    project->addConnection(legacyData);
+    QCOMPARE(canvas->m_connections.size(), 2);
+    FlowConnectionItem* renderedData = nullptr;
+    for (FlowConnectionItem* connection : canvas->m_connections) {
+        if (connection->fromPortId() == QLatin1String("image") && connection->toPortId() == QLatin1String("image")) {
+            renderedData = connection;
+            break;
+        }
+    }
+    QVERIFY(renderedData != nullptr);
+    QVERIFY(!renderedData->isControlEdge());
+    QCOMPARE(renderedData->edgeType(), QStringLiteral("data"));
+    QCOMPARE(project->connections().size(), 2);
+    QVERIFY(project->connections().first().edgeType.isEmpty());
+    QVERIFY(project->connections().last().edgeType.isEmpty());
+    QCOMPARE(actor->undoStack()->count(), undoCount);
+    QCOMPARE(actor->undoStack()->index(), undoIndex);
+}
+
+void TestMainWindow::testG4AgentRemoveUndoKeepsProcessTreeOrder() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    for (const QString& id : {QStringLiteral("first"), QStringLiteral("middle"), QStringLiteral("last")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("GrabImage");
+        instance.name = id;
+        project->addModule(instance);
+    }
+    QTreeWidget* tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>(QStringLiteral("FlowCanvas"));
+    QVERIFY(tree != nullptr);
+    QVERIFY(canvas != nullptr);
+    QCOMPARE(tree->topLevelItemCount(), 3);
+
+    AgentActor actor;
+    QCOMPARE(actor.executeTool("remove_module", QJsonObject{{"instanceId", "middle"}}).value("status").toString(),
+             QStringLiteral("removed"));
+    QCOMPARE(tree->topLevelItemCount(), 2);
+    QVERIFY(!canvas->nodeIds().contains(QStringLiteral("middle")));
+    actor.undoStack()->undo();
+    QCOMPARE(tree->topLevelItemCount(), 3);
+    for (int i = 0; i < 3; ++i)
+        QCOMPARE(tree->topLevelItem(i)->data(0, Qt::UserRole + 1).toString(), project->modules().at(i).id);
+    QCOMPARE(tree->topLevelItem(1)->data(0, Qt::UserRole + 1).toString(), QStringLiteral("middle"));
+    QVERIFY(canvas->nodeIds().contains(QStringLiteral("middle")));
+    actor.undoStack()->redo();
+    QCOMPARE(tree->topLevelItemCount(), 2);
+    actor.undoStack()->undo();
+    QCOMPARE(tree->topLevelItem(1)->data(0, Qt::UserRole + 1).toString(), QStringLiteral("middle"));
+}
+
+void TestMainWindow::testG4AgentMoveUndoKeepsProcessTreeOrder() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    for (const QString& id : {QStringLiteral("first"), QStringLiteral("middle"), QStringLiteral("last")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("GrabImage");
+        instance.name = id;
+        project->addModule(instance);
+    }
+    QTreeWidget* tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(tree != nullptr);
+    AgentActor actor;
+    auto assertSameOrder = [&]() {
+        QCOMPARE(tree->topLevelItemCount(), project->modules().size());
+        for (int i = 0; i < tree->topLevelItemCount(); ++i)
+            QCOMPARE(tree->topLevelItem(i)->data(0, Qt::UserRole + 1).toString(), project->modules().at(i).id);
+    };
+    QCOMPARE(actor.executeTool("move_module", QJsonObject{{"instanceId", "middle"}, {"index", 0}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("moved"));
+    assertSameOrder();
+    QCOMPARE(tree->topLevelItem(0)->data(0, Qt::UserRole + 1).toString(), QStringLiteral("middle"));
+    actor.undoStack()->undo();
+    assertSameOrder();
+    QCOMPARE(tree->topLevelItem(1)->data(0, Qt::UserRole + 1).toString(), QStringLiteral("middle"));
+    actor.undoStack()->redo();
+    assertSameOrder();
+}
+
+void TestMainWindow::testG4AgentMoveUndoExpiresAfterProcessTreeReorder() {
+    TestableMainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    for (const QString& id :
+         {QStringLiteral("order_first"), QStringLiteral("order_middle"), QStringLiteral("order_last")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("GrabImage");
+        instance.name = id;
+        project->addModule(instance);
+    }
+    QCoreApplication::processEvents();
+
+    AgentController* controller = &AgentController::instance();
+    AgentActor* actor = controller->actor();
+    QVERIFY(actor != nullptr);
+    actor->undoStack()->clear();
+    QSignalSpy auditSpy(controller, &AgentController::actionLogEntryAdded);
+    const QString movedId = QStringLiteral("order_middle");
+    QCOMPARE(actor
+                 ->executeTool(QStringLiteral("move_module"),
+                               QJsonObject{{QStringLiteral("instanceId"), movedId}, {QStringLiteral("index"), 0}})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("moved"));
+
+    auto* tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(tree != nullptr);
+    QCOMPARE(tree->topLevelItem(0)->data(0, Qt::UserRole + 1).toString(), movedId);
+    QTreeWidgetItem* sourceItem = tree->topLevelItem(0);
+    tree->setCurrentItem(sourceItem);
+    const QModelIndex sourceIndex = treeModelIndexForItem(tree, sourceItem);
+    QMimeData* mimeData = tree->model()->mimeData({sourceIndex});
+    QVERIFY(mimeData != nullptr);
+    const QPointF dropPosition(5, tree->visualItemRect(tree->topLevelItem(2)).bottom() - 1);
+    QDropEvent drop(dropPosition, Qt::MoveAction, mimeData, Qt::NoButton, Qt::NoModifier);
+    window.eventFilter(tree->viewport(), &drop);
+    delete mimeData;
+
+    QStringList guiOrder;
+    for (int i = 0; i < tree->topLevelItemCount(); ++i)
+        guiOrder.append(tree->topLevelItem(i)->data(0, Qt::UserRole + 1).toString());
+    const QJsonObject guiOrderedProject = project->toJson();
+    const QList<ModuleBase*> runtimeModulesBeforeStaleUndo = RunEngine::instance().modules();
+    QVERIFY(project->isModified());
+    QCOMPARE(guiOrder, QStringList({QStringLiteral("order_first"), QStringLiteral("order_last"), movedId}));
+    QCOMPARE(project->toJson()
+                 .value(QStringLiteral("modules"))
+                 .toArray()
+                 .at(0)
+                 .toObject()
+                 .value(QStringLiteral("id"))
+                 .toString(),
+             guiOrder.at(0));
+
+    QVERIFY(!controller->undoLastAgentAction());
+    QCOMPARE(auditSpy.count(), 1);
+    const AgentActionLogEntry entry = auditSpy.last().at(0).value<AgentActionLogEntry>();
+    QCOMPARE(entry.action, QStringLiteral("undo"));
+    QCOMPARE(entry.result, QStringLiteral("expired"));
+    QCOMPARE(project->toJson(), guiOrderedProject);
+    QVERIFY(project->isModified());
+    QCOMPARE(RunEngine::instance().modules(), runtimeModulesBeforeStaleUndo);
+    QStringList orderAfterUndo;
+    for (int i = 0; i < tree->topLevelItemCount(); ++i)
+        orderAfterUndo.append(tree->topLevelItem(i)->data(0, Qt::UserRole + 1).toString());
+    QCOMPARE(orderAfterUndo, guiOrder);
+}
+
+void TestMainWindow::testG4AgentMoveUndoExpiresAfterExternalOrderAba() {
+    TestableMainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    for (const QString& id : {QStringLiteral("aba_first"), QStringLiteral("aba_middle"), QStringLiteral("aba_last")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("GrabImage");
+        instance.name = id;
+        project->addModule(instance);
+    }
+    QCoreApplication::processEvents();
+    AgentController& controller = AgentController::instance();
+    AgentActor* actor = controller.actor();
+    QVERIFY(actor != nullptr);
+    actor->undoStack()->clear();
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    auto* tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(tree != nullptr);
+    const QString movedId = QStringLiteral("aba_middle");
+    QCOMPARE(actor
+                 ->executeTool(QStringLiteral("move_module"),
+                               QJsonObject{{QStringLiteral("instanceId"), movedId}, {QStringLiteral("index"), 0}})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("moved"));
+
+    auto dropItem = [&](int sourceRow, int targetRow, bool beforeTarget) {
+        QTreeWidgetItem* source = tree->topLevelItem(sourceRow);
+        tree->setCurrentItem(source);
+        QMimeData* mimeData = tree->model()->mimeData({treeModelIndexForItem(tree, source)});
+        QVERIFY(mimeData != nullptr);
+        const QRect target = tree->visualItemRect(tree->topLevelItem(targetRow));
+        const QPointF position(5, beforeTarget ? target.top() + 1 : target.bottom() - 1);
+        QDropEvent drop(position, Qt::MoveAction, mimeData, Qt::NoButton, Qt::NoModifier);
+        window.eventFilter(tree->viewport(), &drop);
+        const bool accepted = drop.isAccepted();
+        delete mimeData;
+        QVERIFY(accepted);
+    };
+    dropItem(0, 2, false); // [middle, first, last] -> [first, last, middle]
+    dropItem(2, 0, true);  // External ABA restores the exact Agent post-move order.
+    const QJsonObject afterOrderAba = project->toJson();
+    const QList<ModuleBase*> runtimeModulesAfterOrderAba = RunEngine::instance().modules();
+    QStringList orderAfterAba;
+    for (int i = 0; i < tree->topLevelItemCount(); ++i)
+        orderAfterAba.append(tree->topLevelItem(i)->data(0, Qt::UserRole + 1).toString());
+    QCOMPARE(orderAfterAba, QStringList({movedId, QStringLiteral("aba_first"), QStringLiteral("aba_last")}));
+
+    QVERIFY(!controller.undoLastAgentAction());
+    QCOMPARE(auditSpy.count(), 1);
+    QCOMPARE(auditSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
+    QCOMPARE(project->toJson(), afterOrderAba);
+    QCOMPARE(RunEngine::instance().modules(), runtimeModulesAfterOrderAba);
+    actor->undoStack()->redo();
+    QCOMPARE(project->toJson(), afterOrderAba);
+    QCOMPARE(RunEngine::instance().modules(), runtimeModulesAfterOrderAba);
+    actor->undoStack()->undo();
+    QCOMPARE(project->toJson(), afterOrderAba);
+    QCOMPARE(RunEngine::instance().modules(), runtimeModulesAfterOrderAba);
+    actor->undoStack()->redo();
+    QCOMPARE(project->toJson(), afterOrderAba);
+    QCOMPARE(RunEngine::instance().modules(), runtimeModulesAfterOrderAba);
+
+    actor->undoStack()->clear();
+    QCOMPARE(actor
+                 ->executeTool(QStringLiteral("move_module"),
+                               QJsonObject{{QStringLiteral("instanceId"), QStringLiteral("aba_last")},
+                                           {QStringLiteral("index"), 0}})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("moved"));
+    ModuleInstance temporary;
+    temporary.id = QStringLiteral("external_member_aba");
+    temporary.moduleId = QStringLiteral("GrabImage");
+    project->addModule(temporary);
+    project->removeModule(temporary.id);
+    const QJsonObject afterMembershipAba = project->toJson();
+    QVERIFY(!controller.undoLastAgentAction());
+    QCOMPARE(auditSpy.count(), 2);
+    QCOMPARE(auditSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
+    QCOMPARE(project->toJson(), afterMembershipAba);
+}
+
+void TestMainWindow::testG4AgentMoveUndoExpiresAfterSameOrderReloadButNotFailedLoad() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    for (const QString& id : {QStringLiteral("reload_first"), QStringLiteral("reload_second")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("GrabImage");
+        instance.name = id;
+        project->addModule(instance);
+    }
+    QCoreApplication::processEvents();
+    AgentController& controller = AgentController::instance();
+    AgentActor* actor = controller.actor();
+    QVERIFY(actor != nullptr);
+    actor->undoStack()->clear();
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    const QString movedId = QStringLiteral("reload_second");
+    QCOMPARE(actor
+                 ->executeTool(QStringLiteral("move_module"),
+                               QJsonObject{{QStringLiteral("instanceId"), movedId}, {QStringLiteral("index"), 0}})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("moved"));
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QTemporaryFile invalidFile(directory.filePath(QStringLiteral("invalid-XXXXXX.dproj")));
+    QVERIFY(invalidFile.open());
+    QCOMPARE(invalidFile.write("{"), qint64(1));
+    QVERIFY(invalidFile.flush());
+    const QJsonObject beforeFailedLoad = project->toJson();
+    const quint64 generationBeforeFailedLoad = project->moduleOrderExternalGeneration();
+    QVERIFY(!project->load(invalidFile.fileName()));
+    QCOMPARE(project->toJson(), beforeFailedLoad);
+    QCOMPARE(project->moduleOrderExternalGeneration(), generationBeforeFailedLoad);
+    QVERIFY(controller.undoLastAgentAction()); // Failed load leaves the Agent command valid.
+    QCOMPARE(project->modules().at(0).id, QStringLiteral("reload_first"));
+
+    actor->undoStack()->redo();
+    const QString sameOrderPath = directory.filePath(QStringLiteral("same-order.dproj"));
+    QVERIFY(project->save(sameOrderPath));
+    const QJsonObject savedOrder = project->toJson();
+    const quint64 generationBeforeReload = project->moduleOrderExternalGeneration();
+    QVERIFY(project->load(sameOrderPath));
+    QCOMPARE(project->toJson(), savedOrder);
+    QCOMPARE(project->moduleOrderExternalGeneration(), generationBeforeReload + 1);
+    const quint64 staleAuditCount = static_cast<quint64>(auditSpy.count());
+    QVERIFY(!controller.undoLastAgentAction());
+    QCOMPARE(auditSpy.count(), static_cast<int>(staleAuditCount + 1));
+    QCOMPARE(auditSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
+    QCOMPARE(project->toJson(), savedOrder);
+    QVERIFY(!project->isModified());
+}
+
+void TestMainWindow::testG4MoveModuleBatchUndoIsolatesSiblings() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance first;
+    first.id = QStringLiteral("move_macro_first");
+    first.moduleId = QStringLiteral("GrabImage");
+    first.name = QStringLiteral("Before");
+    ModuleInstance middle = first;
+    middle.id = QStringLiteral("move_macro_middle");
+    middle.name = QStringLiteral("Middle");
+    ModuleInstance last = first;
+    last.id = QStringLiteral("move_macro_last");
+    last.name = QStringLiteral("Last");
+    project->addModule(first);
+    project->addModule(middle);
+    project->addModule(last);
+    QCoreApplication::processEvents();
+
+    AgentController& controller = AgentController::instance();
+    AgentActor* actor = controller.actor();
+    QVERIFY(actor != nullptr);
+    actor->undoStack()->clear();
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    auto moduleIds = [project]() {
+        QStringList ids;
+        for (const ModuleInstance& module : project->modules())
+            ids.append(module.id);
+        return ids;
+    };
+    const QList<AgentActor::ToolInvocation> calls = {
+        {QStringLiteral("rename_before"), QStringLiteral("rename_module"),
+         QJsonObject{{QStringLiteral("instanceId"), first.id}, {QStringLiteral("name"), QStringLiteral("Before A")}}},
+        {QStringLiteral("move_middle"), QStringLiteral("move_module"),
+         QJsonObject{{QStringLiteral("instanceId"), middle.id}, {QStringLiteral("index"), 0}}},
+        {QStringLiteral("rename_after"), QStringLiteral("rename_module"),
+         QJsonObject{{QStringLiteral("instanceId"), first.id}, {QStringLiteral("name"), QStringLiteral("After")}}}};
+    const QJsonObject batch = actor->executeTools(calls, QStringLiteral("Move with siblings"));
+    QCOMPARE(batch.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+    QCOMPARE(batch.value(QStringLiteral("results")).toArray().size(), 3);
+    for (int i = 0; i < 3; ++i)
+        QCOMPARE(batch.value(QStringLiteral("results"))
+                     .toArray()
+                     .at(i)
+                     .toObject()
+                     .value(QStringLiteral("callId"))
+                     .toString(),
+                 calls[i].callId);
+    QCOMPARE(actor->undoStack()->count(), 3);
+    QCOMPARE(project->moduleById(first.id)->name, QStringLiteral("After"));
+
+    project->moveModule(last.id, 0); // An external reorder makes the independent middle command stale.
+    const QStringList externalOrder = moduleIds();
+    QVERIFY(controller.undoLastAgentAction()); // Undo after-rename.
+    QCOMPARE(project->moduleById(first.id)->name, QStringLiteral("Before A"));
+    QCOMPARE(moduleIds(), externalOrder);
+    const QJsonObject afterRenameUndo = project->toJson();
+    const int auditCountBeforeExpired = auditSpy.count();
+    QVERIFY(!controller.undoLastAgentAction()); // Stale move reports expired without affecting siblings.
+    QCOMPARE(auditSpy.count(), auditCountBeforeExpired + 1);
+    const AgentActionLogEntry expired = auditSpy.last().at(0).value<AgentActionLogEntry>();
+    QCOMPARE(expired.action, QStringLiteral("undo"));
+    QCOMPARE(expired.result, QStringLiteral("expired"));
+    QCOMPARE(project->toJson(), afterRenameUndo);
+    QCOMPARE(moduleIds(), externalOrder);
+    QCOMPARE(project->moduleById(first.id)->name, QStringLiteral("Before A"));
+    QVERIFY(controller.undoLastAgentAction()); // Earlier rename is still an independent stack item.
+    QCOMPARE(project->moduleById(first.id)->name, QStringLiteral("Before"));
+    QCOMPARE(moduleIds(), externalOrder);
+    actor->undoStack()->redo();
+    QCOMPARE(project->moduleById(first.id)->name, QStringLiteral("Before A"));
+    QCOMPARE(moduleIds(), externalOrder);
+    const QJsonObject afterEarlierRedo = project->toJson();
+    actor->undoStack()->redo(); // Stale middle command remains a permanent no-op.
+    QCOMPARE(project->toJson(), afterEarlierRedo);
+    QCOMPARE(moduleIds(), externalOrder);
+    QCOMPARE(project->moduleById(first.id)->name, QStringLiteral("Before A"));
+    actor->undoStack()->redo();
+    QCOMPARE(project->moduleById(first.id)->name, QStringLiteral("After"));
+    QCOMPARE(moduleIds(), externalOrder);
+}
+
+void TestMainWindow::testG4AgentRuntimeFieldUndoExpiresAfterInspectorEdit() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance instance;
+    instance.id = QStringLiteral("runtime_fields");
+    instance.moduleId = QStringLiteral("FindCircle");
+    instance.name = QStringLiteral("Runtime fields");
+    project->addModule(instance);
+    QCoreApplication::processEvents();
+
+    auto* tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(tree != nullptr);
+    QVERIFY(inspector != nullptr);
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      tree->visualItemRect(tree->topLevelItem(0)).center());
+    QTRY_COMPARE(inspector->currentInstanceId(), instance.id);
+
+    AgentController& controller = AgentController::instance();
+    AgentActor* actor = controller.actor();
+    QVERIFY(actor != nullptr);
+    actor->undoStack()->clear();
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    auto jsonModule = [&]() { return project->toJson().value(QStringLiteral("modules")).toArray().first().toObject(); };
+    auto assertExpiredUndo = [&]() {
+        const int previous = auditSpy.count();
+        QVERIFY(!controller.undoLastAgentAction());
+        QCOMPARE(auditSpy.count(), previous + 1);
+        const AgentActionLogEntry entry = auditSpy.last().at(0).value<AgentActionLogEntry>();
+        QCOMPARE(entry.action, QStringLiteral("undo"));
+        QCOMPARE(entry.result, QStringLiteral("expired"));
+    };
+
+    auto* noteEdit = inspector->findChild<QLineEdit*>(QStringLiteral("InspectorNoteEdit"));
+    auto* enabled = inspector->findChild<QCheckBox*>(QStringLiteral("InspectorEnabledCheck"));
+    auto* breakpoint = inspector->findChild<QToolButton*>(QStringLiteral("InspectorBreakpointBtn"));
+    QVERIFY(noteEdit != nullptr);
+    QVERIFY(enabled != nullptr);
+    QVERIFY(breakpoint != nullptr);
+
+    QCOMPARE(actor
+                 ->executeTool(QStringLiteral("set_module_note"),
+                               QJsonObject{{QStringLiteral("instanceId"), instance.id},
+                                           {QStringLiteral("note"), QStringLiteral("agent note")}})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("updated"));
+    noteEdit->setText(QStringLiteral("GUI note"));
+    QVERIFY(QMetaObject::invokeMethod(noteEdit, "editingFinished", Qt::DirectConnection));
+    QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("GUI note"));
+    noteEdit->clear();
+    QVERIFY(QMetaObject::invokeMethod(noteEdit, "editingFinished", Qt::DirectConnection));
+    QVERIFY(project->moduleById(instance.id)->note.isEmpty()); // Note ABA back to the original value.
+    assertExpiredUndo();
+    QVERIFY(project->moduleById(instance.id)->note.isEmpty());
+    QVERIFY(noteEdit->text().isEmpty());
+    QVERIFY(jsonModule().value(QStringLiteral("note")).toString().isEmpty());
+
+    QCOMPARE(
+        actor
+            ->executeTool(QStringLiteral("set_module_enabled"),
+                          QJsonObject{{QStringLiteral("instanceId"), instance.id}, {QStringLiteral("enabled"), false}})
+            .value(QStringLiteral("status"))
+            .toString(),
+        QStringLiteral("updated"));
+    enabled->setChecked(true); // Return to the original value through the real Inspector signal.
+    QCOMPARE(project->moduleById(instance.id)->enabled, true);
+    assertExpiredUndo();
+    QCOMPARE(project->moduleById(instance.id)->enabled, true);
+    QVERIFY(enabled->isChecked());
+    QCOMPARE(jsonModule().value(QStringLiteral("enabled")).toBool(), true);
+    QVERIFY(!RunEngine::instance().isModuleDisabled(instance.id));
+
+    QCOMPARE(
+        actor
+            ->executeTool(QStringLiteral("set_breakpoint"),
+                          QJsonObject{{QStringLiteral("instanceId"), instance.id}, {QStringLiteral("enabled"), true}})
+            .value(QStringLiteral("status"))
+            .toString(),
+        QStringLiteral("updated"));
+    breakpoint->setChecked(false);
+    QCOMPARE(project->moduleById(instance.id)->breakpoint, false);
+    assertExpiredUndo();
+    QCOMPARE(project->moduleById(instance.id)->breakpoint, false);
+    QVERIFY(!breakpoint->isChecked());
+    QCOMPARE(jsonModule().value(QStringLiteral("breakpoint")).toBool(), false);
+    QVERIFY(!RunEngine::instance().hasBreakpoint(instance.id));
+}
+
+void TestMainWindow::testG4AgentRuntimeFieldUndoRedoPreservesAgentLifoAndGuiAba() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance instance;
+    instance.id = QStringLiteral("runtime_lifo");
+    instance.moduleId = QStringLiteral("FindCircle");
+    instance.name = QStringLiteral("Runtime LIFO");
+    project->addModule(instance);
+    ModuleInstance other = instance;
+    other.id = QStringLiteral("runtime_lifo_other");
+    other.name = QStringLiteral("Other runtime module");
+    project->addModule(other);
+    QCoreApplication::processEvents();
+    auto* tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(tree != nullptr);
+    QVERIFY(inspector != nullptr);
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      tree->visualItemRect(tree->topLevelItem(0)).center());
+    QTRY_COMPARE(inspector->currentInstanceId(), instance.id);
+
+    AgentController& controller = AgentController::instance();
+    AgentActor* actor = controller.actor();
+    QVERIFY(actor != nullptr);
+    actor->undoStack()->clear();
+    auto* note = inspector->findChild<QLineEdit*>(QStringLiteral("InspectorNoteEdit"));
+    auto* enabled = inspector->findChild<QCheckBox*>(QStringLiteral("InspectorEnabledCheck"));
+    auto* breakpoint = inspector->findChild<QToolButton*>(QStringLiteral("InspectorBreakpointBtn"));
+    QVERIFY(note != nullptr);
+    QVERIFY(enabled != nullptr);
+    QVERIFY(breakpoint != nullptr);
+    const auto jsonField = [&](const QString& field) {
+        return project->toJson().value(QStringLiteral("modules")).toArray().first().toObject().value(field);
+    };
+
+    const auto setNote = [&](const QString& value) {
+        return actor
+            ->executeTool(QStringLiteral("set_module_note"),
+                          QJsonObject{{QStringLiteral("instanceId"), instance.id}, {QStringLiteral("note"), value}})
+            .value(QStringLiteral("status"))
+            .toString();
+    };
+    QCOMPARE(setNote(QStringLiteral("B")), QStringLiteral("updated"));
+    QCOMPARE(setNote(QStringLiteral("C")), QStringLiteral("updated"));
+    QVERIFY(controller.undoLastAgentAction());
+    QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("B"));
+    QVERIFY(controller.undoLastAgentAction());
+    QVERIFY(project->moduleById(instance.id)->note.isEmpty());
+    actor->undoStack()->redo();
+    QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("B"));
+    actor->undoStack()->redo();
+    QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("C"));
+    QVERIFY(controller.undoLastAgentAction());
+    QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("B"));
+
+    actor->undoStack()->clear();
+    QCOMPARE(setNote(QStringLiteral("Agent note")), QStringLiteral("updated"));
+    enabled->setChecked(false); // Different field on the same module must not stale the note command.
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      tree->visualItemRect(tree->topLevelItem(1)).center());
+    QTRY_COMPARE(inspector->currentInstanceId(), other.id);
+    auto* otherEnabled = inspector->findChild<QCheckBox*>(QStringLiteral("InspectorEnabledCheck"));
+    QVERIFY(otherEnabled != nullptr);
+    otherEnabled->setChecked(false); // Same field on another module must not stale it either.
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      tree->visualItemRect(tree->topLevelItem(0)).center());
+    QTRY_COMPARE(inspector->currentInstanceId(), instance.id);
+    QVERIFY(controller.undoLastAgentAction());
+    QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("B"));
+    QVERIFY(!project->moduleById(instance.id)->enabled);
+    QVERIFY(!project->moduleById(other.id)->enabled);
+    enabled->setChecked(true);
+
+    actor->undoStack()->clear();
+    QCOMPARE(
+        actor
+            ->executeTool(QStringLiteral("set_module_enabled"),
+                          QJsonObject{{QStringLiteral("instanceId"), instance.id}, {QStringLiteral("enabled"), false}})
+            .value(QStringLiteral("status"))
+            .toString(),
+        QStringLiteral("updated"));
+    QVERIFY(controller.undoLastAgentAction());
+    QVERIFY(project->moduleById(instance.id)->enabled);
+    QVERIFY(enabled->isChecked());
+    actor->undoStack()->redo();
+    QVERIFY(!project->moduleById(instance.id)->enabled);
+    QVERIFY(!enabled->isChecked());
+    QVERIFY(RunEngine::instance().isModuleDisabled(instance.id));
+    actor->undoStack()->undo();
+    QVERIFY(project->moduleById(instance.id)->enabled);
+    QVERIFY(enabled->isChecked());
+    QVERIFY(!RunEngine::instance().isModuleDisabled(instance.id));
+
+    actor->undoStack()->clear();
+    QCOMPARE(
+        actor
+            ->executeTool(QStringLiteral("set_breakpoint"),
+                          QJsonObject{{QStringLiteral("instanceId"), instance.id}, {QStringLiteral("enabled"), true}})
+            .value(QStringLiteral("status"))
+            .toString(),
+        QStringLiteral("updated"));
+    QVERIFY(controller.undoLastAgentAction());
+    QVERIFY(!project->moduleById(instance.id)->breakpoint);
+    QVERIFY(!breakpoint->isChecked());
+    actor->undoStack()->redo();
+    QVERIFY(project->moduleById(instance.id)->breakpoint);
+    QVERIFY(breakpoint->isChecked());
+    QVERIFY(RunEngine::instance().hasBreakpoint(instance.id));
+    actor->undoStack()->undo();
+    QVERIFY(!project->moduleById(instance.id)->breakpoint);
+    QVERIFY(!breakpoint->isChecked());
+    QVERIFY(!RunEngine::instance().hasBreakpoint(instance.id));
+
+    actor->undoStack()->clear();
+    QCOMPARE(
+        actor
+            ->executeTool(QStringLiteral("set_module_enabled"),
+                          QJsonObject{{QStringLiteral("instanceId"), instance.id}, {QStringLiteral("enabled"), false}})
+            .value(QStringLiteral("status"))
+            .toString(),
+        QStringLiteral("updated"));
+    QVERIFY(controller.undoLastAgentAction());
+    QVERIFY(enabled->isChecked());
+    enabled->setChecked(false);
+    enabled->setChecked(true); // ABA: same value as after Undo, but external generation advanced.
+    const QJsonValue enabledAfterAba = jsonField(QStringLiteral("enabled"));
+    actor->undoStack()->redo();
+    QCOMPARE(jsonField(QStringLiteral("enabled")), enabledAfterAba);
+    QVERIFY(project->moduleById(instance.id)->enabled);
+    QVERIFY(enabled->isChecked());
+    QVERIFY(!RunEngine::instance().isModuleDisabled(instance.id));
+    actor->undoStack()->undo(); // The permanently stale command remains a no-op.
+    QCOMPARE(jsonField(QStringLiteral("enabled")), enabledAfterAba);
+    QVERIFY(project->moduleById(instance.id)->enabled);
+    actor->undoStack()->redo();
+    QCOMPARE(jsonField(QStringLiteral("enabled")), enabledAfterAba);
+    QVERIFY(enabled->isChecked());
+    QVERIFY(!RunEngine::instance().isModuleDisabled(instance.id));
+
+    actor->undoStack()->clear();
+    QCOMPARE(
+        actor
+            ->executeTool(QStringLiteral("set_breakpoint"),
+                          QJsonObject{{QStringLiteral("instanceId"), instance.id}, {QStringLiteral("enabled"), true}})
+            .value(QStringLiteral("status"))
+            .toString(),
+        QStringLiteral("updated"));
+    QVERIFY(controller.undoLastAgentAction());
+    QVERIFY(!breakpoint->isChecked());
+    breakpoint->setChecked(true);
+    breakpoint->setChecked(false); // ABA back to the value after Undo.
+    const QJsonValue breakpointAfterAba = jsonField(QStringLiteral("breakpoint"));
+    actor->undoStack()->redo();
+    QCOMPARE(jsonField(QStringLiteral("breakpoint")), breakpointAfterAba);
+    QVERIFY(!project->moduleById(instance.id)->breakpoint);
+    QVERIFY(!breakpoint->isChecked());
+    QVERIFY(!RunEngine::instance().hasBreakpoint(instance.id));
+    actor->undoStack()->undo();
+    QCOMPARE(jsonField(QStringLiteral("breakpoint")), breakpointAfterAba);
+    QVERIFY(!breakpoint->isChecked());
+    QVERIFY(!RunEngine::instance().hasBreakpoint(instance.id));
+    actor->undoStack()->redo();
+    QCOMPARE(jsonField(QStringLiteral("breakpoint")), breakpointAfterAba);
+    QVERIFY(!breakpoint->isChecked());
+    QVERIFY(!RunEngine::instance().hasBreakpoint(instance.id));
+}
+
+void TestMainWindow::testG4AgentRuntimeFieldUndoIsolatedFromBatchSiblings() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance instance;
+    instance.id = QStringLiteral("runtime_macro");
+    instance.moduleId = QStringLiteral("FindCircle");
+    instance.name = QStringLiteral("Before");
+    project->addModule(instance);
+    QCoreApplication::processEvents();
+    auto* tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(tree != nullptr);
+    QVERIFY(inspector != nullptr);
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      tree->visualItemRect(tree->topLevelItem(0)).center());
+    QTRY_COMPARE(inspector->currentInstanceId(), instance.id);
+    AgentController& controller = AgentController::instance();
+    AgentActor* actor = controller.actor();
+    QVERIFY(actor != nullptr);
+    actor->undoStack()->clear();
+
+    const QList<QPair<QString, QJsonObject>> tools = {
+        {QStringLiteral("rename_module"), QJsonObject{{QStringLiteral("instanceId"), instance.id},
+                                                      {QStringLiteral("name"), QStringLiteral("Before A")}}},
+        {QStringLiteral("set_module_note"),
+         QJsonObject{{QStringLiteral("instanceId"), instance.id}, {QStringLiteral("note"), QStringLiteral("Agent")}}},
+        {QStringLiteral("rename_module"),
+         QJsonObject{{QStringLiteral("instanceId"), instance.id}, {QStringLiteral("name"), QStringLiteral("After")}}},
+    };
+    QCOMPARE(
+        actor->executeTools(tools, QStringLiteral("runtime field macro")).value(QStringLiteral("status")).toString(),
+        QStringLiteral("completed"));
+    QCOMPARE(actor->undoStack()->count(), 3);
+    auto* note = inspector->findChild<QLineEdit*>(QStringLiteral("InspectorNoteEdit"));
+    QVERIFY(note != nullptr);
+    note->setText(QStringLiteral("GUI"));
+    QVERIFY(QMetaObject::invokeMethod(note, "editingFinished", Qt::DirectConnection));
+    QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("GUI"));
+
+    QVERIFY(controller.undoLastAgentAction()); // Undo the independent after-rename item.
+    QCOMPARE(project->moduleById(instance.id)->name, QStringLiteral("Before A"));
+    QCOMPARE(actor->undoStack()->count(), 3);
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    QVERIFY(!controller.undoLastAgentAction()); // The stale note command is its own stack item.
+    QCOMPARE(project->moduleById(instance.id)->name, QStringLiteral("Before A"));
+    QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("GUI"));
+    QCOMPARE(note->text(), QStringLiteral("GUI"));
+    QCOMPARE(project->toJson()
+                 .value(QStringLiteral("modules"))
+                 .toArray()
+                 .first()
+                 .toObject()
+                 .value(QStringLiteral("name"))
+                 .toString(),
+             QStringLiteral("Before A"));
+    QCOMPARE(auditSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
+
+    QVERIFY(controller.undoLastAgentAction()); // Earlier sibling still has independent navigation.
+    QCOMPARE(project->moduleById(instance.id)->name, QStringLiteral("Before"));
+    QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("GUI"));
+    actor->undoStack()->redo();
+    QCOMPARE(project->moduleById(instance.id)->name, QStringLiteral("Before A"));
+    QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("GUI"));
+    actor->undoStack()->redo(); // Permanently stale middle item is still a zero-effect navigation step.
+    QCOMPARE(project->moduleById(instance.id)->name, QStringLiteral("Before A"));
+    QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("GUI"));
+    actor->undoStack()->redo();
+    QCOMPARE(project->moduleById(instance.id)->name, QStringLiteral("After"));
+    QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("GUI"));
+}
+
+void TestMainWindow::testG4AgentRuntimeFieldUndoExpiresAfterModuleIdReuse() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance original;
+    original.id = QStringLiteral("reused_runtime_id");
+    original.moduleId = QStringLiteral("FindCircle");
+    original.name = QStringLiteral("Original");
+    project->addModule(original);
+    QCoreApplication::processEvents();
+
+    AgentController& controller = AgentController::instance();
+    AgentActor* actor = controller.actor();
+    QVERIFY(actor != nullptr);
+    actor->undoStack()->clear();
+    QCOMPARE(actor
+                 ->executeTool(QStringLiteral("set_module_note"),
+                               QJsonObject{{QStringLiteral("instanceId"), original.id},
+                                           {QStringLiteral("note"), QStringLiteral("old agent note")}})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("updated"));
+
+    auto* tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(tree != nullptr);
+    tree->setCurrentItem(tree->topLevelItem(0));
+    tree->topLevelItem(0)->setSelected(true);
+    QTest::keyClick(tree->viewport(), Qt::Key_Delete);
+    QVERIFY(!project->moduleById(original.id).has_value());
+    QCOMPARE(tree->topLevelItemCount(), 0);
+
+    ModuleInstance replacement = original;
+    replacement.name = QStringLiteral("Replacement");
+    replacement.note = QStringLiteral("old agent note"); // Match the old command's expected current value.
+    project->addModule(replacement);
+    QCoreApplication::processEvents();
+    QCOMPARE(tree->topLevelItemCount(), 1);
+    QCOMPARE(project->moduleById(original.id)->note, QStringLiteral("old agent note"));
+    tree->setCurrentItem(tree->topLevelItem(0));
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(inspector != nullptr);
+    QTRY_COMPARE(inspector->currentInstanceId(), original.id);
+    auto* note = inspector->findChild<QLineEdit*>(QStringLiteral("InspectorNoteEdit"));
+    QVERIFY(note != nullptr);
+    QCOMPARE(note->text(), QStringLiteral("old agent note"));
+
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    QVERIFY(!controller.undoLastAgentAction());
+    QCOMPARE(project->moduleById(original.id)->note, QStringLiteral("old agent note"));
+    QCOMPARE(note->text(), QStringLiteral("old agent note"));
+    QCOMPARE(project->toJson()
+                 .value(QStringLiteral("modules"))
+                 .toArray()
+                 .first()
+                 .toObject()
+                 .value(QStringLiteral("note"))
+                 .toString(),
+             QStringLiteral("old agent note"));
+    QCOMPARE(auditSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
+    actor->undoStack()->redo();
+    QCOMPARE(project->moduleById(original.id)->note, QStringLiteral("old agent note"));
+    QCOMPARE(note->text(), QStringLiteral("old agent note"));
+}
+
+void TestMainWindow::testG4AgentRenameUpdatesTreeCanvasAndReopen() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance instance;
+    instance.id = QStringLiteral("stable_id");
+    instance.moduleId = QStringLiteral("GrabImage");
+    instance.name = QStringLiteral("Before");
+    project->addModule(instance);
+    QTreeWidget* tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>(QStringLiteral("FlowCanvas"));
+    QVERIFY(tree != nullptr);
+    QVERIFY(canvas != nullptr);
+    QCOMPARE(tree->topLevelItem(0)->text(0), QStringLiteral("Before"));
+    QVERIFY(canvas->nodeItem(instance.id) != nullptr);
+    QCOMPARE(canvas->nodeItem(instance.id)->name(), QStringLiteral("Before"));
+
+    AgentActor actor;
+    QCOMPARE(actor.executeTool("rename_module", QJsonObject{{"instanceId", instance.id}, {"name", "After"}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("renamed"));
+    QCOMPARE(tree->topLevelItem(0)->text(0), QStringLiteral("After"));
+    QCOMPARE(canvas->nodeItem(instance.id)->name(), QStringLiteral("After"));
+    actor.undoStack()->undo();
+    QCOMPARE(tree->topLevelItem(0)->text(0), QStringLiteral("Before"));
+    QCOMPARE(canvas->nodeItem(instance.id)->name(), QStringLiteral("Before"));
+    actor.undoStack()->redo();
+    QCOMPARE(tree->topLevelItem(0)->text(0), QStringLiteral("After"));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("renamed-gui.dproj"));
+    QVERIFY(project->save(path));
+    ProjectManager::instance().closeProject();
+    QVERIFY(ProjectManager::instance().openProject(path) != nullptr);
+    QCoreApplication::processEvents();
+    QCOMPARE(tree->topLevelItemCount(), 1);
+    QCOMPARE(tree->topLevelItem(0)->data(0, Qt::UserRole + 1).toString(), instance.id);
+    QCOMPARE(tree->topLevelItem(0)->text(0), QStringLiteral("After"));
+    QVERIFY(canvas->nodeItem(instance.id) != nullptr);
+    QCOMPARE(canvas->nodeItem(instance.id)->name(), QStringLiteral("After"));
+}
+
+void TestMainWindow::testG4AgentPositionUpdatesCanvasConnectionsUndoAndReopen() {
+    qRegisterMetaType<ModuleInstance>();
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance origin;
+    origin.id = QStringLiteral("origin");
+    origin.moduleId = QStringLiteral("GrabImage");
+    origin.name = QStringLiteral("origin");
+    project->addModule(origin);
+    ModuleInstance target;
+    target.id = QStringLiteral("target");
+    target.moduleId = QStringLiteral("Blob");
+    target.name = QStringLiteral("target");
+    target.posX = 500;
+    target.posY = 300;
+    project->addModule(target);
+
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>(QStringLiteral("FlowCanvas"));
+    QVERIFY(canvas);
+    FlowNodeItem* originNode = canvas->nodeItem(origin.id);
+    FlowNodeItem* targetNode = canvas->nodeItem(target.id);
+    QVERIFY(originNode);
+    QVERIFY(targetNode);
+    QVERIFY(originNode->pos().isNull() == false); // 初始加入的零坐标节点被旧 UI 回退布局移开
+    QCOMPARE(targetNode->pos(), QPointF(target.posX, target.posY));
+
+    AgentActor* actor = AgentController::instance().actor();
+    QVERIFY(actor);
+    QSignalSpy positionSyncSpy(actor, &AgentActor::modulePositionSyncRequested);
+    QSignalSpy updatedSpy(project, &Project::moduleUpdated);
+    QUndoStack* undo = actor->undoStack();
+    const int initialUndoCount = undo->count();
+    const int initialUndoIndex = undo->index();
+    project->setModified(false);
+
+    QCOMPARE(actor->executeTool("set_module_position", QJsonObject{{"instanceId", origin.id}, {"x", 0}, {"y", 0}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("no_op"));
+    QCOMPARE(positionSyncSpy.count(), 1);
+    QCOMPARE(updatedSpy.count(), 0);
+    QCOMPARE(originNode->pos(), QPointF(0, 0));
+    QCOMPARE(undo->count(), initialUndoCount);
+    QCOMPARE(undo->index(), initialUndoIndex);
+    QVERIFY(!project->isModified());
+
+    canvas->addConnection(origin.id, QStringLiteral("image"), target.id, QStringLiteral("image"));
+    QCOMPARE(canvas->m_connections.size(), 1);
+    FlowConnectionItem* edge = canvas->m_connections.first();
+    const QRectF originalEdgeBounds = edge->boundingRect();
+
+    const QJsonObject changed =
+        actor->executeTool("set_module_position", QJsonObject{{"instanceId", origin.id}, {"x", 240}, {"y", 160}});
+    QCOMPARE(changed.value("status").toString(), QStringLiteral("updated"));
+    QCOMPARE(updatedSpy.count(), 1);
+    QCOMPARE(originNode->pos(), QPointF(240, 160));
+    QCOMPARE(targetNode->pos(), QPointF(target.posX, target.posY));
+    const QRectF movedEdgeBounds = edge->boundingRect();
+    QVERIFY(movedEdgeBounds != originalEdgeBounds);
+    QCOMPARE(undo->count(), initialUndoCount + 1);
+    QCOMPARE(undo->index(), initialUndoIndex + 1);
+    QVERIFY(project->isModified());
+
+    undo->undo();
+    QCOMPARE(originNode->pos(), QPointF(0, 0));
+    QCOMPARE(edge->boundingRect(), originalEdgeBounds);
+    QCOMPARE(updatedSpy.count(), 2);
+    undo->redo();
+    QCOMPARE(originNode->pos(), QPointF(240, 160));
+    QCOMPARE(edge->boundingRect(), movedEdgeBounds);
+    QCOMPARE(updatedSpy.count(), 3);
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("position-gui.dproj"));
+    QVERIFY(project->save(path));
+    ProjectManager::instance().closeProject();
+    Project* reopened = ProjectManager::instance().openProject(path);
+    QVERIFY(reopened);
+    QCoreApplication::processEvents();
+    QCOMPARE(reopened->moduleById(origin.id)->posX, 240);
+    QCOMPARE(reopened->moduleById(origin.id)->posY, 160);
+    QCOMPARE(canvas->nodeItem(origin.id)->pos(), QPointF(240, 160));
+    QCOMPARE(canvas->nodeItem(target.id)->pos(), QPointF(target.posX, target.posY));
+}
+
+void TestMainWindow::testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition() {
+    qRegisterMetaType<ModuleInstance>();
+    MainWindow window;
+    window.show();
+    QVERIFY(QMetaObject::invokeMethod(&window, "onHome", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>(QStringLiteral("FlowCanvas"));
+    QVERIFY(canvas);
+    QUndoStack* guiUndoStack = window.findChild<QUndoStack*>();
+    QVERIFY(guiUndoStack);
+    const auto sendMouse = [canvas](QEvent::Type type, const QPoint& local, Qt::MouseButton button,
+                                    Qt::MouseButtons buttons) {
+        QWidget* viewport = canvas->viewport();
+        QMouseEvent event(type, QPointF(local), QPointF(viewport->mapTo(viewport->window(), local)),
+                          QPointF(viewport->mapToGlobal(local)), button, buttons, Qt::NoModifier);
+        QApplication::sendEvent(viewport, &event);
+    };
+
+    ModuleInstance defaultNode;
+    defaultNode.id = QStringLiteral("gui_drag_default");
+    defaultNode.moduleId = QStringLiteral("GrabImage");
+    project->addModule(defaultNode);
+    FlowNodeItem* defaultItem = canvas->nodeItem(defaultNode.id);
+    QVERIFY(defaultItem);
+    QVERIFY(!defaultItem->pos().isNull());
+    const QPoint defaultClick = canvas->mapFromScene(defaultItem->mapToScene(QPointF(80, 30)));
+    QSignalSpy updateSpy(project, &Project::moduleUpdated);
+    QSignalSpy positionSpy(project, &Project::modulePositionChanged);
+    const QPointF defaultVisualPosition = defaultItem->pos();
+    project->setModified(false);
+    const int initialUndoCount = guiUndoStack->count();
+    const int initialUndoIndex = guiUndoStack->index();
+    QTest::mouseClick(canvas->viewport(), Qt::LeftButton, Qt::NoModifier, defaultClick);
+    const QPoint smallMoveStart = canvas->mapFromScene(defaultItem->mapToScene(QPointF(80, 30)));
+    const int belowThresholdDiagonal = QApplication::startDragDistance() / 2;
+    const QPoint belowThresholdDelta(belowThresholdDiagonal, belowThresholdDiagonal);
+    sendMouse(QEvent::MouseButtonPress, smallMoveStart, Qt::LeftButton, Qt::LeftButton);
+    sendMouse(QEvent::MouseMove, smallMoveStart + belowThresholdDelta, Qt::NoButton, Qt::LeftButton);
+    sendMouse(QEvent::MouseButtonRelease, smallMoveStart + belowThresholdDelta, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(defaultItem->pos(), defaultVisualPosition);
+    QCOMPARE(updateSpy.count(), 0);
+    QCOMPARE(positionSpy.count(), 0);
+    QCOMPARE(guiUndoStack->count(), initialUndoCount);
+    QCOMPARE(guiUndoStack->index(), initialUndoIndex);
+    QVERIFY(!project->isModified());
+
+    ModuleInstance movable;
+    movable.id = QStringLiteral("gui_drag_movable");
+    movable.moduleId = QStringLiteral("GrabImage");
+    movable.posX = 200;
+    movable.posY = 160;
+    project->addModule(movable);
+    ModuleInstance target;
+    target.id = QStringLiteral("gui_drag_target");
+    target.moduleId = QStringLiteral("Blob");
+    target.posX = 480;
+    target.posY = 160;
+    project->addModule(target);
+    ModuleConnection connection;
+    connection.fromModuleId = movable.id;
+    connection.toModuleId = target.id;
+    connection.fromPort = QStringLiteral("image");
+    connection.toPort = QStringLiteral("image");
+    project->addConnection(connection);
+    const QJsonArray originalConnections = project->toJson().value(QStringLiteral("connections")).toArray();
+    FlowNodeItem* item = canvas->nodeItem(movable.id);
+    FlowNodeItem* targetItem = canvas->nodeItem(target.id);
+    QVERIFY(item);
+    QVERIFY(targetItem);
+    QCOMPARE(item->pos(), QPointF(movable.posX, movable.posY));
+    const QPoint pressPos = canvas->mapFromScene(item->mapToScene(QPointF(80, 30)));
+    const QPoint dragDelta(72, 48);
+    QSignalSpy moveStartedSpy(canvas, &FlowCanvas::nodeMoveStarted);
+    QSignalSpy moveFinishedSpy(canvas, &FlowCanvas::nodeMoveFinished);
+    const auto dragItem = [&](const QPoint& delta) {
+        const QPoint start = canvas->mapFromScene(item->mapToScene(QPointF(80, 30)));
+        sendMouse(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+        sendMouse(QEvent::MouseMove, start + delta, Qt::NoButton, Qt::LeftButton);
+        sendMouse(QEvent::MouseButtonRelease, start + delta, Qt::LeftButton, Qt::NoButton);
+        QCoreApplication::processEvents();
+    };
+    QVERIFY(!canvas->m_connections.isEmpty());
+    FlowConnectionItem* edge = canvas->m_connections.first();
+    const QRectF edgeBeforeDrag = edge->boundingRect();
+    const QPointF targetBeforeDrag = targetItem->pos();
+    sendMouse(QEvent::MouseButtonPress, pressPos, Qt::LeftButton, Qt::LeftButton);
+    sendMouse(QEvent::MouseMove, pressPos + dragDelta, Qt::NoButton, Qt::LeftButton);
+    QVERIFY(edge->boundingRect() != edgeBeforeDrag);
+    QCOMPARE(targetItem->pos(), targetBeforeDrag);
+    sendMouse(QEvent::MouseButtonRelease, pressPos + dragDelta, Qt::LeftButton, Qt::NoButton);
+    QCoreApplication::processEvents();
+    QCOMPARE(moveStartedSpy.count(), 1);
+    QCOMPARE(moveFinishedSpy.count(), 1);
+
+    const auto moved = project->moduleById(movable.id);
+    QVERIFY(moved);
+    QVERIFY(moved->posX != movable.posX || moved->posY != movable.posY);
+    QCOMPARE(item->pos(), QPointF(moved->posX, moved->posY));
+    QCOMPARE(updateSpy.count(), 1);
+    QCOMPARE(positionSpy.count(), 1);
+    QVERIFY(project->isModified());
+    QCOMPARE(project->toJson().value(QStringLiteral("connections")).toArray(), originalConnections);
+
+    QAction* undoAction = nullptr;
+    QAction* redoAction = nullptr;
+    for (QAction* action : window.findChildren<QAction*>()) {
+        if (action->text() == QStringLiteral("撤销") && action->shortcut() == QKeySequence(QStringLiteral("Ctrl+Z")))
+            undoAction = action;
+        if (action->text() == QStringLiteral("重做") && action->shortcut() == QKeySequence(QStringLiteral("Ctrl+Y")))
+            redoAction = action;
+    }
+    QVERIFY(undoAction);
+    QVERIFY(redoAction);
+    undoAction->trigger();
+    QCOMPARE(project->moduleById(movable.id)->posX, movable.posX);
+    QCOMPARE(project->moduleById(movable.id)->posY, movable.posY);
+    QCOMPARE(item->pos(), QPointF(movable.posX, movable.posY));
+    redoAction->trigger();
+    QCOMPARE(project->moduleById(movable.id)->posX, moved->posX);
+    QCOMPARE(project->moduleById(movable.id)->posY, moved->posY);
+    QCOMPARE(item->pos(), QPointF(moved->posX, moved->posY));
+
+    const ModuleInstance firstGuiMove = *project->moduleById(movable.id);
+    dragItem(QPoint(24, 18));
+    const ModuleInstance secondGuiMove = *project->moduleById(movable.id);
+    QVERIFY(secondGuiMove.posX != firstGuiMove.posX || secondGuiMove.posY != firstGuiMove.posY);
+    undoAction->trigger();
+    QCOMPARE(project->moduleById(movable.id)->posX, firstGuiMove.posX);
+    QCOMPARE(project->moduleById(movable.id)->posY, firstGuiMove.posY);
+    undoAction->trigger();
+    QCOMPARE(project->moduleById(movable.id)->posX, movable.posX);
+    QCOMPARE(project->moduleById(movable.id)->posY, movable.posY);
+    redoAction->trigger();
+    QCOMPARE(project->moduleById(movable.id)->posX, firstGuiMove.posX);
+    redoAction->trigger();
+    QCOMPARE(project->moduleById(movable.id)->posX, secondGuiMove.posX);
+    QCOMPARE(project->moduleById(movable.id)->posY, secondGuiMove.posY);
+
+    AgentActor* actor = AgentController::instance().actor();
+    QVERIFY(actor);
+    QCOMPARE(actor->executeTool("set_module_position", QJsonObject{{"instanceId", movable.id}, {"x", 350}, {"y", 260}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("updated"));
+    const int staleCount = guiUndoStack->count();
+    const int staleIndex = guiUndoStack->index();
+    undoAction->trigger();
+    QCOMPARE(guiUndoStack->count(), staleCount);
+    QCOMPARE(guiUndoStack->index(), staleIndex - 1);
+    QCOMPARE(project->moduleById(movable.id)->posX, 350);
+    QCOMPARE(project->moduleById(movable.id)->posY, 260);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("已失效")));
+    window.statusBar()->clearMessage();
+    redoAction->trigger();
+    QCOMPARE(guiUndoStack->index(), staleIndex);
+    QCOMPARE(project->moduleById(movable.id)->posX, 350);
+    QCOMPARE(project->moduleById(movable.id)->posY, 260);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("已失效")));
+    window.statusBar()->clearMessage();
+    undoAction->trigger();
+    QCOMPARE(guiUndoStack->count(), staleCount);
+    QCOMPARE(guiUndoStack->index(), staleIndex - 1);
+    QCOMPARE(project->moduleById(movable.id)->posX, 350);
+    QCOMPARE(project->moduleById(movable.id)->posY, 260);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("已失效")));
+    window.statusBar()->clearMessage();
+    redoAction->trigger();
+    QCOMPARE(guiUndoStack->count(), staleCount);
+    QCOMPARE(guiUndoStack->index(), staleIndex);
+    QCOMPARE(project->moduleById(movable.id)->posX, 350);
+    QCOMPARE(project->moduleById(movable.id)->posY, 260);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("已失效")));
+
+    canvas->centerOn(QPointF(100, 80));
+    QCoreApplication::processEvents();
+    const QPoint originPress = canvas->mapFromScene(item->mapToScene(QPointF(80, 30)));
+    const QPoint originRelease = canvas->mapFromScene(QPointF(80, 30));
+    sendMouse(QEvent::MouseButtonPress, originPress, Qt::LeftButton, Qt::LeftButton);
+    sendMouse(QEvent::MouseMove, originRelease, Qt::NoButton, Qt::LeftButton);
+    sendMouse(QEvent::MouseButtonRelease, originRelease, Qt::LeftButton, Qt::NoButton);
+    QCoreApplication::processEvents();
+    QCOMPARE(project->moduleById(movable.id)->posX, 0);
+    QCOMPARE(project->moduleById(movable.id)->posY, 0);
+    QCOMPARE(item->pos(), QPointF(0, 0));
+
+    const int beforeAgentOnlyGestureCount = guiUndoStack->count();
+    const int beforeAgentOnlyGestureIndex = guiUndoStack->index();
+    const QPoint agentOnlyGesturePress = canvas->mapFromScene(item->mapToScene(QPointF(80, 30)));
+    sendMouse(QEvent::MouseButtonPress, agentOnlyGesturePress, Qt::LeftButton, Qt::LeftButton);
+    QCOMPARE(actor->executeTool("set_module_position", QJsonObject{{"instanceId", movable.id}, {"x", 370}, {"y", 280}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("updated"));
+    sendMouse(QEvent::MouseButtonRelease, agentOnlyGesturePress, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(project->moduleById(movable.id)->posX, 370);
+    QCOMPARE(project->moduleById(movable.id)->posY, 280);
+    QCOMPARE(item->pos(), QPointF(370, 280));
+    QCOMPARE(guiUndoStack->count(), beforeAgentOnlyGestureCount);
+    QCOMPARE(guiUndoStack->index(), beforeAgentOnlyGestureIndex);
+
+    QCOMPARE(actor->executeTool("set_module_position", QJsonObject{{"instanceId", movable.id}, {"x", 0}, {"y", 0}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("updated"));
+    project->setModified(false);
+    const int beforeAgentAbaUpdates = updateSpy.count();
+    const int beforeAgentAbaPositions = positionSpy.count();
+    const int beforeAgentAbaUndoCount = guiUndoStack->count();
+    const int beforeAgentAbaUndoIndex = guiUndoStack->index();
+    const QPoint agentAbaPress = canvas->mapFromScene(item->mapToScene(QPointF(80, 30)));
+    sendMouse(QEvent::MouseButtonPress, agentAbaPress, Qt::LeftButton, Qt::LeftButton);
+    sendMouse(QEvent::MouseMove, agentAbaPress + dragDelta, Qt::NoButton, Qt::LeftButton);
+    QCOMPARE(actor->executeTool("set_module_position", QJsonObject{{"instanceId", movable.id}, {"x", 375}, {"y", 285}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("updated"));
+    QCOMPARE(actor->executeTool("set_module_position", QJsonObject{{"instanceId", movable.id}, {"x", 0}, {"y", 0}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("updated"));
+    sendMouse(QEvent::MouseButtonRelease, agentAbaPress + dragDelta, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(project->moduleById(movable.id)->posX, 0);
+    QCOMPARE(project->moduleById(movable.id)->posY, 0);
+    QCOMPARE(item->pos(), QPointF(0, 0));
+    QCOMPARE(updateSpy.count(), beforeAgentAbaUpdates + 2);
+    QCOMPARE(positionSpy.count(), beforeAgentAbaPositions + 2);
+    QCOMPARE(guiUndoStack->count(), beforeAgentAbaUndoCount);
+    QCOMPARE(guiUndoStack->index(), beforeAgentAbaUndoIndex);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("其他操作更新")));
+    project->setModified(false);
+
+    AgentController& controller = AgentController::instance();
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+    QCOMPARE(controller
+                 .handleToolCall("set_module_position", QJsonObject{{"instanceId", movable.id}, {"x", 380}, {"y", 300}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("updated"));
+    const int guiUndoCountBeforeAgentStale = guiUndoStack->count();
+    const int agentUndoCountBeforeGuiDrag = actor->undoStack()->count();
+    const int agentUndoIndexBeforeGuiDrag = actor->undoStack()->index();
+    QSignalSpy agentAuditSpy(&controller, &AgentController::actionLogEntryAdded);
+    dragItem(QPoint(40, 32));
+    const int agentStaleX = project->moduleById(movable.id)->posX;
+    const int agentStaleY = project->moduleById(movable.id)->posY;
+    QVERIFY(agentStaleX != 380 || agentStaleY != 300);
+    QCOMPARE(item->pos(), QPointF(agentStaleX, agentStaleY));
+    QCOMPARE(guiUndoStack->count(), guiUndoCountBeforeAgentStale + 1);
+    QVERIFY(!controller.undoLastAgentAction());
+    QCOMPARE(actor->undoStack()->count(), agentUndoCountBeforeGuiDrag);
+    QCOMPARE(actor->undoStack()->index(), agentUndoIndexBeforeGuiDrag - 1);
+    QCOMPARE(project->moduleById(movable.id)->posX, agentStaleX);
+    QCOMPARE(project->moduleById(movable.id)->posY, agentStaleY);
+    QVERIFY(!agentAuditSpy.isEmpty());
+    const AgentActionLogEntry expiredAgentUndo = agentAuditSpy.last().at(0).value<AgentActionLogEntry>();
+    QCOMPARE(expiredAgentUndo.action, QStringLiteral("undo"));
+    QCOMPARE(expiredAgentUndo.result, QStringLiteral("expired"));
+    actor->undoStack()->redo();
+    QCOMPARE(actor->undoStack()->index(), agentUndoIndexBeforeGuiDrag);
+    QCOMPARE(project->moduleById(movable.id)->posX, agentStaleX);
+    QCOMPARE(project->moduleById(movable.id)->posY, agentStaleY);
+    QCOMPARE(
+        controller.handleToolCall("set_module_position", QJsonObject{{"instanceId", movable.id}, {"x", 0}, {"y", 0}})
+            .value("status")
+            .toString(),
+        QStringLiteral("updated"));
+
+    canvas->scale(4.0, 4.0);
+    canvas->centerOn(QPointF(0, 0));
+    const auto dragByViewportDelta = [&](const QPoint& delta) {
+        const QPoint start = canvas->mapFromScene(item->mapToScene(QPointF(80, 30)));
+        sendMouse(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+        sendMouse(QEvent::MouseMove, start + delta, Qt::NoButton, Qt::LeftButton);
+        sendMouse(QEvent::MouseButtonRelease, start + delta, Qt::LeftButton, Qt::NoButton);
+        QCoreApplication::processEvents();
+    };
+    dragByViewportDelta(QPoint(41, 0)); // At 4x zoom this releases at +10.25 scene units.
+    QCOMPARE(project->moduleById(movable.id)->posX, 10);
+    QCOMPARE(item->pos(), QPointF(10, 0));
+    QCOMPARE(
+        controller.handleToolCall("set_module_position", QJsonObject{{"instanceId", movable.id}, {"x", 0}, {"y", 0}})
+            .value("status")
+            .toString(),
+        QStringLiteral("updated"));
+    dragByViewportDelta(QPoint(-41, 0)); // The negative fractional release rounds to -10.
+    QCOMPARE(project->moduleById(movable.id)->posX, -10);
+    QCOMPARE(item->pos(), QPointF(-10, 0));
+    QCOMPARE(
+        controller.handleToolCall("set_module_position", QJsonObject{{"instanceId", movable.id}, {"x", 0}, {"y", 0}})
+            .value("status")
+            .toString(),
+        QStringLiteral("updated"));
+    canvas->resetTransform();
+    canvas->centerOn(QPointF(0, 0));
+    QCoreApplication::processEvents();
+    project->setModified(false);
+
+    QSemaphore runEntered;
+    QSemaphore releaseRun;
+    auto releaseRunOnExit = qScopeGuard([&releaseRun]() { releaseRun.release(); });
+    RunEngine& engine = RunEngine::instance();
+    project->setModified(false);
+    QVERIFY(engine.loadProject(project, [&runEntered, &releaseRun](const ModuleInstance& module) {
+        auto* probe = new MainWindowOutputProbeModule(module.id);
+        probe->duringProcess = [&runEntered, &releaseRun]() {
+            runEntered.release();
+            releaseRun.tryAcquire(1, 10000);
+        };
+        return probe;
+    }));
+    for (const QString& id : {defaultNode.id, movable.id, target.id})
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(id, ExecutionAffinity::Worker);
+    const int busyBeforeCount = guiUndoStack->count();
+    const int busyBeforeIndex = guiUndoStack->index();
+    const int busyBeforeUpdates = updateSpy.count();
+    const int busyBeforePositions = positionSpy.count();
+    const QPoint busyPress = canvas->mapFromScene(item->mapToScene(QPointF(80, 30)));
+    sendMouse(QEvent::MouseButtonPress, busyPress, Qt::LeftButton, Qt::LeftButton);
+    QVERIFY(engine.runOnceAsync());
+    QVERIFY(runEntered.tryAcquire(1, 1500));
+    sendMouse(QEvent::MouseMove, busyPress + dragDelta, Qt::NoButton, Qt::LeftButton);
+    sendMouse(QEvent::MouseButtonRelease, busyPress + dragDelta, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(project->moduleById(movable.id)->posX, 0);
+    QCOMPARE(project->moduleById(movable.id)->posY, 0);
+    QCOMPARE(item->pos(), QPointF(0, 0));
+    QCOMPARE(updateSpy.count(), busyBeforeUpdates);
+    QCOMPARE(positionSpy.count(), busyBeforePositions);
+    QVERIFY(!project->isModified());
+    QCOMPARE(guiUndoStack->count(), busyBeforeCount);
+    QCOMPARE(guiUndoStack->index(), busyBeforeIndex);
+    const int busyCount = guiUndoStack->count();
+    const int busyIndex = guiUndoStack->index();
+    undoAction->setEnabled(true);
+    redoAction->setEnabled(true);
+    undoAction->trigger();
+    redoAction->trigger();
+    QCOMPARE(guiUndoStack->count(), busyCount);
+    QCOMPARE(guiUndoStack->index(), busyIndex);
+    QCOMPARE(project->moduleById(movable.id)->posX, 0);
+    QCOMPARE(project->moduleById(movable.id)->posY, 0);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("不能重做")));
+    releaseRun.release();
+    releaseRunOnExit.dismiss();
+    engine.stop();
+    QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 2000);
+    for (const QString& id : {defaultNode.id, movable.id, target.id})
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(id, ExecutionAffinity::Gui);
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("gui-position-roundtrip.dproj"));
+    QVERIFY(project->save(path));
+    ProjectManager::instance().closeProject();
+    Project* reopened = ProjectManager::instance().openProject(path);
+    QVERIFY(reopened);
+    QCoreApplication::processEvents();
+    QCOMPARE(guiUndoStack->count(), 0);
+    QCOMPARE(actor->undoStack()->count(), 0);
+    QCOMPARE(reopened->moduleById(movable.id)->posX, 0);
+    QCOMPARE(reopened->moduleById(movable.id)->posY, 0);
+    QCOMPARE(canvas->nodeItem(movable.id)->pos(), QPointF(0, 0));
+}
+
+void TestMainWindow::testAgentUndoBarrierRejectionIsVisibleInStatusBar() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance instance;
+    instance.id = QStringLiteral("status_barrier_node");
+    instance.moduleId = QStringLiteral("GrabImage");
+    instance.name = QStringLiteral("original");
+    project->addModule(instance);
+
+    AgentController& controller = AgentController::instance();
+    AgentActor* actor = controller.actor();
+    QCOMPARE(actor
+                 ->executeTool(QStringLiteral("rename_module"),
+                               QJsonObject{{"instanceId", instance.id}, {"name", "saved edit"}})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("renamed"));
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString path = tempDir.filePath(QStringLiteral("undo-barrier.dproj"));
+    QCOMPARE(actor->executeTool(QStringLiteral("save_project"), QJsonObject{{"path", path}})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("saved"));
+
+    QVERIFY(!controller.undoLastAgentAction());
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("不能撤销")));
+}
+
+void TestMainWindow::testG4AgentGuiParameterUndoIsKeyScopedAndStaleSafe() {
+    MainWindow window;
+    window.show();
+    QVERIFY(QMetaObject::invokeMethod(&window, "onHome", Qt::DirectConnection));
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance instance;
+    instance.id = QStringLiteral("parameter_interleave");
+    instance.moduleId = QStringLiteral("FindCircle");
+    instance.params = QJsonObject{{QStringLiteral("minRadius"), 10.0},
+                                  {QStringLiteral("maxRadius"), 500.0},
+                                  {QStringLiteral("param1"), 50.0},
+                                  {QStringLiteral("param2"), 30.0}};
+    project->addModule(instance);
+    QCoreApplication::processEvents();
+
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>(QStringLiteral("FlowCanvas"));
+    ModuleInspectorPanel* inspector = window.findChild<ModuleInspectorPanel*>();
+    QUndoStack* guiUndo = window.findChild<QUndoStack*>();
+    QVERIFY(canvas);
+    QVERIFY(inspector);
+    QVERIFY(guiUndo);
+    QVERIFY(QMetaObject::invokeMethod(canvas, "nodeSelected", Qt::DirectConnection, Q_ARG(QString, instance.id)));
+    QTRY_COMPARE(inspector->currentInstanceId(), instance.id);
+    auto* minRadius = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_minRadius"));
+    auto* param1 = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param1"));
+    auto* param2 = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param2"));
+    QVERIFY(minRadius);
+    QVERIFY(param1);
+    QVERIFY(param2);
+
+    AgentController& controller = AgentController::instance();
+    AgentActor* actor = controller.actor();
+    QVERIFY(actor);
+    QUndoStack* agentUndo = actor->undoStack();
+    QVERIFY(agentUndo);
+    const int initialGuiCount = guiUndo->count();
+    const int initialGuiIndex = guiUndo->index();
+    const int initialAgentCount = agentUndo->count();
+    const int initialAgentIndex = agentUndo->index();
+    QCOMPARE(
+        actor->executeTool("set_param", QJsonObject{{"instanceId", instance.id}, {"key", "param1"}, {"value", 60.0}})
+            .value("status")
+            .toString(),
+        QStringLiteral("param_set"));
+    QCoreApplication::processEvents();
+    minRadius = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_minRadius"));
+    param1 = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param1"));
+    param2 = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param2"));
+    QVERIFY(minRadius && param1 && param2);
+    QCOMPARE(agentUndo->count(), initialAgentCount + 1);
+    QCOMPARE(agentUndo->index(), initialAgentIndex + 1);
+    QCOMPARE(guiUndo->count(), initialGuiCount);
+    QCOMPARE(guiUndo->index(), initialGuiIndex);
+    QCOMPARE(param1->value(), 60.0);
+    QVERIFY(project->isModified());
+    minRadius->setValue(11.0);
+    QVERIFY(QMetaObject::invokeMethod(minRadius, "editingFinished", Qt::DirectConnection));
+    QCOMPARE(guiUndo->count(), initialGuiCount + 1);
+    QCOMPARE(guiUndo->index(), initialGuiIndex + 1);
+    QCOMPARE(agentUndo->count(), initialAgentCount + 1);
+    QCOMPARE(agentUndo->index(), initialAgentIndex + 1);
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("param1")), QJsonValue(60.0));
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("minRadius")), QJsonValue(11.0));
+    QVERIFY(controller.undoLastAgentAction());
+    QCoreApplication::processEvents();
+    minRadius = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_minRadius"));
+    param1 = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param1"));
+    param2 = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param2"));
+    QVERIFY(minRadius && param1 && param2);
+    QCOMPARE(agentUndo->index(), initialAgentIndex);
+    QCOMPARE(guiUndo->index(), initialGuiIndex + 1);
+    QCOMPARE(param1->value(), 50.0);
+    QCOMPARE(minRadius->value(), 11.0);
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("param1")), QJsonValue(50.0));
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("minRadius")), QJsonValue(11.0));
+    QVERIFY(project->isModified());
+
+    agentUndo->redo();
+    QCoreApplication::processEvents();
+    minRadius = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_minRadius"));
+    param1 = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param1"));
+    QVERIFY(minRadius && param1);
+    QCOMPARE(agentUndo->index(), initialAgentIndex + 1);
+    QCOMPARE(guiUndo->index(), initialGuiIndex + 1);
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("param1")), QJsonValue(60.0));
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("minRadius")), QJsonValue(11.0));
+    QCOMPARE(param1->value(), 60.0);
+    QCOMPARE(minRadius->value(), 11.0);
+    QVERIFY(project->isModified());
+    QVERIFY(controller.undoLastAgentAction());
+    QCoreApplication::processEvents();
+    minRadius = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_minRadius"));
+    param1 = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param1"));
+    QVERIFY(minRadius && param1);
+    QCOMPARE(agentUndo->index(), initialAgentIndex);
+    QCOMPARE(guiUndo->index(), initialGuiIndex + 1);
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("param1")), QJsonValue(50.0));
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("minRadius")), QJsonValue(11.0));
+    QCOMPARE(param1->value(), 50.0);
+    QCOMPARE(minRadius->value(), 11.0);
+
+    QCOMPARE(
+        actor->executeTool("set_param", QJsonObject{{"instanceId", instance.id}, {"key", "param1"}, {"value", 70.0}})
+            .value("status")
+            .toString(),
+        QStringLiteral("param_set"));
+    QCoreApplication::processEvents();
+    minRadius = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_minRadius"));
+    param1 = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param1"));
+    param2 = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param2"));
+    QVERIFY(minRadius && param1 && param2);
+    QCOMPARE(agentUndo->count(), initialAgentCount + 1);
+    QCOMPARE(agentUndo->index(), initialAgentIndex + 1);
+    QCOMPARE(guiUndo->index(), initialGuiIndex + 1);
+    param1->setValue(80.0);
+    QVERIFY(QMetaObject::invokeMethod(param1, "editingFinished", Qt::DirectConnection));
+    QCOMPARE(guiUndo->count(), initialGuiCount + 2);
+    QCOMPARE(guiUndo->index(), initialGuiIndex + 2);
+    QCOMPARE(agentUndo->index(), initialAgentIndex + 1);
+    QCOMPARE(param1->value(), 80.0);
+    QVERIFY(project->isModified());
+    const QJsonObject beforeAgentExpiredUndo = project->moduleById(instance.id)->params;
+    project->setModified(false);
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    QVERIFY(!controller.undoLastAgentAction());
+    QVERIFY(!auditSpy.isEmpty());
+    const AgentActionLogEntry expiredEntry = auditSpy.last().at(0).value<AgentActionLogEntry>();
+    QCOMPARE(expiredEntry.action, QStringLiteral("undo"));
+    QCOMPARE(expiredEntry.result, QStringLiteral("expired"));
+    QCOMPARE(project->moduleById(instance.id)->params, beforeAgentExpiredUndo);
+    QVERIFY(!project->isModified());
+    QCOMPARE(agentUndo->index(), initialAgentIndex);
+    QCOMPARE(guiUndo->index(), initialGuiIndex + 2);
+
+    param2->setValue(40.0);
+    QVERIFY(QMetaObject::invokeMethod(param2, "editingFinished", Qt::DirectConnection));
+    QCOMPARE(guiUndo->index(), initialGuiIndex + 3);
+    QCOMPARE(param2->value(), 40.0);
+    QCOMPARE(
+        actor->executeTool("set_param", QJsonObject{{"instanceId", instance.id}, {"key", "param2"}, {"value", 50.0}})
+            .value("status")
+            .toString(),
+        QStringLiteral("param_set"));
+    QCoreApplication::processEvents();
+    param2 = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param2"));
+    QVERIFY(param2);
+    const QJsonObject beforeGuiExpiredUndo = project->moduleById(instance.id)->params;
+    guiUndo->undo();
+    QCOMPARE(project->moduleById(instance.id)->params, beforeGuiExpiredUndo);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("撤销已失效")));
+    QCOMPARE(agentUndo->index(), initialAgentIndex + 1);
+    QCOMPARE(param2->value(), 50.0);
+    QVERIFY(controller.undoLastAgentAction());
+    QCoreApplication::processEvents();
+    param2 = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param2"));
+    QVERIFY(param2);
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("param2")), QJsonValue(40.0));
+    QCOMPARE(param2->value(), 40.0);
+
+    minRadius = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_minRadius"));
+    param1 = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param1"));
+    QVERIFY(minRadius && param1);
+    const int reverseGuiCount = guiUndo->count();
+    const int reverseGuiIndex = guiUndo->index();
+    const int reverseAgentCount = agentUndo->count();
+    const int reverseAgentIndex = agentUndo->index();
+    minRadius->setValue(12.0);
+    QVERIFY(QMetaObject::invokeMethod(minRadius, "editingFinished", Qt::DirectConnection));
+    QCOMPARE(guiUndo->count(), reverseGuiCount);
+    QCOMPARE(guiUndo->index(), reverseGuiIndex + 1);
+    QCOMPARE(agentUndo->count(), reverseAgentCount);
+    QCOMPARE(agentUndo->index(), reverseAgentIndex);
+    QCOMPARE(
+        actor->executeTool("set_param", QJsonObject{{"instanceId", instance.id}, {"key", "param1"}, {"value", 90.0}})
+            .value("status")
+            .toString(),
+        QStringLiteral("param_set"));
+    QCoreApplication::processEvents();
+    minRadius = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_minRadius"));
+    param1 = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param1"));
+    QVERIFY(minRadius && param1);
+    QCOMPARE(guiUndo->count(), reverseGuiCount);
+    QCOMPARE(guiUndo->index(), reverseGuiIndex + 1);
+    QCOMPARE(agentUndo->count(), reverseAgentCount);
+    QCOMPARE(agentUndo->index(), reverseAgentIndex + 1);
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("param1")), QJsonValue(90.0));
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("minRadius")), QJsonValue(12.0));
+    guiUndo->undo();
+    QCoreApplication::processEvents();
+    minRadius = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_minRadius"));
+    param1 = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param1"));
+    QVERIFY(minRadius && param1);
+    QCOMPARE(guiUndo->index(), reverseGuiIndex);
+    QCOMPARE(agentUndo->index(), reverseAgentIndex + 1);
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("param1")), QJsonValue(90.0));
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("minRadius")), QJsonValue(11.0));
+    QCOMPARE(param1->value(), 90.0);
+    QCOMPARE(minRadius->value(), 11.0);
+    guiUndo->redo();
+    QCoreApplication::processEvents();
+    minRadius = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_minRadius"));
+    param1 = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param1"));
+    QVERIFY(minRadius && param1);
+    QCOMPARE(guiUndo->index(), reverseGuiIndex + 1);
+    QCOMPARE(agentUndo->index(), reverseAgentIndex + 1);
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("param1")), QJsonValue(90.0));
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("minRadius")), QJsonValue(12.0));
+    QCOMPARE(param1->value(), 90.0);
+    QCOMPARE(minRadius->value(), 12.0);
+}
+
+void TestMainWindow::testG4MixedParameterUndoSerializationRoundTrips() {
+    MainWindow window;
+    window.show();
+    QVERIFY(QMetaObject::invokeMethod(&window, "onHome", Qt::DirectConnection));
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+
+    ModuleInstance instance;
+    instance.id = QStringLiteral("mixed_parameter_roundtrip");
+    instance.moduleId = QStringLiteral("FindCircle");
+    instance.params = QJsonObject{{QStringLiteral("minRadius"), 10.0},
+                                  {QStringLiteral("maxRadius"), 500.0},
+                                  {QStringLiteral("param1"), 50.0},
+                                  {QStringLiteral("param2"), 30.0}};
+    project->addModule(instance);
+    ModuleInstance untouched;
+    untouched.id = QStringLiteral("mixed_parameter_null_seed");
+    untouched.moduleId = QStringLiteral("GrabImage");
+    untouched.params.insert(QStringLiteral("explicitNullSeed"), QJsonValue(QJsonValue::Null));
+    project->addModule(untouched);
+    QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
+
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>(QStringLiteral("FlowCanvas"));
+    ModuleInspectorPanel* inspector = window.findChild<ModuleInspectorPanel*>();
+    QUndoStack* guiUndo = window.findChild<QUndoStack*>();
+    QVERIFY(canvas && inspector && guiUndo);
+    QVERIFY(QMetaObject::invokeMethod(canvas, "nodeSelected", Qt::DirectConnection, Q_ARG(QString, instance.id)));
+    QTRY_COMPARE(inspector->currentInstanceId(), instance.id);
+
+    AgentController& controller = AgentController::instance();
+    AgentActor* actor = controller.actor();
+    QVERIFY(actor);
+    QUndoStack* agentUndo = actor->undoStack();
+    QVERIFY(agentUndo);
+    const QJsonObject baseline = project->toJson();
+    const int initialAgentCount = agentUndo->count();
+    const int initialAgentIndex = agentUndo->index();
+    const int initialGuiCount = guiUndo->count();
+    const int initialGuiIndex = guiUndo->index();
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    QVERIFY(baseline.value(QStringLiteral("modules"))
+                .toArray()
+                .at(1)
+                .toObject()
+                .value(QStringLiteral("params"))
+                .toObject()
+                .value(QStringLiteral("explicitNullSeed"))
+                .isNull());
+
+    const auto withParams = [&baseline, &instance](const QStringList& keys, const QList<double>& values) {
+        QJsonObject expected = baseline;
+        QJsonArray modules = expected.value(QStringLiteral("modules")).toArray();
+        for (int i = 0; i < modules.size(); ++i) {
+            QJsonObject module = modules.at(i).toObject();
+            if (module.value(QStringLiteral("id")).toString() != instance.id)
+                continue;
+            QJsonObject params = module.value(QStringLiteral("params")).toObject();
+            for (int keyIndex = 0; keyIndex < keys.size(); ++keyIndex)
+                params.insert(keys.at(keyIndex), values.at(keyIndex));
+            module.insert(QStringLiteral("params"), params);
+            modules.replace(i, module);
+            break;
+        }
+        expected.insert(QStringLiteral("modules"), modules);
+        return expected;
+    };
+    int snapshotIndex = 0;
+    const auto assertAndRoundTrip = [&](const QJsonObject& expected, const QString& label) {
+        const QJsonObject actual = project->toJson();
+        const QStringList differences =
+            ProjectJsonTestHelpers::differences(ProjectJsonTestHelpers::withoutModifiedTimestamp(expected),
+                                                ProjectJsonTestHelpers::withoutModifiedTimestamp(actual));
+        QVERIFY2(differences.isEmpty(), qPrintable(label + QStringLiteral(": ") + differences.join(QLatin1Char('\n'))));
+        QVERIFY(project->isModified());
+        QCoreApplication::processEvents();
+        ModuleInspectorPanel* currentInspector = window.findChild<ModuleInspectorPanel*>();
+        QVERIFY(currentInspector);
+        QCOMPARE(currentInspector->currentInstanceId(), instance.id);
+        const QJsonObject expectedParams = [&expected, &instance]() {
+            const QJsonArray expectedModules = expected.value(QStringLiteral("modules")).toArray();
+            for (const QJsonValue& value : expectedModules) {
+                const QJsonObject module = value.toObject();
+                if (module.value(QStringLiteral("id")).toString() == instance.id)
+                    return module.value(QStringLiteral("params")).toObject();
+            }
+            return QJsonObject();
+        }();
+        auto* minRadius = currentInspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_minRadius"));
+        auto* param1 = currentInspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param1"));
+        auto* param2 = currentInspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_param2"));
+        QVERIFY(minRadius && param1 && param2);
+        QCOMPARE(minRadius->value(), expectedParams.value(QStringLiteral("minRadius")).toDouble());
+        QCOMPARE(param1->value(), expectedParams.value(QStringLiteral("param1")).toDouble());
+        QCOMPARE(param2->value(), expectedParams.value(QStringLiteral("param2")).toDouble());
+        const int agentCount = agentUndo->count();
+        const int agentIndex = agentUndo->index();
+        const int guiCount = guiUndo->count();
+        const int guiIndex = guiUndo->index();
+        const QString filePath = tempDir.filePath(QStringLiteral("snapshot-%1.dproj").arg(++snapshotIndex));
+        QVERIFY2(project->save(filePath), qPrintable(label + QStringLiteral(": save failed")));
+        QCOMPARE(agentUndo->count(), agentCount);
+        QCOMPARE(agentUndo->index(), agentIndex);
+        QCOMPARE(guiUndo->count(), guiCount);
+        QCOMPARE(guiUndo->index(), guiIndex);
+        const QJsonObject saved = project->toJson();
+        QCOMPARE(saved, actual);
+        QVERIFY(!project->isModified());
+        Project reopened;
+        QVERIFY2(reopened.load(filePath), qPrintable(label + QStringLiteral(": reopen failed")));
+        const QStringList reopenDifferences = ProjectJsonTestHelpers::differences(saved, reopened.toJson());
+        QVERIFY2(reopenDifferences.isEmpty(),
+                 qPrintable(label + QStringLiteral(" reopen: ") + reopenDifferences.join(QLatin1Char('\n'))));
+        QVERIFY(!reopened.isModified());
+    };
+
+    QCOMPARE(
+        actor
+            ->executeTool(QStringLiteral("set_param"), QJsonObject{{QStringLiteral("instanceId"), instance.id},
+                                                                   {QStringLiteral("key"), QStringLiteral("param1")},
+                                                                   {QStringLiteral("value"), 60.0}})
+            .value(QStringLiteral("status"))
+            .toString(),
+        QStringLiteral("param_set"));
+    QCOMPARE(agentUndo->count(), initialAgentCount + 1);
+    QCOMPARE(agentUndo->index(), initialAgentIndex + 1);
+    assertAndRoundTrip(withParams({QStringLiteral("param1")}, {60.0}), QStringLiteral("agent A"));
+
+    auto* minRadius = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_minRadius"));
+    QVERIFY(minRadius);
+    minRadius->setValue(11.0);
+    QVERIFY(QMetaObject::invokeMethod(minRadius, "editingFinished", Qt::DirectConnection));
+    QCOMPARE(guiUndo->count(), initialGuiCount + 1);
+    QCOMPARE(guiUndo->index(), initialGuiIndex + 1);
+    assertAndRoundTrip(withParams({QStringLiteral("param1"), QStringLiteral("minRadius")}, {60.0, 11.0}),
+                       QStringLiteral("GUI B"));
+
+    QCOMPARE(
+        actor
+            ->executeTool(QStringLiteral("set_param"), QJsonObject{{QStringLiteral("instanceId"), instance.id},
+                                                                   {QStringLiteral("key"), QStringLiteral("param2")},
+                                                                   {QStringLiteral("value"), 40.0}})
+            .value(QStringLiteral("status"))
+            .toString(),
+        QStringLiteral("param_set"));
+    QCOMPARE(agentUndo->count(), initialAgentCount + 2);
+    QCOMPARE(agentUndo->index(), initialAgentIndex + 2);
+    assertAndRoundTrip(withParams({QStringLiteral("param1"), QStringLiteral("minRadius"), QStringLiteral("param2")},
+                                  {60.0, 11.0, 40.0}),
+                       QStringLiteral("Agent C"));
+
+    QVERIFY(controller.undoLastAgentAction());
+    QCoreApplication::processEvents();
+    QCOMPARE(agentUndo->index(), initialAgentIndex + 1);
+    QCOMPARE(guiUndo->index(), initialGuiIndex + 1);
+    assertAndRoundTrip(withParams({QStringLiteral("param1"), QStringLiteral("minRadius")}, {60.0, 11.0}),
+                       QStringLiteral("undo Agent C"));
+
+    QVERIFY(controller.undoLastAgentAction());
+    QCoreApplication::processEvents();
+    QCOMPARE(agentUndo->index(), initialAgentIndex);
+    QCOMPARE(guiUndo->index(), initialGuiIndex + 1);
+    assertAndRoundTrip(withParams({QStringLiteral("minRadius")}, {11.0}), QStringLiteral("undo Agent A"));
+
+    agentUndo->redo();
+    QCoreApplication::processEvents();
+    QCOMPARE(agentUndo->index(), initialAgentIndex + 1);
+    QCOMPARE(guiUndo->index(), initialGuiIndex + 1);
+    assertAndRoundTrip(withParams({QStringLiteral("param1"), QStringLiteral("minRadius")}, {60.0, 11.0}),
+                       QStringLiteral("redo Agent A"));
+
+    guiUndo->undo();
+    QCoreApplication::processEvents();
+    QCOMPARE(agentUndo->index(), initialAgentIndex + 1);
+    QCOMPARE(guiUndo->index(), initialGuiIndex);
+    assertAndRoundTrip(withParams({QStringLiteral("param1")}, {60.0}), QStringLiteral("undo GUI B"));
+
+    guiUndo->redo();
+    QCoreApplication::processEvents();
+    QCOMPARE(agentUndo->index(), initialAgentIndex + 1);
+    QCOMPARE(guiUndo->index(), initialGuiIndex + 1);
+    assertAndRoundTrip(withParams({QStringLiteral("param1"), QStringLiteral("minRadius")}, {60.0, 11.0}),
+                       QStringLiteral("redo GUI B"));
+}
+
+void TestMainWindow::testG4ResetDefaultsIsOneAtomicUndoCommand() {
+    MainWindow window;
+    window.show();
+    QVERIFY(QMetaObject::invokeMethod(&window, "onHome", Qt::DirectConnection));
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance instance;
+    instance.id = QStringLiteral("reset_defaults_atomic");
+    instance.moduleId = QStringLiteral("GrabImage");
+    instance.params = QJsonObject{
+        {QStringLiteral("exposureTime"), 1234.0}, {QStringLiteral("gain"), 2.0}, {QStringLiteral("folderLoop"), false}};
+    project->addModule(instance);
+    QCoreApplication::processEvents();
+
+    ModuleInspectorPanel* inspector = window.findChild<ModuleInspectorPanel*>();
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>();
+    QUndoStack* guiUndo = window.findChild<QUndoStack*>();
+    QVERIFY(inspector);
+    QVERIFY(canvas);
+    QVERIFY(guiUndo);
+    QVERIFY(QMetaObject::invokeMethod(canvas, "nodeSelected", Qt::DirectConnection, Q_ARG(QString, instance.id)));
+    QTRY_COMPARE(inspector->currentInstanceId(), instance.id);
+
+    const int undoCount = guiUndo->count();
+    QVERIFY(QMetaObject::invokeMethod(inspector, "resetDefaultsRequested", Qt::DirectConnection,
+                                      Q_ARG(QString, instance.id)));
+    QCOMPARE(guiUndo->count(), undoCount + 1);
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("exposureTime")), QJsonValue(10000.0));
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("gain")), QJsonValue(1.0));
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("folderLoop")), QJsonValue(true));
+
+    AgentActor* actor = AgentController::instance().actor();
+    QVERIFY(actor);
+    QCOMPARE(actor->executeTool("set_param", QJsonObject{{"instanceId", instance.id}, {"key", "gain"}, {"value", 3.0}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("param_set"));
+    const QJsonObject beforeStaleUndo = project->moduleById(instance.id)->params;
+    guiUndo->undo();
+    QCOMPARE(project->moduleById(instance.id)->params, beforeStaleUndo);
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("exposureTime")), QJsonValue(10000.0));
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("gain")), QJsonValue(3.0));
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("folderLoop")), QJsonValue(true));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("恢复默认参数已过期")));
+}
+
+void TestMainWindow::testG4LegacyEmptyNameStaysVisibleAfterRenameUndoAndReopen() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("legacy-empty-name.dproj"));
+    const QString instanceId = QStringLiteral("legacy_id");
+    {
+        Project source;
+        ModuleInstance instance;
+        instance.id = instanceId;
+        instance.moduleId = QStringLiteral("GrabImage");
+        source.addModule(instance);
+        QVERIFY(source.save(path));
+    }
+
+    MainWindow window;
+    Project* project = ProjectManager::instance().openProject(path);
+    QVERIFY(project != nullptr);
+    QTreeWidget* tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>(QStringLiteral("FlowCanvas"));
+    QVERIFY(tree != nullptr);
+    QVERIFY(canvas != nullptr);
+    QVERIFY(canvas->nodeItem(instanceId) != nullptr);
+    const QString fallback = tree->topLevelItem(0)->text(0);
+    QVERIFY(!fallback.isEmpty());
+    QCOMPARE(canvas->nodeItem(instanceId)->name(), fallback);
+
+    AgentActor actor;
+    QCOMPARE(actor.executeTool("rename_module", QJsonObject{{"instanceId", instanceId}, {"name", "Named"}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("renamed"));
+    QCOMPARE(canvas->nodeItem(instanceId)->name(), QStringLiteral("Named"));
+    actor.undoStack()->undo();
+    QCOMPARE(project->moduleById(instanceId)->name, QString());
+    QCOMPARE(tree->topLevelItem(0)->text(0), fallback);
+    QCOMPARE(canvas->nodeItem(instanceId)->name(), fallback);
+    QVERIFY(project->save(path));
+    ProjectManager::instance().closeProject();
+    QVERIFY(ProjectManager::instance().openProject(path) != nullptr);
+    QCoreApplication::processEvents();
+    QCOMPARE(tree->topLevelItem(0)->text(0), fallback);
+    QVERIFY(canvas->nodeItem(instanceId) != nullptr);
+    QCOMPARE(canvas->nodeItem(instanceId)->name(), fallback);
+}
+
+void TestMainWindow::testG4AgentEnabledUpdatesInspectorAndEngine() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance instance;
+    instance.id = QStringLiteral("enabled_id");
+    instance.moduleId = QStringLiteral("FindCircle");
+    instance.name = QStringLiteral("Circle");
+    project->addModule(instance);
+    QCoreApplication::processEvents();
+
+    QTreeWidget* tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(tree != nullptr);
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      tree->visualItemRect(tree->topLevelItem(0)).center());
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(inspector != nullptr);
+    QTRY_COMPARE(inspector->currentInstanceId(), instance.id);
+    auto* enabledCheck = inspector->findChild<QCheckBox*>(QStringLiteral("InspectorEnabledCheck"));
+    QVERIFY(enabledCheck != nullptr);
+    QVERIFY(enabledCheck->isChecked());
+    auto* noteEdit = inspector->findChild<QLineEdit*>(QStringLiteral("InspectorNoteEdit"));
+    QVERIFY(noteEdit != nullptr);
+    noteEdit->setText(QStringLiteral("unfinished draft"));
+    noteEdit->setModified(true);
+
+    AgentActor actor;
+    QCOMPARE(actor.executeTool("set_module_enabled", QJsonObject{{"instanceId", instance.id}, {"enabled", false}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("updated"));
+    QVERIFY(!enabledCheck->isChecked());
+    QCOMPARE(noteEdit->text(), QStringLiteral("unfinished draft"));
+    QCOMPARE(project->moduleById(instance.id)->note, QString());
+    QVERIFY(RunEngine::instance().isModuleDisabled(instance.id));
+    actor.undoStack()->undo();
+    QVERIFY(enabledCheck->isChecked());
+    QCOMPARE(noteEdit->text(), QStringLiteral("unfinished draft"));
+    QVERIFY(!RunEngine::instance().isModuleDisabled(instance.id));
+    actor.undoStack()->redo();
+    QVERIFY(!enabledCheck->isChecked());
+    QVERIFY(RunEngine::instance().isModuleDisabled(instance.id));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("enabled-gui.dproj"));
+    QVERIFY(project->save(path));
+    ProjectManager::instance().closeProject();
+    QVERIFY(ProjectManager::instance().openProject(path) != nullptr);
+    QCoreApplication::processEvents();
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      tree->visualItemRect(tree->topLevelItem(0)).center());
+    QTRY_COMPARE(inspector->currentInstanceId(), instance.id);
+    QVERIFY(!enabledCheck->isChecked());
+    QVERIFY(!ProjectManager::instance().currentProject()->moduleById(instance.id)->enabled);
+}
+
+void TestMainWindow::testG4GuiInspectorEditsRejectedWhileEngineBusy() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance instance;
+    instance.id = QStringLiteral("busy_inspector_node");
+    instance.moduleId = QStringLiteral("FindCircle");
+    instance.name = QStringLiteral("busy inspector");
+    instance.params = QJsonObject{{QStringLiteral("minRadius"), 10.0},
+                                  {QStringLiteral("maxRadius"), 500.0},
+                                  {QStringLiteral("param1"), 50.0},
+                                  {QStringLiteral("param2"), 30.0}};
+    project->addModule(instance);
+    QCoreApplication::processEvents();
+
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>();
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    auto* undoStack = window.findChild<QUndoStack*>();
+    QVERIFY(canvas);
+    QVERIFY(inspector);
+    QVERIFY(undoStack);
+    QVERIFY(QMetaObject::invokeMethod(canvas, "nodeSelected", Qt::DirectConnection, Q_ARG(QString, instance.id)));
+    QTRY_COMPARE(inspector->currentInstanceId(), instance.id);
+
+    const QJsonObject modelBefore = project->toJson();
+    const bool modifiedBefore = project->isModified();
+    const int undoCountBefore = undoStack->count();
+    const int undoIndexBefore = undoStack->index();
+    auto* minRadius = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_minRadius"));
+    auto* enabled = inspector->findChild<QCheckBox*>(QStringLiteral("InspectorEnabledCheck"));
+    auto* breakpoint = inspector->findChild<QToolButton*>(QStringLiteral("InspectorBreakpointBtn"));
+    auto* note = inspector->findChild<QLineEdit*>(QStringLiteral("InspectorNoteEdit"));
+    auto* reset = inspector->findChild<QAction*>(QStringLiteral("InspectorResetAction"));
+    QVERIFY(minRadius);
+    QVERIFY(enabled);
+    QVERIFY(breakpoint);
+    QVERIFY(note);
+    QVERIFY(reset);
+
+    QSemaphore entered;
+    QSemaphore release;
+    MainWindowOutputProbeModule probe(QStringLiteral("busy_inspector_probe"));
+    probe.duringProcess = [&]() {
+        entered.release();
+        release.acquire();
+    };
+    QVERIFY(probe.initialize());
+    RunEngine& engine = RunEngine::instance();
+    engine.addModule(&probe);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
+    struct ReleaseOnExit {
+        QSemaphore& semaphore;
+        ~ReleaseOnExit() {
+            semaphore.release();
+        }
+    } releaseOnExit{release};
+    QString runId;
+    QVERIFY(engine.runOnceAsync(&runId));
+    QVERIFY(entered.tryAcquire(1, 2000));
+    QVERIFY(engine.isBusy());
+
+    note->setText(QStringLiteral("unfinished busy note draft"));
+    note->setModified(true);
+    minRadius->setValue(11.0);
+    QVERIFY(QMetaObject::invokeMethod(minRadius, "editingFinished", Qt::DirectConnection));
+    enabled->click();
+    breakpoint->click();
+    QCOMPARE(note->text(), QStringLiteral("unfinished busy note draft"));
+    note->selectAll();
+    QTest::keyClicks(note, QStringLiteral("rejected note"));
+    QTest::keyClick(note, Qt::Key_Return);
+    reset->trigger();
+
+    QCOMPARE(project->toJson(), modelBefore);
+    QCOMPARE(project->isModified(), modifiedBefore);
+    QCOMPARE(undoStack->count(), undoCountBefore);
+    QCOMPARE(undoStack->index(), undoIndexBefore);
+    QVERIFY(project->moduleById(instance.id)->enabled);
+    QVERIFY(!project->moduleById(instance.id)->breakpoint);
+    QVERIFY(project->moduleById(instance.id)->note.isEmpty());
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("minRadius")).toDouble(), 10.0);
+    QVERIFY(enabled->isChecked());
+    QVERIFY(!breakpoint->isChecked());
+    QCOMPARE(note->text(), QStringLiteral("rejected note"));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("运行或维护期间不能")));
+
+    engine.pause();
+    QCOMPARE(engine.state(), RunState::Paused);
+    QVERIFY(engine.isBusy());
+    enabled->click();
+    breakpoint->click();
+    QCOMPARE(project->toJson(), modelBefore);
+    QVERIFY(enabled->isChecked());
+    QVERIFY(!breakpoint->isChecked());
+    QCOMPARE(note->text(), QStringLiteral("rejected note"));
+    note->setText(QStringLiteral("paused rejected note"));
+    note->setModified(true);
+    QVERIFY(QMetaObject::invokeMethod(note, "editingFinished", Qt::DirectConnection));
+    QCOMPARE(project->toJson(), modelBefore);
+    QCOMPARE(note->text(), QStringLiteral("paused rejected note"));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("运行或维护期间不能")));
+
+    release.release();
+    QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 3000);
+    engine.clearModules();
+    probe.shutdown();
+
+    enabled->click();
+    QVERIFY(!project->moduleById(instance.id)->enabled);
+    QVERIFY(engine.isModuleDisabled(instance.id));
+    breakpoint->click();
+    QVERIFY(project->moduleById(instance.id)->breakpoint);
+    QVERIFY(engine.hasBreakpoint(instance.id));
+    note->selectAll();
+    QTest::keyClicks(note, QStringLiteral("committed note"));
+    QTest::keyClick(note, Qt::Key_Return);
+    QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("committed note"));
+
+    minRadius = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_minRadius"));
+    QVERIFY(minRadius);
+    minRadius->setValue(11.0);
+    QVERIFY(QMetaObject::invokeMethod(minRadius, "editingFinished", Qt::DirectConnection));
+    QCOMPARE(project->moduleById(instance.id)->params.value(QStringLiteral("minRadius")).toDouble(), 11.0);
+}
+
+void TestMainWindow::testG4InspectorEditsRejectedDuringMaintenanceLease() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance instance;
+    instance.id = QStringLiteral("maintenance_inspector_node");
+    instance.moduleId = QStringLiteral("FindCircle");
+    instance.name = QStringLiteral("maintenance inspector");
+    instance.params = QJsonObject{{QStringLiteral("minRadius"), 10.0},
+                                  {QStringLiteral("maxRadius"), 500.0},
+                                  {QStringLiteral("param1"), 50.0},
+                                  {QStringLiteral("param2"), 30.0}};
+    project->addModule(instance);
+    QCoreApplication::processEvents();
+
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>();
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    auto* undoStack = window.findChild<QUndoStack*>();
+    QVERIFY(canvas);
+    QVERIFY(inspector);
+    QVERIFY(undoStack);
+    QVERIFY(QMetaObject::invokeMethod(canvas, "nodeSelected", Qt::DirectConnection, Q_ARG(QString, instance.id)));
+    auto* enabled = inspector->findChild<QCheckBox*>(QStringLiteral("InspectorEnabledCheck"));
+    auto* breakpoint = inspector->findChild<QToolButton*>(QStringLiteral("InspectorBreakpointBtn"));
+    auto* note = inspector->findChild<QLineEdit*>(QStringLiteral("InspectorNoteEdit"));
+    QVERIFY(enabled);
+    QVERIFY(breakpoint);
+    QVERIFY(note);
+    note->setText(QStringLiteral("maintenance draft"));
+    note->setModified(true);
+
+    const QJsonObject projectBefore = project->toJson();
+    const int undoCountBefore = undoStack->count();
+    RunEngine& engine = RunEngine::instance();
+    bool observedMaintenanceLease = false;
+    bool noteCommitSignalTriggered = false;
+    const bool loaded = engine.loadProject(project, [&](const ModuleInstance& loading) {
+        observedMaintenanceLease = engine.isBusy() && !engine.isExecuting();
+        enabled->click();
+        breakpoint->click();
+        note->selectAll();
+        QTest::keyClicks(note, QStringLiteral("rejected maintenance note"));
+        noteCommitSignalTriggered = QMetaObject::invokeMethod(note, "editingFinished", Qt::DirectConnection);
+        return new MainWindowOutputProbeModule(loading.id);
+    });
+    QVERIFY(loaded);
+    QVERIFY(observedMaintenanceLease);
+    QVERIFY(noteCommitSignalTriggered);
+    QVERIFY(!engine.isBusy());
+    QCOMPARE(project->toJson(), projectBefore);
+    QCOMPARE(undoStack->count(), undoCountBefore);
+    QVERIFY(enabled->isChecked());
+    QVERIFY(!breakpoint->isChecked());
+    QCOMPARE(note->text(), QStringLiteral("rejected maintenance note"));
+    QVERIFY(project->moduleById(instance.id)->enabled);
+    QVERIFY(!project->moduleById(instance.id)->breakpoint);
+    QVERIFY(project->moduleById(instance.id)->note.isEmpty());
+
+    enabled->click();
+    QVERIFY(!project->moduleById(instance.id)->enabled);
+    QVERIFY(engine.isModuleDisabled(instance.id));
+    breakpoint->click();
+    QVERIFY(project->moduleById(instance.id)->breakpoint);
+    QVERIFY(engine.hasBreakpoint(instance.id));
+    engine.clearModules();
+}
+
+void TestMainWindow::testAgentDataSourceRemovalRefreshesGuiAndRejectsBusyMutation() {
+    ToolSchema::instance().registerDefaultTools();
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString sourcePath = directory.filePath(QStringLiteral("shown-source.bin"));
+    QFile file(sourcePath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    const QByteArray bytes("GUI reference only");
+    QCOMPARE(file.write(bytes), bytes.size());
+    file.close();
+
+    DataSource source;
+    source.id = QStringLiteral("gui-agent-source");
+    source.name = QStringLiteral("GUI agent source");
+    source.type = QStringLiteral("image");
+    source.filePath = sourcePath;
+    project->addDataSource(source);
+    auto* panel = window.findChild<DataSourcePanel*>(QStringLiteral("DataSourcePanel"));
+    QVERIFY(panel);
+    auto* tree = panel->findChild<QTreeWidget*>(QStringLiteral("DataSourceTree"));
+    QVERIFY(tree);
+    QCOMPARE(tree->topLevelItemCount(), 1);
+
+    QSemaphore leaseEntered;
+    QSemaphore releaseLease;
+    std::thread maintenance([&]() {
+        RunEngine::instance().withProjectMutationLease([&]() {
+            leaseEntered.release();
+            releaseLease.acquire();
+            return true;
+        });
+    });
+    struct MaintenanceJoinGuard {
+        QSemaphore& release;
+        std::thread& thread;
+        ~MaintenanceJoinGuard() {
+            release.release();
+            if (thread.joinable())
+                thread.join();
+        }
+    } maintenanceGuard{releaseLease, maintenance};
+    QVERIFY(leaseEntered.tryAcquire(1, 3000));
+    AgentActor actor;
+    const QJsonObject busy = actor.executeTool(QStringLiteral("remove_data_source_reference"),
+                                               QJsonObject{{QStringLiteral("dataSourceId"), source.id}});
+    QCOMPARE(busy.value(QStringLiteral("errorCode")).toString(), QStringLiteral("ENGINE_BUSY"));
+    QCOMPARE(tree->topLevelItemCount(), 1);
+    QCOMPARE(project->dataSources().size(), 1);
+    releaseLease.release();
+    maintenance.join();
+
+    const QJsonObject removed = actor.executeTool(QStringLiteral("remove_data_source_reference"),
+                                                  QJsonObject{{QStringLiteral("dataSourceId"), source.id}});
+    QCOMPARE(removed.value(QStringLiteral("status")).toString(), QStringLiteral("removed"));
+    QCOMPARE(tree->topLevelItemCount(), 0);
+    QVERIFY(QFileInfo::exists(sourcePath));
+    QFile preserved(sourcePath);
+    QVERIFY(preserved.open(QIODevice::ReadOnly));
+    QCOMPARE(preserved.readAll(), bytes);
+}
+
+void TestMainWindow::testAgentDataSourceDisplayAndVisibilityTools() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString imagePath = directory.filePath(QStringLiteral("agent-display.png"));
+    QImage image(24, 18, QImage::Format_RGB32);
+    image.fill(QColor("#2563EB"));
+    QVERIFY(image.save(imagePath));
+    QFile imageFile(imagePath);
+    QVERIFY(imageFile.open(QIODevice::ReadOnly));
+    const QByteArray imageBytes = imageFile.readAll();
+    imageFile.close();
+
+    const QString brokenPath = directory.filePath(QStringLiteral("broken.png"));
+    QFile brokenFile(brokenPath);
+    QVERIFY(brokenFile.open(QIODevice::WriteOnly));
+    const QByteArray brokenBytes("not an image");
+    QCOMPARE(brokenFile.write(brokenBytes), brokenBytes.size());
+    brokenFile.close();
+
+    MainWindow window;
+    window.resize(1100, 720);
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+
+    DataSource source;
+    source.id = QStringLiteral("agent_view_source");
+    source.name = QStringLiteral("Agent view source");
+    source.filePath = imagePath;
+    source.type = QStringLiteral("image");
+    project->addDataSource(source);
+    QCoreApplication::processEvents();
+    const QJsonObject projectBefore = project->toJson();
+
+    AgentActor actor;
+    const QJsonObject initial = actor.executeTool(QStringLiteral("get_data_source_view_state"), {});
+    QCOMPARE(initial.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+    QCOMPARE(initial.value(QStringLiteral("total")).toInt(), 1);
+    QJsonArray states = initial.value(QStringLiteral("dataSources")).toArray();
+    QVERIFY(!states.at(0).toObject().value(QStringLiteral("displayed")).toBool());
+    QVERIFY(states.at(0).toObject().value(QStringLiteral("visible")).toBool());
+    QVERIFY(states.at(0).toObject().contains(QStringLiteral("inDedicatedViewport")));
+    QVERIFY(!states.at(0).toObject().value(QStringLiteral("inDedicatedViewport")).toBool());
+    const QJsonObject unknown =
+        actor.executeTool(QStringLiteral("display_data_source"),
+                          QJsonObject{{QStringLiteral("dataSourceId"), QStringLiteral("missing")}});
+    QCOMPARE(unknown.value(QStringLiteral("errorCode")).toString(), QStringLiteral("DATA_SOURCE_NOT_FOUND"));
+
+    AgentController& controller = AgentController::instance();
+    const AgentController::PermissionLevel previousPermission = controller.permissionLevel();
+    struct RestorePermission {
+        AgentController& controller;
+        AgentController::PermissionLevel level;
+        ~RestorePermission() {
+            controller.setPermissionLevel(level);
+        }
+    } restorePermission{controller, previousPermission};
+    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    const QJsonObject observerDenied = controller.handleToolCall(
+        QStringLiteral("display_data_source"), QJsonObject{{QStringLiteral("dataSourceId"), source.id}});
+    QCOMPARE(observerDenied.value(QStringLiteral("errorCode")).toString(), QStringLiteral("PERMISSION_DENIED"));
+    const QJsonObject observerRead = controller.handleToolCall(QStringLiteral("get_data_source_view_state"), {});
+    QCOMPARE(observerRead.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+    QVERIFY(!observerRead.value(QStringLiteral("dataSources"))
+                 .toArray()
+                 .at(0)
+                 .toObject()
+                 .value(QStringLiteral("displayed"))
+                 .toBool());
+
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+    QSignalSpy actionSpy(&controller, &AgentController::actionLogEntryAdded);
+    const QJsonObject displayPending = controller.handleToolCall(
+        QStringLiteral("display_data_source"), QJsonObject{{QStringLiteral("dataSourceId"), source.id}});
+    QCOMPARE(displayPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QJsonObject displayContext =
+        controller.pendingConfirmationPayload().value(QStringLiteral("context")).toObject();
+    QCOMPARE(displayContext.value(QStringLiteral("sideEffects")).toArray().first().toString(),
+             QStringLiteral("gui_display_data_source:%1").arg(source.id));
+    QVERIFY(confirmPendingToolsAndWait(controller, controller.pendingConfirmationId()));
+    QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    QVERIFY(!actionSpy.isEmpty());
+    QCOMPARE(actionSpy.last().at(0).value<AgentActionLogEntry>().undoable, false);
+
+    const QJsonObject shown = actor.executeTool(QStringLiteral("display_data_source"),
+                                                QJsonObject{{QStringLiteral("dataSourceId"), source.id}});
+    QCOMPARE(shown.value(QStringLiteral("status")).toString(), QStringLiteral("displayed"));
+    QVERIFY(!shown.value(QStringLiteral("viewportId")).toString().isEmpty());
+    QTRY_COMPARE(window.findChildren<ViewportWidget*>().size(), 1);
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport);
+    QCOMPARE(viewport->currentImage().pixelColor(0, 0), QColor("#2563EB"));
+
+    const QJsonObject hidePending = controller.handleToolCall(
+        QStringLiteral("set_data_source_visibility"),
+        QJsonObject{{QStringLiteral("dataSourceId"), source.id}, {QStringLiteral("visible"), false}});
+    QCOMPARE(hidePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QJsonObject hideEffects = controller.pendingConfirmationPayload().value(QStringLiteral("context")).toObject();
+    QCOMPARE(hideEffects.value(QStringLiteral("sideEffects")).toArray().first().toString(),
+             QStringLiteral("gui_set_data_source_visibility:%1:false").arg(source.id));
+    QVERIFY(confirmPendingToolsAndWait(controller, controller.pendingConfirmationId()));
+    const QJsonObject hidden = actor.executeTool(QStringLiteral("get_data_source_view_state"), {});
+    QCOMPARE(hidden.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+    auto* tree = window.findChild<QTreeWidget*>(QStringLiteral("DataSourceTree"));
+    QVERIFY(tree);
+    QCOMPARE(tree->topLevelItem(0)->checkState(0), Qt::Unchecked);
+    QJsonObject state = actor.executeTool(QStringLiteral("get_data_source_view_state"), {});
+    states = state.value(QStringLiteral("dataSources")).toArray();
+    QVERIFY(states.at(0).toObject().value(QStringLiteral("displayed")).toBool());
+    QVERIFY(!states.at(0).toObject().value(QStringLiteral("visible")).toBool());
+
+    const QJsonObject showPending = controller.handleToolCall(
+        QStringLiteral("set_data_source_visibility"),
+        QJsonObject{{QStringLiteral("dataSourceId"), source.id}, {QStringLiteral("visible"), true}});
+    QCOMPARE(showPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    QVERIFY(confirmPendingToolsAndWait(controller, controller.pendingConfirmationId()));
+    QCOMPARE(tree->topLevelItem(0)->checkState(0), Qt::Checked);
+    state = actor.executeTool(QStringLiteral("get_data_source_view_state"), {});
+    QVERIFY(state.value(QStringLiteral("dataSources"))
+                .toArray()
+                .at(0)
+                .toObject()
+                .value(QStringLiteral("visible"))
+                .toBool());
+    QCOMPARE(window.findChildren<ViewportWidget*>().size(), 1);
+    const QJsonObject repeated = actor.executeTool(QStringLiteral("display_data_source"),
+                                                   QJsonObject{{QStringLiteral("dataSourceId"), source.id}});
+    QCOMPARE(repeated.value(QStringLiteral("status")).toString(), QStringLiteral("displayed"));
+    QCOMPARE(window.findChildren<ViewportWidget*>().size(), 1);
+    QCOMPARE(project->toJson(), projectBefore);
+
+    const QString cloudPath = directory.filePath(QStringLiteral("agent-cloud.ply"));
+    QFile cloudFile(cloudPath);
+    QVERIFY(cloudFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    QVERIFY(cloudFile.write("ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\n"
+                            "property float z\nend_header\n0 0 0\n1 0 0\n0 1 0\n") > 0);
+    cloudFile.close();
+    DataSource cloud;
+    cloud.id = QStringLiteral("agent_view_cloud");
+    cloud.name = QStringLiteral("Agent point cloud");
+    cloud.filePath = cloudPath;
+    cloud.type = QStringLiteral("pointcloud");
+    project->addDataSource(cloud);
+    QCoreApplication::processEvents();
+    const QJsonObject cloudVisibility =
+        actor.executeTool(QStringLiteral("set_data_source_visibility"),
+                          QJsonObject{{QStringLiteral("dataSourceId"), cloud.id}, {QStringLiteral("visible"), true}});
+    QCOMPARE(cloudVisibility.value(QStringLiteral("status")).toString(), QStringLiteral("visible"));
+    const QJsonObject cloudDisplay = actor.executeTool(QStringLiteral("display_data_source"),
+                                                       QJsonObject{{QStringLiteral("dataSourceId"), cloud.id}});
+    QCOMPARE(cloudDisplay.value(QStringLiteral("status")).toString(), QStringLiteral("displayed"));
+    state = actor.executeTool(QStringLiteral("get_data_source_view_state"), {});
+    states = state.value(QStringLiteral("dataSources")).toArray();
+    bool cloudIsDisplayed = false;
+    for (const QJsonValue& item : states) {
+        if (item.toObject().value(QStringLiteral("id")).toString() == cloud.id)
+            cloudIsDisplayed = item.toObject().value(QStringLiteral("displayed")).toBool();
+    }
+    QVERIFY(cloudIsDisplayed);
+
+    DataSource broken;
+    broken.id = QStringLiteral("agent_broken_source");
+    broken.name = QStringLiteral("Broken image");
+    broken.filePath = brokenPath;
+    broken.type = QStringLiteral("image");
+    project->addDataSource(broken);
+    QCoreApplication::processEvents();
+    QCOMPARE(tree->topLevelItemCount(), 3);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onDataSourceVisibilityChanged", Qt::DirectConnection,
+                                      Q_ARG(QString, broken.id), Q_ARG(bool, false)));
+    const QJsonObject brokenVisible =
+        actor.executeTool(QStringLiteral("set_data_source_visibility"),
+                          QJsonObject{{QStringLiteral("dataSourceId"), broken.id}, {QStringLiteral("visible"), true}});
+    QCOMPARE(brokenVisible.value(QStringLiteral("errorCode")).toString(), QStringLiteral("DATA_SOURCE_LOAD_FAILED"));
+    QCOMPARE(tree->topLevelItem(2)->checkState(0), Qt::Unchecked);
+    QCOMPARE(window.findChildren<ViewportWidget*>().size(), 1);
+    QCOMPARE(viewport->currentImage().pixelColor(0, 0), QColor("#2563EB"));
+    QFile brokenPreserved(brokenPath);
+    QVERIFY(brokenPreserved.open(QIODevice::ReadOnly));
+    QCOMPARE(brokenPreserved.readAll(), brokenBytes);
+
+    const QJsonObject hideBeforeDuplicate =
+        actor.executeTool(QStringLiteral("set_data_source_visibility"),
+                          QJsonObject{{QStringLiteral("dataSourceId"), source.id}, {QStringLiteral("visible"), false}});
+    QCOMPARE(hideBeforeDuplicate.value(QStringLiteral("status")).toString(), QStringLiteral("hidden"));
+    const QImage viewportImageBeforeDuplicate = viewport->currentImage();
+    const ViewportWidget::DisplayMode viewportModeBeforeDuplicate = viewport->displayMode();
+    QCOMPARE(viewportModeBeforeDuplicate, ViewportWidget::DisplayMode::Auto3D);
+    QCOMPARE(tree->topLevelItem(0)->checkState(0), Qt::Unchecked);
+
+    DataSource duplicate = source;
+    duplicate.name = QStringLiteral("Duplicate ID");
+    duplicate.filePath = directory.filePath(QStringLiteral("second.png"));
+    QImage secondImage(24, 18, QImage::Format_RGB32);
+    secondImage.fill(QColor("#16A34A"));
+    QVERIFY(secondImage.save(duplicate.filePath));
+    project->addDataSource(duplicate);
+    const QJsonObject projectWithDuplicate = project->toJson();
+    const QJsonObject ambiguousState = actor.executeTool(QStringLiteral("get_data_source_view_state"), {});
+    QCOMPARE(ambiguousState.value(QStringLiteral("errorCode")).toString(), QStringLiteral("DATA_SOURCE_ID_AMBIGUOUS"));
+    const QJsonObject ambiguousDisplay = actor.executeTool(QStringLiteral("display_data_source"),
+                                                           QJsonObject{{QStringLiteral("dataSourceId"), source.id}});
+    QCOMPARE(ambiguousDisplay.value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("DATA_SOURCE_ID_AMBIGUOUS"));
+    const QJsonObject ambiguousVisibility =
+        actor.executeTool(QStringLiteral("set_data_source_visibility"),
+                          QJsonObject{{QStringLiteral("dataSourceId"), source.id}, {QStringLiteral("visible"), false}});
+    QCOMPARE(ambiguousVisibility.value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("DATA_SOURCE_ID_AMBIGUOUS"));
+    QCOMPARE(project->toJson(), projectWithDuplicate);
+    QCOMPARE(viewport->currentImage(), viewportImageBeforeDuplicate);
+    QCOMPARE(viewport->displayMode(), viewportModeBeforeDuplicate);
+    QCOMPARE(window.findChildren<ViewportWidget*>().size(), 1);
+    QCOMPARE(tree->topLevelItem(0)->checkState(0), Qt::Unchecked);
+
+    QFile persistedImage(imagePath);
+    QVERIFY(persistedImage.open(QIODevice::ReadOnly));
+    QCOMPARE(persistedImage.readAll(), imageBytes);
+
+    ProjectManager::instance().closeProject();
+    const QJsonObject noProject = actor.executeTool(QStringLiteral("display_data_source"),
+                                                    QJsonObject{{QStringLiteral("dataSourceId"), source.id}});
+    QCOMPARE(noProject.value(QStringLiteral("errorCode")).toString(), QStringLiteral("NO_PROJECT"));
+
+    const QJsonObject ownerExpiryPending = controller.handleToolCall(
+        QStringLiteral("set_data_source_visibility"),
+        QJsonObject{{QStringLiteral("dataSourceId"), source.id}, {QStringLiteral("visible"), false}});
+    QCOMPARE(ownerExpiryPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    controller.unregisterDataSourceViewHandler(&window);
+    QVERIFY(confirmPendingToolsAndWait(controller, controller.pendingConfirmationId()));
+    QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    QCOMPARE(actionSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
+}
+
+void TestMainWindow::testImportImageMenuActionAddsAndDisplaysDataSource() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString imagePath = directory.filePath(QStringLiteral("manual-import.png"));
+    QImage image(28, 20, QImage::Format_RGB32);
+    image.fill(QColor(QStringLiteral("#16A34A")));
+    QVERIFY(image.save(imagePath));
+
+    MainWindow window;
+    window.resize(1000, 680);
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    bool chooserShown = false;
+    QTimer::singleShot(0, &window, [&]() {
+        auto* chooser = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+        if (!chooser)
+            return;
+        chooserShown = true;
+        chooser->selectFile(imagePath);
+        QVERIFY(QMetaObject::invokeMethod(chooser, "accept", Qt::DirectConnection));
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onImportImage", Qt::DirectConnection));
+    QVERIFY(chooserShown);
+
+    QCOMPARE(project->dataSources().size(), 1);
+    const DataSource source = project->dataSources().first();
+    QCOMPARE(source.type, QStringLiteral("image"));
+    QCOMPARE(source.filePath, QFileInfo(imagePath).absoluteFilePath());
+
+    auto* panel = window.findChild<DataSourcePanel*>(QStringLiteral("DataSourcePanel"));
+    auto* tree = panel ? panel->findChild<QTreeWidget*>(QStringLiteral("DataSourceTree")) : nullptr;
+    QVERIFY(panel != nullptr);
+    QVERIFY(tree != nullptr);
+    QCOMPARE(tree->topLevelItemCount(), 1);
+
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    QVERIFY(!displayManager->allViewports().isEmpty());
+    ViewportWidget* primaryViewport = displayManager->allViewports().first();
+    QVERIFY(primaryViewport != nullptr);
+    QCOMPARE(primaryViewport->currentImage().size(), image.size());
+    QCOMPARE(primaryViewport->currentImage().pixelColor(0, 0), QColor(QStringLiteral("#16A34A")));
+}
+
+void TestMainWindow::testAgentDataSourceViewHandlerRequiresLiveOwnerAndGuiThread() {
+    AgentController& controller = AgentController::instance();
+    ToolSchema::instance().registerDefaultTools();
+    QObject* owner = new QObject;
+    std::atomic<int> handlerCalls{0};
+    controller.registerDataSourceViewHandler(owner, [&handlerCalls](const QString&, const QJsonObject&) {
+        ++handlerCalls;
+        return QJsonObject{{QStringLiteral("status"), QStringLiteral("handled")}};
+    });
+
+    QJsonObject affinityResult;
+    std::thread worker([&]() {
+        affinityResult = controller.executeDataSourceViewAction(QStringLiteral("get_data_source_view_state"), {});
+    });
+    worker.join();
+    QCOMPARE(affinityResult.value(QStringLiteral("errorCode")).toString(), QStringLiteral("THREAD_AFFINITY"));
+    QCOMPARE(handlerCalls.load(), 0);
+
+    const QJsonObject handled =
+        controller.executeDataSourceViewAction(QStringLiteral("get_data_source_view_state"), {});
+    QCOMPARE(handled.value(QStringLiteral("status")).toString(), QStringLiteral("handled"));
+    QCOMPARE(handlerCalls.load(), 1);
+
+    delete owner;
+    const QJsonObject expired =
+        controller.executeDataSourceViewAction(QStringLiteral("get_data_source_view_state"), {});
+    QCOMPARE(expired.value(QStringLiteral("errorCode")).toString(), QStringLiteral("REQUIRES_GUI"));
+    QCOMPARE(handlerCalls.load(), 1);
+    const QJsonObject noGui = controller.executeDataSourceViewAction(QStringLiteral("open_system_settings"), {});
+    QCOMPARE(noGui.value(QStringLiteral("errorCode")).toString(), QStringLiteral("REQUIRES_GUI"));
+    const QJsonObject noSamGui =
+        controller.executeDataSourceViewAction(QStringLiteral("open_sam_environment_setup"), {});
+    QCOMPARE(noSamGui.value(QStringLiteral("errorCode")).toString(), QStringLiteral("REQUIRES_GUI"));
+    const QJsonObject noLoginGui = controller.executeDataSourceViewAction(QStringLiteral("open_user_login_dialog"), {});
+    QCOMPARE(noLoginGui.value(QStringLiteral("errorCode")).toString(), QStringLiteral("REQUIRES_GUI"));
+    QCOMPARE(handlerCalls.load(), 1);
+
+    QVERIFY(controller.actor());
+    const QJsonObject rejected = controller.actor()->executeTool(
+        QStringLiteral("begin_quick_measurement"),
+        QJsonObject{{QStringLiteral("viewportId"), QStringLiteral("no-gui-viewport")},
+                    {QStringLiteral("dimension"), QStringLiteral("2d")},
+                    {QStringLiteral("measurementType"), QStringLiteral("distance_2_points")}});
+    QCOMPARE(rejected.value(QStringLiteral("errorCode")).toString(), QStringLiteral("REQUIRES_GUI"));
+    QVERIFY(rejected.contains(QStringLiteral("retryable")));
+    QVERIFY(rejected.value(QStringLiteral("retryable")).isBool());
+    QCOMPARE(rejected.value(QStringLiteral("retryable")).toBool(), false);
+    QVERIFY(!rejected.contains(QStringLiteral("requestId")));
+    QVERIFY(!rejected.contains(QStringLiteral("status")));
+    QVERIFY(!rejected.contains(QStringLiteral("steps")));
+    QVERIFY(!rejected.contains(QStringLiteral("completedSteps")));
+    QVERIFY(!rejected.contains(QStringLiteral("remainingSteps")));
+    QVERIFY(!rejected.contains(QStringLiteral("nextStep")));
+    QVERIFY(!rejected.contains(QStringLiteral("pickedCoordinates")));
+    QCOMPARE(handlerCalls.load(), 1);
+}
+
+void TestMainWindow::testOpenSamEnvironmentSetupRequiresGui() {
+    AgentController& controller = AgentController::instance();
+    const QJsonObject result = controller.executeDataSourceViewAction(QStringLiteral("open_sam_environment_setup"), {});
+    QCOMPARE(result.value(QStringLiteral("errorCode")).toString(), QStringLiteral("REQUIRES_GUI"));
+}
+
+void TestMainWindow::testOpenSamEnvironmentSetupOpensAndReusesWithoutStartingBackend() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    ConfigManager& config = ConfigManager::instance();
+    const bool configInitializedBefore = config.isInitialized();
+    const QString configPath = config.configFilePath();
+    const bool configExistedBefore = QFileInfo::exists(configPath);
+    QByteArray configBytesBefore;
+    if (configExistedBefore) {
+        QFile configFile(configPath);
+        QVERIFY(configFile.open(QIODevice::ReadOnly));
+        configBytesBefore = configFile.readAll();
+    }
+
+    const QJsonObject first = controller.handleToolCall(QStringLiteral("open_sam_environment_setup"), {});
+    QCOMPARE(first.value(QStringLiteral("dialogAction")).toString(), QStringLiteral("opened"));
+    QCOMPARE(first.value(QStringLiteral("imageAvailable")).toBool(), false);
+    QVERIFY(first.value(QStringLiteral("dialogOpened")).toBool());
+    QDialog* dialog = window.findChild<QDialog*>(QStringLiteral("SamAnnotatorDialog"));
+    QVERIFY(dialog);
+    auto* samDialog = qobject_cast<SamAnnotatorDialog*>(dialog);
+    QVERIFY(samDialog);
+    QCOMPARE(samDialog->backendImagePathForTest(), QString());
+    auto* client = samDialog->findChild<SamBackendClient*>(QStringLiteral("SamBackendClient"));
+    QVERIFY(client);
+    QCOMPARE(client->state(), SamBackendClient::State::NotStarted);
+    QCOMPARE(config.isInitialized(), configInitializedBefore);
+    QCOMPARE(QFileInfo::exists(configPath), configExistedBefore);
+    if (configExistedBefore) {
+        QFile configFile(configPath);
+        QVERIFY(configFile.open(QIODevice::ReadOnly));
+        QCOMPARE(configFile.readAll(), configBytesBefore);
+    }
+
+    const QJsonObject second = controller.handleToolCall(QStringLiteral("open_sam_environment_setup"), {});
+    QCOMPARE(second.value(QStringLiteral("dialogAction")).toString(), QStringLiteral("reused"));
+    QCOMPARE(window.findChildren<QDialog*>(QStringLiteral("SamAnnotatorDialog")).size(), 1);
+    QCOMPARE(client->state(), SamBackendClient::State::NotStarted);
+    QVERIFY(!second.contains(QStringLiteral("pythonPath")));
+    QVERIFY(!second.contains(QStringLiteral("modelPath")));
+    QCOMPARE(config.isInitialized(), configInitializedBefore);
+    QCOMPARE(QFileInfo::exists(configPath), configExistedBefore);
+    if (configExistedBefore) {
+        QFile configFile(configPath);
+        QVERIFY(configFile.open(QIODevice::ReadOnly));
+        QCOMPARE(configFile.readAll(), configBytesBefore);
+    }
+    samDialog->close();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+}
+
+void TestMainWindow::testOpenSamEnvironmentSetupReportsMissingEnvironmentWithScreenshots() {
+    struct EnvironmentRestore {
+        QByteArray python = qgetenv("SAM_SERVER_PYTHON");
+        QByteArray model = qgetenv("DEEPLUX_SAM_MODEL");
+        bool hadPython = qEnvironmentVariableIsSet("SAM_SERVER_PYTHON");
+        bool hadModel = qEnvironmentVariableIsSet("DEEPLUX_SAM_MODEL");
+        ~EnvironmentRestore() {
+            hadPython ? qputenv("SAM_SERVER_PYTHON", python) : qunsetenv("SAM_SERVER_PYTHON");
+            hadModel ? qputenv("DEEPLUX_SAM_MODEL", model) : qunsetenv("DEEPLUX_SAM_MODEL");
+        }
+    } environmentRestore;
+    qunsetenv("SAM_SERVER_PYTHON");
+    qunsetenv("DEEPLUX_SAM_MODEL");
+
+    QTemporaryDir appData;
+    QVERIFY(appData.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appData.path().toLocal8Bit());
+
+    QTemporaryDir fallbackCaptureDir;
+    QVERIFY(fallbackCaptureDir.isValid());
+    const QString captureDir = qEnvironmentVariable("DEEPLUX_AGENT_CAPTURE_DIR").isEmpty()
+                                   ? fallbackCaptureDir.path()
+                                   : qEnvironmentVariable("DEEPLUX_AGENT_CAPTURE_DIR");
+    QVERIFY(QDir().mkpath(captureDir));
+
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    const QString beforePath = QDir(captureDir).filePath(QStringLiteral("mainwindow-before-sam-setup.png"));
+    QVERIFY(window.grab().save(beforePath));
+    QVERIFY(QFileInfo(beforePath).size() > 0);
+
+    const QJsonObject result = controller.handleToolCall(QStringLiteral("open_sam_environment_setup"), {});
+    QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+    QCOMPARE(result.value(QStringLiteral("dialogAction")).toString(), QStringLiteral("opened"));
+    QVERIFY(result.value(QStringLiteral("dialogOpened")).toBool());
+    QCOMPARE(result.value(QStringLiteral("environmentSource")).toString(), QStringLiteral("missing"));
+
+    auto* dialog = window.findChild<SamAnnotatorDialog*>(QStringLiteral("SamAnnotatorDialog"));
+    QVERIFY(dialog);
+    QVERIFY(dialog->isVisible());
+    auto* client = dialog->findChild<SamBackendClient*>(QStringLiteral("SamBackendClient"));
+    QVERIFY(client);
+    client->setModelPath(QString());
+    QCOMPARE(client->state(), SamBackendClient::State::NotStarted);
+    QVERIFY(!client->healthCheckInFlight());
+    const QJsonObject status = controller.handleToolCall(QStringLiteral("open_sam_environment_setup"), {});
+    QCOMPARE(status.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+    QCOMPARE(status.value(QStringLiteral("dialogAction")).toString(), QStringLiteral("reused"));
+    QCOMPARE(status.value(QStringLiteral("environmentSource")).toString(), QStringLiteral("missing"));
+    QCOMPARE(status.value(QStringLiteral("environmentConfigured")).toBool(), false);
+    QCOMPARE(status.value(QStringLiteral("environmentVerified")).toBool(), false);
+    QCOMPARE(status.value(QStringLiteral("modelPathConfigured")).toBool(), false);
+    QCOMPARE(status.value(QStringLiteral("modelFileAvailable")).toBool(), false);
+    QCOMPARE(status.value(QStringLiteral("modelLoaded")).toBool(), false);
+    QCOMPARE(status.value(QStringLiteral("serverState")).toString(), QStringLiteral("not_started"));
+    QCOMPARE(status.value(QStringLiteral("healthCheckInFlight")).toBool(), false);
+    QCOMPARE(status.value(QStringLiteral("nextAction")).toString(), QStringLiteral("initialize_environment"));
+    QCOMPARE(status.value(QStringLiteral("userActionRequired")).toBool(), true);
+    QVERIFY(!status.contains(QStringLiteral("pythonPath")));
+    QVERIFY(!status.contains(QStringLiteral("modelPath")));
+    QCOMPARE(client->state(), SamBackendClient::State::NotStarted);
+    QVERIFY(!client->healthCheckInFlight());
+    QVERIFY(!client->isEnvironmentInitializationRunning());
+    auto* handoff = dialog->findChild<QLabel*>(QStringLiteral("SamEnvironmentHandoffLabel"));
+    auto* initialize = dialog->findChild<QPushButton*>(QStringLiteral("SamInitializeEnvironmentButton"));
+    auto* restart = dialog->findChild<QPushButton*>(QStringLiteral("SamRestartServerButton"));
+    QVERIFY(handoff && handoff->isVisible());
+    QVERIFY(handoff->text().contains(QStringLiteral("初始化环境")));
+    QVERIFY(initialize && initialize->isVisible() && initialize->isEnabled());
+    QVERIFY(restart && restart->isVisible() && !restart->isEnabled());
+    QCoreApplication::processEvents();
+    const QString afterPath = QDir(captureDir).filePath(QStringLiteral("sam-environment-setup-after.png"));
+    QVERIFY(dialog->grab().save(afterPath));
+    QVERIFY(QFileInfo(afterPath).size() > 0);
+
+    dialog->close();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+}
+
+void TestMainWindow::testOpenSamEnvironmentSetupBindsImageViewportOnceWithoutPreparingBackend() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    auto* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager);
+    const QVector<ViewportWidget*> initialViewports = displayManager->allViewports();
+    QVERIFY(!initialViewports.isEmpty());
+    ViewportWidget* firstViewport = initialViewports.first();
+    QImage firstImage(64, 48, QImage::Format_RGB32);
+    firstImage.fill(Qt::red);
+    firstViewport->displayImage(firstImage);
+
+    const QJsonObject first = controller.handleToolCall(QStringLiteral("open_sam_environment_setup"), {});
+    QCOMPARE(first.value(QStringLiteral("dialogAction")).toString(), QStringLiteral("opened"));
+    QVERIFY(first.value(QStringLiteral("imageAvailable")).toBool());
+    auto* samDialog = window.findChild<SamAnnotatorDialog*>(QStringLiteral("SamAnnotatorDialog"));
+    QVERIFY(samDialog);
+    QCOMPARE(samDialog->imageSnapshot(), firstImage);
+    QCOMPARE(samDialog->backendImagePathForTest(), QString());
+    auto* client = samDialog->findChild<SamBackendClient*>(QStringLiteral("SamBackendClient"));
+    QVERIFY(client);
+    QCOMPARE(client->state(), SamBackendClient::State::NotStarted);
+
+    const QString secondId = displayManager->createViewport(QStringLiteral("Later viewport"));
+    ViewportWidget* secondViewport = displayManager->viewport(secondId);
+    QVERIFY(secondViewport);
+    QImage secondImage(120, 90, QImage::Format_RGB32);
+    secondImage.fill(Qt::blue);
+    secondViewport->displayImage(secondImage);
+    samDialog->hide();
+    window.activateWindow();
+    secondViewport->imageWidget()->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QCOMPARE(QApplication::focusWidget(), static_cast<QWidget*>(secondViewport->imageWidget()));
+
+    const QJsonObject reused = controller.handleToolCall(QStringLiteral("open_sam_environment_setup"), {});
+    QCOMPARE(reused.value(QStringLiteral("dialogAction")).toString(), QStringLiteral("reused"));
+    QCOMPARE(samDialog->imageSnapshot(), firstImage);
+    QCOMPARE(samDialog->backendImagePathForTest(), QString());
+    QCOMPARE(client->state(), SamBackendClient::State::NotStarted);
+    QCOMPARE(window.findChildren<SamAnnotatorDialog*>(QStringLiteral("SamAnnotatorDialog")).size(), 1);
+    firstViewport->imageWidget()->clearImage();
+    QVERIFY(!samDialog->environmentHandoffStatus().value(QStringLiteral("imageAvailable")).toBool());
+    samDialog->close();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+}
+
+void TestMainWindow::testUserSubmitsLoginThroughDialogUi() {
+    UserManager& users = UserManager::instance();
+    const QString previousUser = users.currentUser().userName;
+    LoginDialog dialog;
+    dialog.show();
+    QCoreApplication::processEvents();
+
+    const QList<QLineEdit*> fields = dialog.findChildren<QLineEdit*>();
+    QCOMPARE(fields.size(), 2);
+    const QString submittedUser = QStringLiteral("slice25-synthetic-user");
+    const QString submittedPassword = QStringLiteral("slice25-synthetic-password");
+    fields.at(0)->setText(submittedUser);
+    fields.at(1)->setText(submittedPassword);
+
+    QPushButton* loginButton = nullptr;
+    for (QPushButton* button : dialog.findChildren<QPushButton*>()) {
+        if (button->text() == QStringLiteral("Login")) {
+            loginButton = button;
+            break;
+        }
+    }
+    QVERIFY(loginButton != nullptr);
+
+    QSignalSpy loginRequestSpy(&dialog, &LoginDialog::loginRequested);
+    loginButton->click();
+
+    QCOMPARE(loginRequestSpy.count(), 1);
+    QCOMPARE(loginRequestSpy.first().at(0).toString(), submittedUser);
+    QCOMPARE(loginRequestSpy.first().at(1).toString(), submittedPassword);
+    QCOMPARE(users.currentUser().userName, submittedUser);
+    QCOMPARE(dialog.result(), static_cast<int>(QDialog::Accepted));
+
+    // UserManager is a local role switch, not password authentication. Restore
+    // the test process's original operator/developer context explicitly.
+    QVERIFY(users.login(previousUser, QString()));
+}
+
+void TestMainWindow::testOpenUserLoginDialogOpensReusesAndPreservesUserState() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+
+    UserManager& users = UserManager::instance();
+    const UserInfo userBefore = users.currentUser();
+    const Permission permissionsBefore = users.permissions();
+    const QJsonObject invalidParams = controller.executeDataSourceViewAction(
+        QStringLiteral("open_user_login_dialog"), QJsonObject{{QStringLiteral("unexpected"), true}});
+    QCOMPARE(invalidParams.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    QVERIFY(window.findChildren<LoginDialog*>(QStringLiteral("UserLoginDialog")).isEmpty());
+    QJsonObject wrongThread;
+    std::thread worker(
+        [&]() { wrongThread = controller.executeDataSourceViewAction(QStringLiteral("open_user_login_dialog"), {}); });
+    worker.join();
+    QCOMPARE(wrongThread.value(QStringLiteral("errorCode")).toString(), QStringLiteral("THREAD_AFFINITY"));
+    QVERIFY(window.findChildren<LoginDialog*>(QStringLiteral("UserLoginDialog")).isEmpty());
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    const QList<AgentController::PermissionLevel> levels = {AgentController::PermissionLevel::Observer,
+                                                            AgentController::PermissionLevel::Advisor,
+                                                            AgentController::PermissionLevel::Autopilot};
+    QJsonObject first;
+    for (const AgentController::PermissionLevel level : levels) {
+        controller.setPermissionLevel(level);
+        const QJsonObject result = controller.handleToolCall(QStringLiteral("open_user_login_dialog"), {});
+        if (first.isEmpty())
+            first = result;
+        QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("opened"));
+        QVERIFY(!result.contains(QStringLiteral("error")));
+        QVERIFY(controller.pendingConfirmationId().isEmpty());
+    }
+
+    QCOMPARE(first.size(), 3);
+    QCOMPARE(first.value(QStringLiteral("dialogAction")).toString(), QStringLiteral("opened"));
+    QVERIFY(first.value(QStringLiteral("userActionRequired")).toBool());
+    QVERIFY(!first.contains(QStringLiteral("username")));
+    QVERIFY(!first.contains(QStringLiteral("password")));
+    const QByteArray resultBytes = QJsonDocument(first).toJson(QJsonDocument::Compact).toLower();
+    QVERIFY(!resultBytes.contains("password"));
+    QVERIFY(!resultBytes.contains("username"));
+    QCOMPARE(auditSpy.count(), levels.size());
+    const AgentActionLogEntry audit = qvariant_cast<AgentActionLogEntry>(auditSpy.first().at(0));
+    QCOMPARE(audit.action, QStringLiteral("open_user_login_dialog"));
+    QVERIFY(QJsonDocument::fromJson(audit.params.toUtf8()).object().isEmpty());
+    const QByteArray auditBytes = (audit.actor + audit.action + audit.params + audit.result).toUtf8().toLower();
+    QVERIFY(!auditBytes.contains("password"));
+    QVERIFY(!auditBytes.contains("username"));
+
+    LoginDialog* dialog = window.findChild<LoginDialog*>(QStringLiteral("UserLoginDialog"));
+    QVERIFY(dialog);
+    QVERIFY(dialog->isVisible());
+    QVERIFY(!dialog->isModal());
+    QCOMPARE(window.findChildren<LoginDialog*>(QStringLiteral("UserLoginDialog")).size(), 1);
+    const QList<QLineEdit*> credentialFields = dialog->findChildren<QLineEdit*>();
+    QCOMPARE(credentialFields.size(), 2);
+    credentialFields.at(0)->setText(QStringLiteral("synthetic_agent_boundary_user"));
+    credentialFields.at(1)->setText(QStringLiteral("synthetic_agent_boundary_password"));
+    QSignalSpy loginRequestSpy(dialog, &LoginDialog::loginRequested);
+    QCOMPARE(users.currentUser().id, userBefore.id);
+    QCOMPARE(users.currentUser().userName, userBefore.userName);
+    QCOMPARE(static_cast<int>(users.currentUser().type), static_cast<int>(userBefore.type));
+    QCOMPARE(users.currentUser().isLoggedIn, userBefore.isLoggedIn);
+    const Permission permissionsAfter = users.permissions();
+    QCOMPARE(permissionsAfter.cameraSet, permissionsBefore.cameraSet);
+    QCOMPARE(permissionsAfter.quickMode, permissionsBefore.quickMode);
+    QCOMPARE(permissionsAfter.hardwareConfig, permissionsBefore.hardwareConfig);
+    QCOMPARE(permissionsAfter.communicationSet, permissionsBefore.communicationSet);
+    QCOMPARE(permissionsAfter.open, permissionsBefore.open);
+    QCOMPARE(permissionsAfter.edit, permissionsBefore.edit);
+    QCOMPARE(permissionsAfter.save, permissionsBefore.save);
+    QCOMPARE(permissionsAfter.systemConfig, permissionsBefore.systemConfig);
+    QCOMPARE(permissionsAfter.systemParam, permissionsBefore.systemParam);
+
+    const QJsonObject reused = controller.handleToolCall(QStringLiteral("open_user_login_dialog"), {});
+    QCOMPARE(reused.value(QStringLiteral("dialogAction")).toString(), QStringLiteral("reused"));
+    QCOMPARE(loginRequestSpy.count(), 0);
+    QCOMPARE(window.findChildren<LoginDialog*>(QStringLiteral("UserLoginDialog")).size(), 1);
+    QVERIFY(!QJsonDocument(reused).toJson(QJsonDocument::Compact).contains("synthetic_agent_boundary"));
+
+    QPointer<LoginDialog> dialogGuard(dialog);
+    dialog->close();
+    const QJsonObject reopened = controller.handleToolCall(QStringLiteral("open_user_login_dialog"), {});
+    QCOMPARE(reopened.value(QStringLiteral("dialogAction")).toString(), QStringLiteral("opened"));
+    const QList<LoginDialog*> pendingDialogs = window.findChildren<LoginDialog*>(QStringLiteral("UserLoginDialog"));
+    QCOMPARE(pendingDialogs.size(), 2);
+    LoginDialog* reopenedDialog = nullptr;
+    for (LoginDialog* candidate : pendingDialogs) {
+        if (candidate->isVisible())
+            reopenedDialog = candidate;
+    }
+    QVERIFY(reopenedDialog);
+    QVERIFY(reopenedDialog != dialog);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QVERIFY(dialogGuard.isNull());
+    QCOMPARE(window.findChildren<LoginDialog*>(QStringLiteral("UserLoginDialog")).size(), 1);
+    reopenedDialog->hide();
+    const QJsonObject reusedAfterOldDelete = controller.handleToolCall(QStringLiteral("open_user_login_dialog"), {});
+    QCOMPARE(reusedAfterOldDelete.value(QStringLiteral("dialogAction")).toString(), QStringLiteral("reused"));
+    QCOMPARE(window.findChildren<LoginDialog*>(QStringLiteral("UserLoginDialog")).size(), 1);
+    QVERIFY(reopenedDialog->isVisible());
+    reopenedDialog->close();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCOMPARE(users.currentUser().id, userBefore.id);
+    QCOMPARE(users.currentUser().userName, userBefore.userName);
+    QCOMPARE(users.currentUser().isLoggedIn, userBefore.isLoggedIn);
+}
+
+void TestMainWindow::testCommunicationSettingsMenuRequiresCommunicationPermission() {
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+
+    for (const QString& user :
+         {QStringLiteral("administrator"), QStringLiteral("operator"), QStringLiteral("guest-session")}) {
+        QVERIFY(UserManager::instance().login(user, QString()));
+        QTimer::singleShot(0, []() {
+            if (QWidget* modal = QApplication::activeModalWidget())
+                modal->close();
+        });
+        QVERIFY(QMetaObject::invokeMethod(&window, "onCommSettings", Qt::DirectConnection));
+        QVERIFY(window.findChildren<CommunicationSetView*>().isEmpty());
+    }
+
+    UserManager::instance().logout();
+    QTimer::singleShot(0, []() {
+        if (QWidget* modal = QApplication::activeModalWidget())
+            modal->close();
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onCommSettings", Qt::DirectConnection));
+    QVERIFY(window.findChildren<CommunicationSetView*>().isEmpty());
+
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+    bool authorizedDialogOpened = false;
+    QTimer::singleShot(0, &window, [&]() {
+        const auto dialogs = window.findChildren<CommunicationSetView*>();
+        authorizedDialogOpened = dialogs.size() == 1 && dialogs.first()->isVisible();
+        if (!dialogs.isEmpty())
+            dialogs.first()->close();
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onCommSettings", Qt::DirectConnection));
+    QVERIFY(authorizedDialogOpened);
+}
+
+void TestMainWindow::testCameraSettingsMenuRequiresCameraPermissions() {
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+
+    for (const QString& user :
+         {QStringLiteral("administrator"), QStringLiteral("operator"), QStringLiteral("guest-session")}) {
+        QVERIFY(UserManager::instance().login(user, QString()));
+        bool warningShown = false;
+        QTimer::singleShot(0, [&]() {
+            if (auto* warning = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                warningShown = warning->text().contains(QStringLiteral("权限"));
+                warning->close();
+            }
+        });
+        QVERIFY(QMetaObject::invokeMethod(&window, "onCameraSettings", Qt::DirectConnection));
+        QVERIFY(warningShown);
+        QVERIFY(window.findChildren<CameraSetView*>().isEmpty());
+    }
+
+    UserManager::instance().logout();
+    bool warningShown = false;
+    QTimer::singleShot(0, [&]() {
+        if (auto* warning = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            warningShown = warning->text().contains(QStringLiteral("权限"));
+            warning->close();
+        }
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onCameraSettings", Qt::DirectConnection));
+    QVERIFY(warningShown);
+    QVERIFY(window.findChildren<CameraSetView*>().isEmpty());
+
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+    bool authorizedDialogOpened = false;
+    QTimer::singleShot(0, &window, [&]() {
+        const auto dialogs = window.findChildren<CameraSetView*>();
+        authorizedDialogOpened = dialogs.size() == 1 && dialogs.first()->isVisible();
+        if (!dialogs.isEmpty())
+            dialogs.first()->close();
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onCameraSettings", Qt::DirectConnection));
+    QVERIFY(authorizedDialogOpened);
+}
+
+void TestMainWindow::testGlobalVariableMenuRequiresGlobalVarPermission() {
+    const QString sentinelName = QStringLiteral("MAINWINDOW_GLOBALVAR_PERMISSION_SENTINEL");
+    GlobalVarManager& variables = GlobalVarManager::instance();
+    variables.addVariable(new VarModel(sentinelName, VarDataType::Int, 617));
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+
+    for (const QString& user :
+         {QStringLiteral("administrator"), QStringLiteral("operator"), QStringLiteral("guest-session")}) {
+        QVERIFY(UserManager::instance().login(user, QString()));
+        bool warningShown = false;
+        QTimer::singleShot(0, [&]() {
+            if (auto* warning = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                warningShown = warning->text().contains(QStringLiteral("权限"));
+                warning->close();
+            }
+        });
+        QVERIFY(QMetaObject::invokeMethod(&window, "onGlobalVar", Qt::DirectConnection));
+        QVERIFY(warningShown);
+        QVERIFY(window.findChildren<GlobalVarView*>().isEmpty());
+    }
+
+    UserManager::instance().logout();
+    bool warningShown = false;
+    QTimer::singleShot(0, [&]() {
+        if (auto* warning = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            warningShown = warning->text().contains(QStringLiteral("权限"));
+            warning->close();
+        }
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onGlobalVar", Qt::DirectConnection));
+    QVERIFY(warningShown);
+    QVERIFY(window.findChildren<GlobalVarView*>().isEmpty());
+
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+    bool authorizedDialogOpened = false;
+    QTimer::singleShot(0, &window, [&]() {
+        const auto dialogs = window.findChildren<GlobalVarView*>();
+        if (dialogs.size() == 1) {
+            const auto* table = dialogs.first()->findChild<QTableWidget*>(QStringLiteral("GlobalVarTable"));
+            authorizedDialogOpened = dialogs.first()->isVisible() && table && table->rowCount() == 1 &&
+                                     table->item(0, 1)->text() == sentinelName;
+            dialogs.first()->close();
+        }
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onGlobalVar", Qt::DirectConnection));
+    QVERIFY(authorizedDialogOpened);
+    variables.removeVariable(sentinelName);
+}
+
+void TestMainWindow::testSystemParameterPagesRequireTheirMappedProductPermissions() {
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+
+    const auto invokePage = [&window](const QString& user, const char* slot, bool allowed) {
+        if (user.isEmpty())
+            UserManager::instance().logout();
+        else
+            QVERIFY(UserManager::instance().login(user, QString()));
+
+        bool settingsOpened = false;
+        QTimer::singleShot(0, &window, [&]() {
+            const auto dialogs = window.findChildren<SystemParamView*>();
+            settingsOpened = dialogs.size() == 1 && dialogs.first()->isVisible();
+            if (!dialogs.isEmpty())
+                dialogs.first()->close();
+            else if (QWidget* modal = QApplication::activeModalWidget())
+                modal->close();
+        });
+        QVERIFY(QMetaObject::invokeMethod(&window, slot, Qt::DirectConnection));
+        QCOMPARE(settingsOpened, allowed);
+        QVERIFY(window.findChildren<SystemParamView*>().isEmpty());
+    };
+
+    for (const auto& user :
+         {qMakePair(QStringLiteral("developer"), true), qMakePair(QStringLiteral("administrator"), true),
+          qMakePair(QStringLiteral("operator"), false), qMakePair(QStringLiteral("guest-session"), false),
+          qMakePair(QString(), false)}) {
+        invokePage(user.first, "onHardwareConfig", user.second);
+    }
+    for (const auto& user :
+         {qMakePair(QStringLiteral("developer"), true), qMakePair(QStringLiteral("administrator"), true),
+          qMakePair(QStringLiteral("operator"), false), qMakePair(QStringLiteral("guest-session"), false),
+          qMakePair(QString(), false)}) {
+        invokePage(user.first, "onDeviceSettings", user.second);
+        invokePage(user.first, "onSystemSettings", user.second);
+    }
+
+    SystemConfig& systemConfig = SystemConfig::instance();
+    const bool autoLoadBefore = systemConfig.autoLoadSolution();
+    const bool autoSaveBefore = systemConfig.autoSave();
+    const int autoSaveIntervalBefore = systemConfig.autoSaveInterval();
+    const QString languageBefore = systemConfig.language();
+    const QString themeBefore = systemConfig.theme();
+    const int cycleIntervalBefore = systemConfig.cycleInterval();
+    const int logLevelBefore = systemConfig.logLevel();
+    const bool fileLogBefore = systemConfig.enableFileLog();
+    systemConfig.setAutoLoadSolution(!autoLoadBefore);
+    systemConfig.setAutoSave(!autoSaveBefore);
+    systemConfig.setAutoSaveInterval(321);
+    systemConfig.setLanguage(QStringLiteral("zh_TW"));
+    systemConfig.setTheme(themeBefore == QLatin1String("dark") ? QStringLiteral("light") : QStringLiteral("dark"));
+    systemConfig.setCycleInterval(777);
+    systemConfig.setLogLevel(4);
+    systemConfig.setEnableFileLog(!fileLogBefore);
+
+    UserManager::instance().logout();
+    SystemParamView view(nullptr, QStringLiteral("SystemParam"));
+    auto* autoLoad = view.findChild<QCheckBox*>(QStringLiteral("SystemParamAutoLoadCheck"));
+    auto* autoSave = view.findChild<QCheckBox*>(QStringLiteral("SystemParamAutoSaveCheck"));
+    auto* autoSaveInterval = view.findChild<QSpinBox*>(QStringLiteral("SystemParamAutoSaveInterval"));
+    auto* language = view.findChild<QComboBox*>(QStringLiteral("SystemParamLanguageCombo"));
+    auto* theme = view.findChild<QComboBox*>(QStringLiteral("SystemParamThemeCombo"));
+    auto* cycleInterval = view.findChild<QSpinBox*>(QStringLiteral("SystemParamCycleInterval"));
+    auto* logLevel = view.findChild<QSpinBox*>(QStringLiteral("SystemParamLogLevel"));
+    auto* fileLog = view.findChild<QCheckBox*>(QStringLiteral("SystemParamEnableFileLog"));
+    auto* save = view.findChild<QPushButton*>(QStringLiteral("SystemParamSaveButton"));
+    auto* reset = view.findChild<QPushButton*>(QStringLiteral("SystemParamResetButton"));
+    auto* deniedMessage = view.findChild<QLabel*>(QStringLiteral("SystemParamPermissionMessage"));
+    QVERIFY(autoLoad);
+    QVERIFY(autoSave);
+    QVERIFY(autoSaveInterval);
+    QVERIFY(language);
+    QVERIFY(theme);
+    QVERIFY(cycleInterval);
+    QVERIFY(logLevel);
+    QVERIFY(fileLog);
+    QVERIFY(save);
+    QVERIFY(reset);
+    QVERIFY(deniedMessage);
+
+    const auto verifyDeniedView = [&]() {
+        QVERIFY(!autoLoad->isEnabled());
+        QVERIFY(!autoSave->isEnabled());
+        QVERIFY(!autoSaveInterval->isEnabled());
+        QVERIFY(!language->isEnabled());
+        QVERIFY(!theme->isEnabled());
+        QVERIFY(!cycleInterval->isEnabled());
+        QVERIFY(!logLevel->isEnabled());
+        QVERIFY(!fileLog->isEnabled());
+        QVERIFY(!save->isEnabled());
+        QVERIFY(!reset->isEnabled());
+        QVERIFY(!autoLoad->isChecked());
+        QVERIFY(!autoSave->isChecked());
+        QCOMPARE(autoSaveInterval->value(), autoSaveInterval->minimum());
+        QCOMPARE(language->currentIndex(), -1);
+        QCOMPARE(theme->currentIndex(), -1);
+        QCOMPARE(cycleInterval->value(), cycleInterval->minimum());
+        QCOMPARE(logLevel->value(), logLevel->minimum());
+        QVERIFY(!fileLog->isChecked());
+        QVERIFY(!deniedMessage->isHidden());
+    };
+    verifyDeniedView(); // A direct unauthorized construction must not load sentinel values.
+
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+    QVERIFY(autoLoad->isEnabled());
+    QCOMPARE(autoSaveInterval->value(), 321);
+    QCOMPARE(language->currentData().toString(), QStringLiteral("zh_TW"));
+    QCOMPARE(cycleInterval->value(), 777);
+    QCOMPARE(logLevel->value(), 4);
+    QVERIFY(deniedMessage->isHidden());
+
+    QVERIFY(UserManager::instance().login(QStringLiteral("guest-session"), QString()));
+    verifyDeniedView();
+    QVERIFY(QMetaObject::invokeMethod(&view, "onSaveClicked", Qt::DirectConnection));
+    QVERIFY(QMetaObject::invokeMethod(&view, "onResetClicked", Qt::DirectConnection));
+    QCOMPARE(systemConfig.autoLoadSolution(), !autoLoadBefore);
+    QCOMPARE(systemConfig.autoSave(), !autoSaveBefore);
+    QCOMPARE(systemConfig.autoSaveInterval(), 321);
+    QCOMPARE(systemConfig.language(), QStringLiteral("zh_TW"));
+    QCOMPARE(systemConfig.cycleInterval(), 777);
+    QCOMPARE(systemConfig.logLevel(), 4);
+    QCOMPARE(systemConfig.enableFileLog(), !fileLogBefore);
+
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+    QVERIFY(autoLoad->isEnabled());
+    UserManager::instance().logout();
+    verifyDeniedView();
+    QVERIFY(QMetaObject::invokeMethod(&view, "onSaveClicked", Qt::DirectConnection));
+    QVERIFY(QMetaObject::invokeMethod(&view, "onResetClicked", Qt::DirectConnection));
+    QCOMPARE(systemConfig.autoLoadSolution(), !autoLoadBefore);
+    QCOMPARE(systemConfig.autoSaveInterval(), 321);
+
+    systemConfig.setAutoLoadSolution(autoLoadBefore);
+    systemConfig.setAutoSave(autoSaveBefore);
+    systemConfig.setAutoSaveInterval(autoSaveIntervalBefore);
+    systemConfig.setLanguage(languageBefore);
+    systemConfig.setTheme(themeBefore);
+    systemConfig.setCycleInterval(cycleIntervalBefore);
+    systemConfig.setLogLevel(logLevelBefore);
+    systemConfig.setEnableFileLog(fileLogBefore);
+}
+
+void TestMainWindow::testProjectOperationSlotsEnforceProductPermissionsAndRecheckSave() {
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    ProjectManager& manager = ProjectManager::instance();
+    QTemporaryDir denialDir;
+    QVERIFY(denialDir.isValid());
+    const QString denialPath = denialDir.filePath(QStringLiteral("denied-operation-baseline.dproj"));
+    Project* denialProject = manager.newProject();
+    QVERIFY(denialProject);
+    QTRY_VERIFY_WITH_TIMEOUT(denialProject->layoutInitialized(), 1000);
+    denialProject->setName(QStringLiteral("denied-operation-baseline"));
+    denialProject->setFilePath(denialPath);
+    QVERIFY(manager.saveProject(denialPath));
+    denialProject->setModified(true);
+    const QJsonObject denialJson = denialProject->toJson();
+    const QStringList denialRecentProjects = manager.recentProjects();
+    QFile denialFile(denialPath);
+    QVERIFY(denialFile.open(QIODevice::ReadOnly));
+    const QByteArray denialDiskBytes = denialFile.readAll();
+
+    const auto expectDenied = [&](const QString& user, const char* slot) {
+        if (user.isEmpty())
+            UserManager::instance().logout();
+        else
+            QVERIFY(UserManager::instance().login(user, QString()));
+        bool denied = false;
+        QTimer::singleShot(0, [&]() {
+            if (auto* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                denied = message->windowTitle().contains(QStringLiteral("权限")) ||
+                         message->text().contains(QStringLiteral("权限"));
+                message->close();
+            }
+        });
+        QVERIFY(QMetaObject::invokeMethod(&window, slot, Qt::DirectConnection));
+        QVERIFY(denied);
+        QVERIFY(QApplication::activeModalWidget() == nullptr);
+        QCOMPARE(manager.currentProject(), denialProject);
+        QCOMPARE(denialProject->toJson(), denialJson);
+        QCOMPARE(denialProject->filePath(), denialPath);
+        QVERIFY(denialProject->isModified());
+        QCOMPARE(manager.recentProjects(), denialRecentProjects);
+        QVERIFY(denialFile.seek(0));
+        QCOMPARE(denialFile.readAll(), denialDiskBytes);
+    };
+
+    // Product-role matrix: Administrator cannot create; Operator can only open;
+    // Guest and logged-out sessions cannot use any project operation.
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+    QVERIFY(UserManager::instance().hasPermission(QStringLiteral("NewSolution")));
+    QVERIFY(UserManager::instance().hasPermission(QStringLiteral("Open")));
+    QVERIFY(UserManager::instance().hasPermission(QStringLiteral("Save")));
+    QVERIFY(UserManager::instance().hasPermission(QStringLiteral("SolutionList")));
+    QVERIFY(UserManager::instance().login(QStringLiteral("guest-session"), QString()));
+    QVERIFY(!UserManager::instance().hasPermission(QStringLiteral("NewSolution")));
+    QVERIFY(!UserManager::instance().hasPermission(QStringLiteral("Open")));
+    QVERIFY(!UserManager::instance().hasPermission(QStringLiteral("Save")));
+    QVERIFY(!UserManager::instance().hasPermission(QStringLiteral("SolutionList")));
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+    UserManager::instance().logout();
+    QVERIFY(!UserManager::instance().hasPermission(QStringLiteral("NewSolution")));
+    QVERIFY(!UserManager::instance().hasPermission(QStringLiteral("Open")));
+    QVERIFY(!UserManager::instance().hasPermission(QStringLiteral("Save")));
+    QVERIFY(!UserManager::instance().hasPermission(QStringLiteral("SolutionList")));
+    expectDenied(QStringLiteral("administrator"), "onNewSolution");
+    expectDenied(QStringLiteral("operator"), "onNewSolution");
+    expectDenied(QStringLiteral("operator"), "onSolutionList");
+    expectDenied(QStringLiteral("operator"), "onSaveProject");
+    expectDenied(QStringLiteral("guest-session"), "onNewSolution");
+    expectDenied(QStringLiteral("guest-session"), "onSolutionList");
+    expectDenied(QStringLiteral("guest-session"), "onOpenProject");
+    expectDenied(QStringLiteral("guest-session"), "onSaveProject");
+    expectDenied(QString(), "onNewSolution");
+    expectDenied(QString(), "onSolutionList");
+    expectDenied(QString(), "onOpenProject");
+    expectDenied(QString(), "onSaveProject");
+
+    // Operator has Open, so the action reaches the chooser and can be cancelled.
+    QVERIFY(UserManager::instance().login(QStringLiteral("operator"), QString()));
+    bool openChooserShown = false;
+    QTimer::singleShot(0, [&]() {
+        if (auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget())) {
+            openChooserShown = true;
+            dialog->reject();
+        }
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onOpenProject", Qt::DirectConnection));
+    QVERIFY(openChooserShown);
+
+    // Administrator is allowed to list/open/save even though new-solution is
+    // denied above. Verify each authorized slot reaches its normal UI/action.
+    QVERIFY(UserManager::instance().login(QStringLiteral("administrator"), QString()));
+    QTemporaryDir adminDir;
+    QVERIFY(adminDir.isValid());
+    const QString adminPath = adminDir.filePath(QStringLiteral("administrator-project.dproj"));
+    Project* adminProject = manager.newProject();
+    QVERIFY(adminProject);
+    adminProject->setName(QStringLiteral("administrator-save-before"));
+    QVERIFY(manager.saveProject(adminPath));
+    adminProject->setName(QStringLiteral("administrator-save-after"));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onSaveProject", Qt::DirectConnection));
+    QFile adminSavedFile(adminPath);
+    QVERIFY(adminSavedFile.open(QIODevice::ReadOnly));
+    QVERIFY(adminSavedFile.readAll().contains("administrator-save-after"));
+
+    QVERIFY(manager.openProject(adminPath));
+    bool solutionListShown = false;
+    QTimer::singleShot(0, [&]() {
+        if (auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {
+            solutionListShown = true;
+            dialog->reject();
+        }
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onSolutionList", Qt::DirectConnection));
+    QVERIFY(solutionListShown);
+
+    openChooserShown = false;
+    QTimer::singleShot(0, [&]() {
+        if (auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget())) {
+            openChooserShown = true;
+            dialog->reject();
+        }
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onOpenProject", Qt::DirectConnection));
+    QVERIFY(openChooserShown);
+
+    // Permission can change while the unsaved prompt is open. Choosing Save after
+    // Developer -> Operator must be rejected before opening Save As or writing.
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+    Project* original = manager.newProject();
+    QVERIFY(original);
+    original->setName(QStringLiteral("permission-recheck-unsaved"));
+    const QJsonObject before = original->toJson();
+    bool saveAsShown = false;
+    bool permissionWarningShown = false;
+    QTimer::singleShot(0, &window, [&]() {
+        auto* prompt = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!prompt)
+            return;
+        QAbstractButton* saveButton = nullptr;
+        for (QAbstractButton* button : prompt->buttons()) {
+            if (prompt->buttonRole(button) == QMessageBox::AcceptRole) {
+                saveButton = button;
+                break;
+            }
+        }
+        QVERIFY(saveButton);
+        QVERIFY(UserManager::instance().login(QStringLiteral("operator"), QString()));
+        QTimer::singleShot(0, &window, [&]() {
+            if (auto* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                permissionWarningShown = message->text().contains(QStringLiteral("权限"));
+                message->close();
+            } else if (auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget())) {
+                saveAsShown = true;
+                dialog->reject();
+            }
+        });
+        saveButton->click();
+    });
+    QTimer::singleShot(2000, &window, []() {
+        if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+            modal->reject();
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onNewSolution", Qt::DirectConnection));
+    QVERIFY(permissionWarningShown);
+    QVERIFY(!saveAsShown);
+    QCOMPARE(manager.currentProject(), original);
+    QCOMPARE(original->toJson(), before);
+    QVERIFY(original->isModified());
+    QVERIFY(original->filePath().isEmpty());
+}
+
+void TestMainWindow::testGuiFlowRunSlotsEnforceProductPermissionsBeforeSideEffects() {
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    RunEngine& engine = RunEngine::instance();
+    const RunState stateBefore = engine.state();
+    const RunMode modeBefore = engine.runMode();
+    const QStringList runSlots{QStringLiteral("onQuickMode"), QStringLiteral("onRunOnce"), QStringLiteral("onRunCycle"),
+                               QStringLiteral("onStepRun")};
+    QSignalSpy startedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy moduleStartedSpy(&engine, &RunEngine::moduleStarted);
+
+    const auto expectDenied = [&](const QString& user, const QString& slot) {
+        if (user.isEmpty())
+            UserManager::instance().logout();
+        else
+            QVERIFY(UserManager::instance().login(user, QString()));
+
+        bool permissionDialogShown = false;
+        QTimer dismissPermissionDialog;
+        dismissPermissionDialog.setSingleShot(true);
+        connect(&dismissPermissionDialog, &QTimer::timeout, &window, [&]() {
+            if (auto* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                permissionDialogShown = message->windowTitle().contains(QStringLiteral("权限")) ||
+                                        message->text().contains(QStringLiteral("权限"));
+                message->close();
+            }
+        });
+        dismissPermissionDialog.start(0);
+        QVERIFY(QMetaObject::invokeMethod(&window, slot.toUtf8().constData(), Qt::DirectConnection));
+        dismissPermissionDialog.stop();
+
+        QVERIFY(permissionDialogShown);
+        QCOMPARE(engine.state(), stateBefore);
+        QCOMPARE(engine.runMode(), modeBefore);
+        QCOMPARE(startedSpy.count(), 0);
+        QCOMPARE(moduleStartedSpy.count(), 0);
+        QCOMPARE(window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"))->text(), QStringLiteral("运行"));
+        QCOMPARE(window.findChild<QAction*>(QStringLiteral("RunOnceAction"))->text(), QStringLiteral("单次运行"));
+    };
+
+    for (const QString& slot : runSlots) {
+        expectDenied(QStringLiteral("guest-session"), slot);
+        expectDenied(QString(), slot);
+    }
+    expectDenied(QStringLiteral("operator"), QStringLiteral("onQuickMode"));
+
+    // Product role mapping: Operator may run once/cycle/step; Developer and
+    // Administrator may use all four entry points. Empty-flow handling is the
+    // normal no-op path and must not be mistaken for permission denial.
+    const QList<QPair<QString, QStringList>> allowed{
+        qMakePair(QStringLiteral("operator"),
+                  QStringList{QStringLiteral("onRunOnce"), QStringLiteral("onRunCycle"), QStringLiteral("onStepRun")}),
+        qMakePair(QStringLiteral("administrator"), runSlots), qMakePair(QStringLiteral("developer"), runSlots)};
+    for (const auto& role : allowed) {
+        QVERIFY(UserManager::instance().login(role.first, QString()));
+        for (const QString& slot : role.second) {
+            bool unexpectedPermissionDialog = false;
+            QTimer dismissUnexpectedPermissionDialog;
+            dismissUnexpectedPermissionDialog.setSingleShot(true);
+            connect(&dismissUnexpectedPermissionDialog, &QTimer::timeout, &window, [&]() {
+                if (auto* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                    unexpectedPermissionDialog = message->windowTitle().contains(QStringLiteral("权限")) ||
+                                                 message->text().contains(QStringLiteral("权限"));
+                    message->close();
+                }
+            });
+            dismissUnexpectedPermissionDialog.start(0);
+            QVERIFY(QMetaObject::invokeMethod(&window, slot.toUtf8().constData(), Qt::DirectConnection));
+            dismissUnexpectedPermissionDialog.stop();
+            QVERIFY(!unexpectedPermissionDialog);
+            QCOMPARE(engine.state(), stateBefore);
+            QCOMPARE(engine.runMode(), modeBefore);
+        }
+    }
+    QCOMPARE(startedSpy.count(), 0);
+    QCOMPARE(moduleStartedSpy.count(), 0);
+}
+
+void TestMainWindow::testGuiRunSlotsResumePausedModeWithModeSpecificPermission() {
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    RunEngine& engine = RunEngine::instance();
+
+    const QList<QPair<RunMode, QString>> cases{{RunMode::RunOnce, QStringLiteral("onRunOnce")},
+                                               {RunMode::RunOnce, QStringLiteral("onRunCycle")},
+                                               {RunMode::RunCycle, QStringLiteral("onRunOnce")},
+                                               {RunMode::RunCycle, QStringLiteral("onRunCycle")}};
+    int caseIndex = 0;
+    for (const auto& testCase : cases) {
+        engine.stop();
+        QTRY_VERIFY(!engine.isBusy());
+        engine.clearModules();
+        ProjectManager::instance().closeProject();
+        QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project);
+
+        const QString instanceId = QStringLiteral("slice188_pause_%1").arg(caseIndex++);
+        ModuleInstance instance;
+        instance.id = instanceId;
+        instance.moduleId = QStringLiteral("OutputProbe");
+        instance.name = instanceId;
+        instance.breakpoint = true;
+        project->addModule(instance);
+        QStringList executionLog;
+        auto* module = new MainWindowOutputProbeModule(instanceId);
+        module->executionLog = &executionLog;
+        module->initialize();
+        window.registerFlowModule(instanceId, module);
+        QCoreApplication::processEvents();
+        QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+        QVERIFY(processTree);
+        QTRY_COMPARE(processTree->topLevelItemCount(), 1);
+
+        const char* startSlot = testCase.first == RunMode::RunOnce ? "onRunOnce" : "onRunCycle";
+        QVERIFY(QMetaObject::invokeMethod(&window, startSlot, Qt::DirectConnection));
+        QTRY_VERIFY_WITH_TIMEOUT(engine.isPausedAtBreakpoint(), 5000);
+        if (testCase.first == RunMode::RunCycle) {
+            QCOMPARE(FlowExecutionService::instance().currentJob(), FlowExecutionService::JobType::Cycle);
+        } else {
+            QCOMPARE(engine.runMode(), RunMode::RunOnce);
+        }
+        const QString pausedRunId = testCase.first == RunMode::RunCycle
+                                        ? FlowExecutionService::instance().activeJobRequestSnapshot().sessionId
+                                        : engine.runObservation().runId;
+        QVERIFY(!pausedRunId.isEmpty());
+
+        QVERIFY(UserManager::instance().login(QStringLiteral("guest-session"), QString()));
+        bool permissionDialogShown = false;
+        QTimer dismissPermissionDialog;
+        dismissPermissionDialog.setSingleShot(true);
+        connect(&dismissPermissionDialog, &QTimer::timeout, &window, [&]() {
+            if (auto* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                permissionDialogShown = message->windowTitle().contains(QStringLiteral("权限")) ||
+                                        message->text().contains(QStringLiteral("权限"));
+                message->close();
+            }
+        });
+        dismissPermissionDialog.start(0);
+        QVERIFY(QMetaObject::invokeMethod(&window, testCase.second.toUtf8().constData(), Qt::DirectConnection));
+        dismissPermissionDialog.stop();
+        QVERIFY(permissionDialogShown);
+        QVERIFY(engine.isPausedAtBreakpoint());
+        if (testCase.first == RunMode::RunCycle) {
+            QCOMPARE(FlowExecutionService::instance().currentJob(), FlowExecutionService::JobType::Cycle);
+        } else {
+            QCOMPARE(engine.runMode(), RunMode::RunOnce);
+        }
+        const QString stillPausedRunId = testCase.first == RunMode::RunCycle
+                                             ? FlowExecutionService::instance().activeJobRequestSnapshot().sessionId
+                                             : engine.runObservation().runId;
+        QCOMPARE(stillPausedRunId, pausedRunId);
+        QVERIFY(executionLog.isEmpty());
+
+        QVERIFY(UserManager::instance().login(QStringLiteral("operator"), QString()));
+        bool unexpectedPermissionDialog = false;
+        QTimer dismissUnexpectedPermissionDialog;
+        dismissUnexpectedPermissionDialog.setSingleShot(true);
+        connect(&dismissUnexpectedPermissionDialog, &QTimer::timeout, &window, [&]() {
+            if (auto* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                unexpectedPermissionDialog = message->windowTitle().contains(QStringLiteral("权限")) ||
+                                             message->text().contains(QStringLiteral("权限"));
+                message->close();
+            }
+        });
+        dismissUnexpectedPermissionDialog.start(0);
+        QVERIFY(QMetaObject::invokeMethod(&window, testCase.second.toUtf8().constData(), Qt::DirectConnection));
+        dismissUnexpectedPermissionDialog.stop();
+        QVERIFY(!unexpectedPermissionDialog);
+        QTRY_COMPARE_WITH_TIMEOUT(executionLog.size(), 1, 5000);
+        if (testCase.first == RunMode::RunCycle) {
+            const auto currentJob = FlowExecutionService::instance().currentJob();
+            QVERIFY(currentJob == FlowExecutionService::JobType::Cycle ||
+                    currentJob == FlowExecutionService::JobType::Resume);
+        } else {
+            QCOMPARE(engine.runMode(), RunMode::RunOnce);
+        }
+        if (testCase.first == RunMode::RunCycle) {
+            QTRY_VERIFY_WITH_TIMEOUT(engine.isPausedAtBreakpoint(), 5000);
+            QCOMPARE(FlowExecutionService::instance().activeJobRequestSnapshot().sessionId, pausedRunId);
+            QVERIFY(QMetaObject::invokeMethod(&window, "onStop", Qt::DirectConnection));
+        } else {
+            QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 10000);
+            QCOMPARE(engine.runObservation().runId, pausedRunId);
+        }
+
+        engine.stop();
+        QTRY_VERIFY(!engine.isBusy());
+        engine.clearModules();
+        ProjectManager::instance().closeProject();
+    }
+}
+
+void TestMainWindow::testGuiRunOnceSlotPreservesSafetyStopForActiveModes() {
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    RunEngine& engine = RunEngine::instance();
+
+    for (const RunMode mode : {RunMode::RunOnce, RunMode::RunCycle}) {
+        for (const QString& deniedUser : {QStringLiteral("guest-session"), QString()}) {
+            engine.stop();
+            QTRY_VERIFY(!engine.isBusy());
+            engine.clearModules();
+            ProjectManager::instance().closeProject();
+            QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+            Project* project = ProjectManager::instance().newProject();
+            QVERIFY(project);
+
+            const QString instanceId =
+                QStringLiteral("slice188_stop_%1_%2")
+                    .arg(mode == RunMode::RunOnce ? QStringLiteral("once") : QStringLiteral("cycle"),
+                         deniedUser.isEmpty() ? QStringLiteral("logout") : QStringLiteral("guest"));
+            ModuleInstance instance;
+            instance.id = instanceId;
+            instance.moduleId = QStringLiteral("OutputProbe");
+            instance.name = instanceId;
+            project->addModule(instance);
+            auto* module = new MainWindowOutputProbeModule(instanceId);
+            bool stopSlotInvoked = false;
+            bool permissionDialogShown = false;
+            module->duringProcess = [&]() {
+                if (stopSlotInvoked)
+                    return;
+                if (deniedUser.isEmpty())
+                    UserManager::instance().logout();
+                else
+                    UserManager::instance().login(deniedUser, QString());
+                stopSlotInvoked = QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection);
+            };
+            module->initialize();
+            window.registerFlowModule(instanceId, module);
+            QCoreApplication::processEvents();
+            QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+            QVERIFY(processTree);
+            QTRY_COMPARE(processTree->topLevelItemCount(), 1);
+
+            QTimer dismissUnexpectedDialog;
+            dismissUnexpectedDialog.setSingleShot(true);
+            connect(&dismissUnexpectedDialog, &QTimer::timeout, &window, [&]() {
+                if (auto* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                    permissionDialogShown = message->windowTitle().contains(QStringLiteral("权限")) ||
+                                            message->text().contains(QStringLiteral("权限"));
+                    message->close();
+                }
+            });
+            dismissUnexpectedDialog.start(0);
+            const char* startSlot = mode == RunMode::RunOnce ? "onRunOnce" : "onRunCycle";
+            QVERIFY(QMetaObject::invokeMethod(&window, startSlot, Qt::DirectConnection));
+            QTRY_VERIFY_WITH_TIMEOUT(stopSlotInvoked, 5000);
+            dismissUnexpectedDialog.stop();
+            QVERIFY(stopSlotInvoked);
+            QVERIFY(!permissionDialogShown);
+            QCOMPARE(engine.state(), RunState::Stopped);
+            QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
+            engine.clearModules();
+            ProjectManager::instance().closeProject();
+        }
+    }
+}
+
+void TestMainWindow::testSavePermissionIsRecheckedAfterSaveAsDialog() {
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString targetPath = dir.filePath(QStringLiteral("must-not-be-written.dproj"));
+
+    MainWindow window;
+    window.show();
+    ProjectManager& manager = ProjectManager::instance();
+    Project* original = manager.newProject();
+    QVERIFY(original);
+    QTRY_VERIFY_WITH_TIMEOUT(original->layoutInitialized(), 1000);
+    original->setName(QStringLiteral("save-dialog-revocation"));
+    const QJsonObject before = original->toJson();
+    bool chooserShown = false;
+    bool permissionWarningShown = false;
+
+    QTimer::singleShot(0, &window, [&]() {
+        auto* prompt = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!prompt)
+            return;
+        QAbstractButton* saveButton = nullptr;
+        for (QAbstractButton* button : prompt->buttons()) {
+            if (prompt->buttonRole(button) == QMessageBox::AcceptRole) {
+                saveButton = button;
+                break;
+            }
+        }
+        QVERIFY(saveButton);
+        QTimer::singleShot(0, &window, [&]() {
+            auto* chooser = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+            QVERIFY(chooser);
+            chooserShown = true;
+            QVERIFY(UserManager::instance().login(QStringLiteral("operator"), QString()));
+            chooser->selectFile(targetPath);
+            QTimer::singleShot(0, &window, [&]() {
+                if (auto* warning = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                    permissionWarningShown = warning->text().contains(QStringLiteral("权限"));
+                    warning->close();
+                }
+            });
+            QMetaObject::invokeMethod(chooser, "done", Qt::DirectConnection, Q_ARG(int, QDialog::Accepted));
+        });
+        saveButton->click();
+    });
+    QTimer::singleShot(3000, &window, []() {
+        if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+            modal->reject();
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onNewSolution", Qt::DirectConnection));
+    QVERIFY(chooserShown);
+    QVERIFY(permissionWarningShown);
+    QVERIFY(!QFileInfo::exists(targetPath));
+    QCOMPARE(manager.currentProject(), original);
+    QCOMPARE(original->toJson(), before);
+    QVERIFY(original->isModified());
+    QVERIFY(original->filePath().isEmpty());
+
+    manager.closeProject();
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+    const QString directSavePath = dir.filePath(QStringLiteral("direct-save-must-not-exist.dproj"));
+    Project* directSaveProject = manager.newProject();
+    QVERIFY(directSaveProject);
+    QTRY_VERIFY_WITH_TIMEOUT(directSaveProject->layoutInitialized(), 1000);
+    directSaveProject->setName(QStringLiteral("direct-save-dialog-revocation"));
+    const QJsonObject directSaveBefore = directSaveProject->toJson();
+    chooserShown = false;
+    permissionWarningShown = false;
+    QTimer::singleShot(0, &window, [&]() {
+        auto* chooser = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+        if (!chooser)
+            return;
+        chooserShown = true;
+        QVERIFY(UserManager::instance().login(QStringLiteral("operator"), QString()));
+        chooser->selectFile(directSavePath);
+        QTimer::singleShot(0, &window, [&]() {
+            if (auto* warning = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                permissionWarningShown = warning->text().contains(QStringLiteral("权限"));
+                warning->close();
+            }
+        });
+        QMetaObject::invokeMethod(chooser, "done", Qt::DirectConnection, Q_ARG(int, QDialog::Accepted));
+    });
+    QTimer::singleShot(3000, &window, []() {
+        if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+            modal->reject();
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onSaveProject", Qt::DirectConnection));
+    QVERIFY(chooserShown);
+    QVERIFY(permissionWarningShown);
+    QVERIFY(!QFileInfo::exists(directSavePath));
+    QCOMPARE(manager.currentProject(), directSaveProject);
+    QCOMPARE(directSaveProject->toJson(), directSaveBefore);
+    QVERIFY(directSaveProject->isModified());
+    QVERIFY(directSaveProject->filePath().isEmpty());
+}
+
+void TestMainWindow::testOperatorCloseUnsavedProjectOffersOnlyCancelOrDiscard() {
+    QVERIFY(UserManager::instance().login(QStringLiteral("operator"), QString()));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("operator-close.dproj"));
+    MainWindow window;
+    window.show();
+
+    // Settle asynchronous camera shutdown once so this test measures the close
+    // confirmation path instead of camera teardown timing.
+    window.close();
+    QTRY_VERIFY_WITH_TIMEOUT(!window.isVisible(), 5000);
+    window.show();
+
+    ProjectManager& manager = ProjectManager::instance();
+    Project* project = manager.newProject();
+    QVERIFY(project);
+    project->setName(QStringLiteral("saved-before-operator-close"));
+    QVERIFY(manager.saveProject(path));
+    QFile savedFile(path);
+    QVERIFY(savedFile.open(QIODevice::ReadOnly));
+    const QByteArray originalBytes = savedFile.readAll();
+    savedFile.close();
+    project->setName(QStringLiteral("unsaved-operator-close-edit"));
+    const QJsonObject unsavedJson = project->toJson();
+
+    bool cancelPromptShown = false;
+    bool saveButtonOffered = false;
+    QTimer::singleShot(0, &window, [&]() {
+        auto* prompt = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!prompt)
+            return;
+        cancelPromptShown = true;
+        for (QAbstractButton* button : prompt->buttons()) {
+            saveButtonOffered = saveButtonOffered || prompt->buttonRole(button) == QMessageBox::AcceptRole;
+            if (prompt->buttonRole(button) == QMessageBox::RejectRole) {
+                button->click();
+                return;
+            }
+        }
+        prompt->reject();
+    });
+    QVERIFY(!window.close());
+    QVERIFY(cancelPromptShown);
+    QVERIFY(!saveButtonOffered);
+    QVERIFY(window.isVisible());
+    QCOMPARE(manager.currentProject(), project);
+    QCOMPARE(project->toJson(), unsavedJson);
+    QVERIFY(project->isModified());
+
+    bool discardPromptShown = false;
+    QTimer::singleShot(0, &window, [&]() {
+        auto* prompt = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!prompt)
+            return;
+        discardPromptShown = true;
+        for (QAbstractButton* button : prompt->buttons()) {
+            saveButtonOffered = saveButtonOffered || prompt->buttonRole(button) == QMessageBox::AcceptRole;
+            if (prompt->buttonRole(button) == QMessageBox::DestructiveRole) {
+                button->click();
+                return;
+            }
+        }
+        prompt->reject();
+    });
+    QVERIFY(window.close());
+    QVERIFY(discardPromptShown);
+    QVERIFY(!saveButtonOffered);
+    QVERIFY(!window.isVisible());
+    QVERIFY(savedFile.open(QIODevice::ReadOnly));
+    QCOMPARE(savedFile.readAll(), originalBytes);
+}
+
+void TestMainWindow::testOpenUserLoginDialogReusesExistingMenuDialog() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+
+    QTimer::singleShot(0, &window, [&]() {
+        const QList<LoginDialog*> dialogs = window.findChildren<LoginDialog*>(QStringLiteral("UserLoginDialog"));
+        QCOMPARE(dialogs.size(), 1);
+        LoginDialog* menuDialog = dialogs.first();
+        QVERIFY(menuDialog->isVisible());
+        const QJsonObject result = controller.handleToolCall(QStringLiteral("open_user_login_dialog"), {});
+        QCOMPARE(result.value(QStringLiteral("dialogAction")).toString(), QStringLiteral("reused"));
+        QCOMPARE(window.findChildren<LoginDialog*>(QStringLiteral("UserLoginDialog")).size(), 1);
+        menuDialog->reject();
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onUserLogin", Qt::DirectConnection));
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+}
+
+void TestMainWindow::testLoggedOutUserGetsLoginHandoffWithoutAgentLogin() {
+    UserManager& users = UserManager::instance();
+    struct UserStateRestore {
+        UserManager& users;
+        UserInfo previous;
+        ~UserStateRestore() {
+            if (previous.isLoggedIn) {
+                if (!users.isLoggedIn() || users.currentUser().userName != previous.userName)
+                    users.login(previous.userName, QString());
+            } else if (users.isLoggedIn()) {
+                users.logout();
+            }
+        }
+    } userRestore{users, users.currentUser()};
+
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore controllerRestore(controller);
+    QTemporaryDir appData;
+    QVERIFY(appData.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appData.path().toLocal8Bit());
+
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    if (users.isLoggedIn())
+        users.logout();
+    QCoreApplication::processEvents();
+    QVERIFY(!users.isLoggedIn());
+    QCOMPARE(users.currentUser().type, UserType::Guest);
+    QVERIFY(users.currentUser().userName.isEmpty());
+    QVERIFY(!users.hasPermission(QStringLiteral("Edit")));
+    QVERIFY(!users.hasPermission(QStringLiteral("Save")));
+    QVERIFY(!users.hasPermission(QStringLiteral("SystemConfig")));
+
+    QTemporaryDir fallbackCaptureDir;
+    QVERIFY(fallbackCaptureDir.isValid());
+    const QString captureDir = qEnvironmentVariable("DEEPLUX_AGENT_CAPTURE_DIR").isEmpty()
+                                   ? fallbackCaptureDir.path()
+                                   : qEnvironmentVariable("DEEPLUX_AGENT_CAPTURE_DIR");
+    QVERIFY(QDir().mkpath(captureDir));
+    const QString beforePath = QDir(captureDir).filePath(QStringLiteral("login-handoff-before.png"));
+    QVERIFY(window.grab().save(beforePath));
+    QVERIFY(QFileInfo(beforePath).size() > 0);
+
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    const QJsonObject result = controller.handleToolCall(QStringLiteral("open_user_login_dialog"), {});
+    QCOMPARE(result.size(), 3);
+    QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("opened"));
+    QCOMPARE(result.value(QStringLiteral("dialogAction")).toString(), QStringLiteral("opened"));
+    QCOMPARE(result.value(QStringLiteral("userActionRequired")).toBool(), true);
+    QVERIFY(!result.contains(QStringLiteral("userLoggedIn")));
+    QVERIFY(!result.contains(QStringLiteral("username")));
+    QVERIFY(!result.contains(QStringLiteral("password")));
+    QCOMPARE(auditSpy.count(), 1);
+    const AgentActionLogEntry audit = qvariant_cast<AgentActionLogEntry>(auditSpy.first().at(0));
+    QCOMPARE(audit.action, QStringLiteral("open_user_login_dialog"));
+    const QByteArray auditBytes = (audit.actor + audit.action + audit.params + audit.result).toUtf8().toLower();
+    QVERIFY(!auditBytes.contains("username"));
+    QVERIFY(!auditBytes.contains("password"));
+
+    LoginDialog* dialog = window.findChild<LoginDialog*>(QStringLiteral("UserLoginDialog"));
+    QVERIFY(dialog && dialog->isVisible());
+    const QList<QLineEdit*> credentialFields = dialog->findChildren<QLineEdit*>();
+    QCOMPARE(credentialFields.size(), 2);
+    QCOMPARE(credentialFields.at(0)->text(), QStringLiteral("Operator"));
+    QVERIFY(credentialFields.at(1)->text().isEmpty());
+    QSignalSpy loginRequestSpy(dialog, &LoginDialog::loginRequested);
+    credentialFields.at(0)->clear();
+    QVERIFY(credentialFields.at(0)->text().isEmpty());
+    credentialFields.at(1)->setFocus(Qt::OtherFocusReason);
+    if (auto* userType = dialog->findChild<QComboBox*>())
+        userType->hidePopup();
+    QCoreApplication::processEvents();
+    QCOMPARE(loginRequestSpy.count(), 0);
+    QVERIFY(!users.isLoggedIn());
+    QCOMPARE(users.currentUser().type, UserType::Guest);
+    QVERIFY(!users.hasPermission(QStringLiteral("Edit")));
+    QVERIFY(!users.hasPermission(QStringLiteral("Save")));
+
+    const QString afterPath = QDir(captureDir).filePath(QStringLiteral("login-handoff-after.png"));
+    QVERIFY(dialog->grab().save(afterPath));
+    QVERIFY(QFileInfo(afterPath).size() > 0);
+    dialog->close();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+}
+
+void TestMainWindow::testAgentSelectsLogPanelTabWithoutProject() {
+    ProjectManager::instance().closeProject();
+    QVERIFY(!ProjectManager::instance().currentProject());
+    AgentController& controller = AgentController::instance();
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+
+    QTabWidget* tabs = window.findChild<QTabWidget*>(QStringLiteral("LogTerminalTabs"));
+    QWidget* runtimePage = window.findChild<QWidget*>(QStringLiteral("RuntimeLogTab"));
+    QWidget* agentPage = window.findChild<QWidget*>(QStringLiteral("AgentLogTab"));
+    QWidget* terminalPage = window.findChild<QWidget*>(QStringLiteral("TerminalLogTab"));
+    QDockWidget* bottomDock = window.findChild<QDockWidget*>(QStringLiteral("LogDock"));
+    QVERIFY(tabs);
+    QVERIFY(runtimePage);
+    QVERIFY(agentPage);
+    QVERIFY(terminalPage);
+    QVERIFY(bottomDock);
+
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+    const QJsonObject showDock = controller.handleToolCall(
+        QStringLiteral("set_workspace_panel_visibility"),
+        QJsonObject{{QStringLiteral("panel"), QStringLiteral("bottom")}, {QStringLiteral("visible"), true}});
+    QCOMPARE(showDock.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+    QVERIFY(bottomDock->isVisible());
+
+    const QStringList tabNames{QStringLiteral("runtime"), QStringLiteral("agent"), QStringLiteral("terminal")};
+    QWidget* pages[]{runtimePage, agentPage, terminalPage};
+    const AgentController::PermissionLevel permissions[]{AgentController::PermissionLevel::Observer,
+                                                         AgentController::PermissionLevel::Advisor,
+                                                         AgentController::PermissionLevel::Autopilot};
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    for (int i = 0; i < tabNames.size(); ++i) {
+        controller.setPermissionLevel(permissions[i]);
+        const QJsonObject selected = controller.handleToolCall(
+            QStringLiteral("select_log_panel_tab"), QJsonObject{{QStringLiteral("tab"), tabNames.at(i)},
+                                                                {QStringLiteral("private"), QStringLiteral("secret")}});
+        QCOMPARE(selected.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+        QCOMPARE(selected.value(QStringLiteral("tab")).toString(), tabNames.at(i));
+        QCOMPARE(selected.value(QStringLiteral("tabIndex")).toInt(), tabs->indexOf(pages[i]));
+        QCOMPARE(tabs->currentWidget(), pages[i]);
+        QCOMPARE(selected.value(QStringLiteral("dockVisible")).toBool(), true);
+    }
+    QCOMPARE(auditSpy.count(), 3);
+    const AgentActionLogEntry audit = auditSpy.last().at(0).value<AgentActionLogEntry>();
+    const QJsonObject auditParams = QJsonDocument::fromJson(audit.params.toUtf8()).object();
+    const QJsonObject expectedAuditParams{{QStringLiteral("tab"), QStringLiteral("terminal")}};
+    QCOMPARE(auditParams, expectedAuditParams);
+    QVERIFY(!audit.params.contains(QStringLiteral("secret")));
+
+    const QJsonObject hideDock = controller.handleToolCall(
+        QStringLiteral("set_workspace_panel_visibility"),
+        QJsonObject{{QStringLiteral("panel"), QStringLiteral("bottom")}, {QStringLiteral("visible"), false}});
+    QCOMPARE(hideDock.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+    QVERIFY(!bottomDock->isVisible());
+    const QJsonObject selectedWhileHidden = controller.handleToolCall(
+        QStringLiteral("select_log_panel_tab"), QJsonObject{{QStringLiteral("tab"), QStringLiteral("agent")}});
+    QCOMPARE(selectedWhileHidden.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+    QCOMPARE(selectedWhileHidden.value(QStringLiteral("dockVisible")).toBool(), false);
+    QCOMPARE(tabs->currentWidget(), agentPage);
+    QVERIFY(!bottomDock->isVisible());
+
+    const QJsonObject invalidTab = controller.actor()->executeTool(
+        QStringLiteral("select_log_panel_tab"), QJsonObject{{QStringLiteral("tab"), QStringLiteral("conversation")}});
+    QCOMPARE(invalidTab.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    QCOMPARE(tabs->currentWidget(), agentPage);
+
+    const int terminalIndex = tabs->indexOf(terminalPage);
+    QVERIFY(terminalIndex >= 0);
+    tabs->removeTab(terminalIndex);
+    const QJsonObject missingTab = controller.actor()->executeTool(
+        QStringLiteral("select_log_panel_tab"), QJsonObject{{QStringLiteral("tab"), QStringLiteral("terminal")}});
+    QCOMPARE(missingTab.value(QStringLiteral("errorCode")).toString(), QStringLiteral("GUI_UNAVAILABLE"));
+    QCOMPARE(tabs->currentWidget(), agentPage);
+    tabs->insertTab(terminalIndex, terminalPage, QStringLiteral("终端"));
+
+    QJsonObject affinityResult;
+    std::thread worker([&]() {
+        affinityResult = controller.executeDataSourceViewAction(
+            QStringLiteral("select_log_panel_tab"), QJsonObject{{QStringLiteral("tab"), QStringLiteral("terminal")}});
+    });
+    worker.join();
+    QCOMPARE(affinityResult.value(QStringLiteral("errorCode")).toString(), QStringLiteral("THREAD_AFFINITY"));
+    QCOMPARE(tabs->currentWidget(), agentPage);
+
+    const int loggerCountBeforeDirectCall = Logger::instance().logs().size();
+    controller.actor()->executeTool(QStringLiteral("select_log_panel_tab"),
+                                    QJsonObject{{QStringLiteral("tab"), QStringLiteral("runtime")}});
+    QCOMPARE(Logger::instance().logs().size(), loggerCountBeforeDirectCall);
+    QVERIFY(!ProjectManager::instance().currentProject());
+    QVERIFY(!RunEngine::instance().isBusy());
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+}
+
+void TestMainWindow::testAgentScrollsConversationToLatestWithoutProject() {
+    ProjectManager::instance().closeProject();
+    QVERIFY(!ProjectManager::instance().currentProject());
+    AgentChatPanel emptyPanel;
+    int emptyScrollValue = -1;
+    int emptyScrollMaximum = -1;
+    QVERIFY(emptyPanel.scrollToLatest(emptyScrollValue, emptyScrollMaximum));
+    QCOMPARE(emptyScrollValue, emptyScrollMaximum);
+
+    AgentController& controller = AgentController::instance();
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+
+    AgentChatPanel* panel = window.agentChatPanel();
+    QVERIFY(panel);
+    QScrollArea* scrollArea = panel->findChild<QScrollArea*>(QStringLiteral("AgentMessageScroll"));
+    QToolButton* latestButton = panel->findChild<QToolButton*>(QStringLiteral("AgentLatestMessage"));
+    QPlainTextEdit* input = panel->findChild<QPlainTextEdit*>();
+    QTabWidget* bottomTabs = window.findChild<QTabWidget*>(QStringLiteral("LogTerminalTabs"));
+    QDockWidget* bottomDock = window.findChild<QDockWidget*>(QStringLiteral("LogDock"));
+    QVERIFY(scrollArea);
+    QVERIFY(latestButton);
+    QVERIFY(input);
+    QVERIFY(bottomTabs);
+    QVERIFY(bottomDock);
+    for (int i = 0; i < 24; ++i)
+        panel->addMessage(AgentMessageBubble::Sender::Agent, QStringLiteral("message %1 ").arg(i).repeated(16));
+    QCoreApplication::processEvents();
+
+    QScrollBar* scrollbar = scrollArea->verticalScrollBar();
+    QVERIFY(scrollbar->maximum() > 0);
+    scrollbar->setValue(scrollbar->maximum());
+    QCoreApplication::processEvents();
+    scrollbar->setValue(0);
+    QCoreApplication::processEvents();
+    QVERIFY(!latestButton->isHidden());
+    input->setPlainText(QStringLiteral("keep this draft"));
+
+    AgentController::PermissionLevel permissions[]{AgentController::PermissionLevel::Observer,
+                                                   AgentController::PermissionLevel::Advisor,
+                                                   AgentController::PermissionLevel::Autopilot};
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    for (AgentController::PermissionLevel permission : permissions) {
+        controller.setPermissionLevel(permission);
+        QWidget* previousBottomPage = bottomTabs->currentWidget();
+        const bool previousDockVisibility = bottomDock->isVisible();
+        const QJsonObject result =
+            controller.handleToolCall(QStringLiteral("scroll_agent_chat_to_latest"),
+                                      QJsonObject{{QStringLiteral("private"), QStringLiteral("secret")}});
+        QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+        QCOMPARE(result.value(QStringLiteral("scrollValue")).toInt(), scrollbar->value());
+        QCOMPARE(result.value(QStringLiteral("scrollMaximum")).toInt(), scrollbar->maximum());
+        QVERIFY(result.value(QStringLiteral("atLatest")).toBool());
+        QCOMPARE(scrollbar->value(), scrollbar->maximum());
+        QVERIFY(latestButton->isHidden());
+        QCOMPARE(bottomTabs->currentWidget(), previousBottomPage);
+        QCOMPARE(bottomDock->isVisible(), previousDockVisibility);
+    }
+    QCOMPARE(auditSpy.count(), 3);
+    const AgentActionLogEntry audit = auditSpy.last().at(0).value<AgentActionLogEntry>();
+    QCOMPARE(QJsonDocument::fromJson(audit.params.toUtf8()).object(), QJsonObject());
+    QVERIFY(!audit.params.contains(QStringLiteral("secret")));
+    int toolCallLogCount = 0;
+    for (const LogEntry& entry : Logger::instance().logs(QStringLiteral("Agent"))) {
+        if (entry.message == QStringLiteral("[ToolCall] scroll_agent_chat_to_latest"))
+            ++toolCallLogCount;
+    }
+    QCOMPARE(toolCallLogCount, 3);
+    QCOMPARE(input->toPlainText(), QStringLiteral("keep this draft"));
+    QVERIFY(!ProjectManager::instance().currentProject());
+    QVERIFY(!RunEngine::instance().isBusy());
+
+    panel->addMessage(AgentMessageBubble::Sender::Agent, QStringLiteral("new message after scroll"));
+    QCoreApplication::processEvents();
+    QCOMPARE(scrollbar->value(), scrollbar->maximum());
+    const int loggerCountBeforeDirectCall = Logger::instance().logs().size();
+    controller.actor()->executeTool(QStringLiteral("scroll_agent_chat_to_latest"), {});
+    QCOMPARE(Logger::instance().logs().size(), loggerCountBeforeDirectCall);
+
+    QJsonObject affinityResult;
+    std::thread worker([&]() {
+        affinityResult = controller.executeDataSourceViewAction(QStringLiteral("scroll_agent_chat_to_latest"), {});
+    });
+    worker.join();
+    QCOMPARE(affinityResult.value(QStringLiteral("errorCode")).toString(), QStringLiteral("THREAD_AFFINITY"));
+    QCOMPARE(scrollbar->value(), scrollbar->maximum());
+
+    scrollbar->setValue(0);
+    const int valueBeforeUnavailable = scrollbar->value();
+    QWidget* pageBeforeUnavailable = bottomTabs->currentWidget();
+    const bool dockBeforeUnavailable = bottomDock->isVisible();
+    delete latestButton;
+    QCoreApplication::processEvents();
+    QCOMPARE(controller.actor()
+                 ->executeTool(QStringLiteral("scroll_agent_chat_to_latest"), {})
+                 .value(QStringLiteral("errorCode"))
+                 .toString(),
+             QStringLiteral("GUI_UNAVAILABLE"));
+    QCOMPARE(scrollbar->value(), valueBeforeUnavailable);
+    QCOMPARE(bottomTabs->currentWidget(), pageBeforeUnavailable);
+    QCOMPARE(bottomDock->isVisible(), dockBeforeUnavailable);
+
+    delete panel;
+    QCoreApplication::processEvents();
+    QVERIFY(!window.agentChatPanel());
+    QWidget* pageAfterPanelRemoval = bottomTabs->currentWidget();
+    const bool dockAfterPanelRemoval = bottomDock->isVisible();
+    QCOMPARE(controller.actor()
+                 ->executeTool(QStringLiteral("scroll_agent_chat_to_latest"), {})
+                 .value(QStringLiteral("errorCode"))
+                 .toString(),
+             QStringLiteral("GUI_UNAVAILABLE"));
+    QCOMPARE(bottomTabs->currentWidget(), pageAfterPanelRemoval);
+    QCOMPARE(bottomDock->isVisible(), dockAfterPanelRemoval);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+}
+
+void TestMainWindow::testAgentScrollLatestRejectsMissingScrollArea() {
+    ProjectManager::instance().closeProject();
+    AgentController& controller = AgentController::instance();
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+
+    AgentChatPanel* panel = window.agentChatPanel();
+    QVERIFY(panel);
+    QScrollArea* scrollArea = panel->findChild<QScrollArea*>(QStringLiteral("AgentMessageScroll"));
+    QToolButton* latestButton = panel->findChild<QToolButton*>(QStringLiteral("AgentLatestMessage"));
+    QTabWidget* bottomTabs = window.findChild<QTabWidget*>(QStringLiteral("LogTerminalTabs"));
+    QDockWidget* bottomDock = window.findChild<QDockWidget*>(QStringLiteral("LogDock"));
+    QVERIFY(scrollArea);
+    QVERIFY(latestButton);
+    QVERIFY(bottomTabs);
+    QVERIFY(bottomDock);
+
+    const bool latestButtonHidden = latestButton->isHidden();
+    QWidget* previousBottomPage = bottomTabs->currentWidget();
+    const bool previousDockVisibility = bottomDock->isVisible();
+    delete scrollArea;
+    QCoreApplication::processEvents();
+
+    panel->applyTheme(true);
+    panel->addMessage(AgentMessageBubble::Sender::Agent, QStringLiteral("late response after scroll-area removal"));
+    panel->appendToLastMessage(QStringLiteral(" late append"));
+    panel->showToolPreview({});
+    panel->clearToolPreview();
+
+    const QJsonObject result = controller.actor()->executeTool(QStringLiteral("scroll_agent_chat_to_latest"), {});
+    QCOMPARE(result.value(QStringLiteral("errorCode")).toString(), QStringLiteral("GUI_UNAVAILABLE"));
+    QCOMPARE(latestButton->isHidden(), latestButtonHidden);
+    QCOMPARE(bottomTabs->currentWidget(), previousBottomPage);
+    QCOMPARE(bottomDock->isVisible(), previousDockVisibility);
+}
+
+void TestMainWindow::testAgentSystemSettingsDialogLifecycleAndThemeSync() {
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+    ConfigThemeStateRestore restoreTheme;
+    SystemConfig& systemConfig = SystemConfig::instance();
+    const bool autoLoadBefore = systemConfig.autoLoadSolution();
+    const bool autoSaveBefore = systemConfig.autoSave();
+    const int autoSaveIntervalBefore = systemConfig.autoSaveInterval();
+    const int cycleIntervalBefore = systemConfig.cycleInterval();
+    const int logLevelBefore = systemConfig.logLevel();
+    const bool fileLogBefore = systemConfig.enableFileLog();
+    const bool darkThemeBefore = systemConfig.theme() == QStringLiteral("dark");
+    auto* window = new MainWindow;
+    window->show();
+    QCoreApplication::processEvents();
+    QPointer<QDialog> firstDialog;
+
+    for (const auto level : {AgentController::PermissionLevel::Observer, AgentController::PermissionLevel::Advisor,
+                             AgentController::PermissionLevel::Autopilot}) {
+        controller.setPermissionLevel(level);
+        const QJsonObject result = controller.handleToolCall(QStringLiteral("open_system_settings"), {});
+        QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("opened"));
+        QCOMPARE(result.value(QStringLiteral("page")).toString(), QStringLiteral("system_settings"));
+        QVERIFY(result.value(QStringLiteral("userActionRequired")).toBool());
+        QDialog* currentDialog = window->findChild<QDialog*>(QStringLiteral("AgentSystemSettingsDialog"));
+        QVERIFY(currentDialog);
+        if (firstDialog)
+            QCOMPARE(currentDialog, firstDialog.data());
+        else
+            firstDialog = currentDialog;
+    }
+
+    QDialog* dialog = window->findChild<QDialog*>(QStringLiteral("AgentSystemSettingsDialog"));
+    QVERIFY(dialog);
+    QVERIFY(dialog->isVisible());
+    QCOMPARE(window->findChildren<QDialog*>(QStringLiteral("AgentSystemSettingsDialog")).size(), 1);
+
+    QPointer<QDialog> dialogGuard(dialog);
+    dialog->close();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents();
+    QVERIFY(dialogGuard.isNull());
+
+    QCOMPARE(systemConfig.autoLoadSolution(), autoLoadBefore);
+    QCOMPARE(systemConfig.autoSave(), autoSaveBefore);
+    QCOMPARE(systemConfig.autoSaveInterval(), autoSaveIntervalBefore);
+    QCOMPARE(systemConfig.cycleInterval(), cycleIntervalBefore);
+    QCOMPARE(systemConfig.logLevel(), logLevelBefore);
+    QCOMPARE(systemConfig.enableFileLog(), fileLogBefore);
+
+    auto saveThemeFromDialog = [](QDialog* settingsDialog, bool dark) {
+        QComboBox* themeCombo = nullptr;
+        for (QComboBox* combo : settingsDialog->findChildren<QComboBox*>()) {
+            if (combo->findData(QStringLiteral("dark")) >= 0 && combo->findData(QStringLiteral("light")) >= 0) {
+                themeCombo = combo;
+                break;
+            }
+        }
+        if (!themeCombo)
+            return false;
+        themeCombo->setCurrentIndex(themeCombo->findData(dark ? QStringLiteral("dark") : QStringLiteral("light")));
+        for (QPushButton* button : settingsDialog->findChildren<QPushButton*>()) {
+            if (button->text() == QStringLiteral("Save")) {
+                button->click();
+                return true;
+            }
+        }
+        return false;
+    };
+    QTemporaryDir appDataDir;
+    QVERIFY(appDataDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDataDir.path().toLocal8Bit());
+    const bool darkThemeAfterSave = !darkThemeBefore;
+    const QJsonObject reopened = controller.handleToolCall(QStringLiteral("open_system_settings"), {});
+    QCOMPARE(reopened.value(QStringLiteral("status")).toString(), QStringLiteral("opened"));
+    QDialog* reopenedDialog = window->findChild<QDialog*>(QStringLiteral("AgentSystemSettingsDialog"));
+    QVERIFY(reopenedDialog);
+    QVERIFY(saveThemeFromDialog(reopenedDialog, darkThemeAfterSave));
+    reopenedDialog->close();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents();
+    QCOMPARE(systemConfig.theme(), darkThemeAfterSave ? QStringLiteral("dark") : QStringLiteral("light"));
+    QCOMPARE(window->styleSheet(), ThemeManager::styleSheet(darkThemeAfterSave));
+
+    const QJsonObject restoreOpen = controller.handleToolCall(QStringLiteral("open_system_settings"), {});
+    QCOMPARE(restoreOpen.value(QStringLiteral("status")).toString(), QStringLiteral("opened"));
+    QDialog* restoreDialog = window->findChild<QDialog*>(QStringLiteral("AgentSystemSettingsDialog"));
+    QVERIFY(restoreDialog);
+    QVERIFY(saveThemeFromDialog(restoreDialog, darkThemeBefore));
+    restoreDialog->close();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents();
+    QCOMPARE(systemConfig.theme(), darkThemeBefore ? QStringLiteral("dark") : QStringLiteral("light"));
+    QCOMPARE(window->styleSheet(), ThemeManager::styleSheet(darkThemeBefore));
+    qunsetenv("DEEPLUX_APP_DATA_DIR");
+
+    const QJsonObject thirdOpen = controller.handleToolCall(QStringLiteral("open_system_settings"), {});
+    QCOMPARE(thirdOpen.value(QStringLiteral("status")).toString(), QStringLiteral("opened"));
+    QDialog* finalDialog = window->findChild<QDialog*>(QStringLiteral("AgentSystemSettingsDialog"));
+    QVERIFY(finalDialog);
+    QPointer<QDialog> reopenedDialogGuard(finalDialog);
+    delete window;
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents();
+    QVERIFY(reopenedDialogGuard.isNull());
+}
+
+void TestMainWindow::testAgentClearRuntimeLogsRequiresConfirmationAndPreservesDiskAndActionHistory() {
+    ProjectManager::instance().closeProject();
+    QVERIFY(!ProjectManager::instance().currentProject());
+    AgentController& controller = AgentController::instance();
+    Logger& logger = Logger::instance();
+    const LogLevel previousMinimum = logger.minLevel();
+    const bool previousFileLogging = logger.isLogToFileEnabled();
+    logger.setMinLevel(LogLevel::Debug);
+    logger.setLogToFile(true);
+    logger.clearLogs();
+
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    QTableWidget* logTable = window.findChild<QTableWidget*>(QStringLiteral("LogTable"));
+    AgentActionLogWidget* actionLog = window.findChild<AgentActionLogWidget*>();
+    QToolButton* clearButton = window.findChild<QToolButton*>(QStringLiteral("ClearLogButton"));
+    QVERIFY(logTable);
+    QVERIFY(actionLog);
+    QVERIFY(clearButton);
+
+    logger.info(QStringLiteral("slice16-before-1"), QStringLiteral("Slice16Test"));
+    logger.warning(QStringLiteral("slice16-before-2"), QStringLiteral("Slice16Test"));
+    QCoreApplication::processEvents();
+    const int entriesBeforeRequest = logger.logs().size();
+    const int rowsBeforeRequest = logTable->rowCount();
+    QVERIFY(entriesBeforeRequest >= 2);
+    QVERIFY(rowsBeforeRequest >= 2);
+
+    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    const QJsonObject observerDenied = controller.handleToolCall(QStringLiteral("clear_runtime_logs"), {});
+    QCOMPARE(observerDenied.value(QStringLiteral("errorCode")).toString(), QStringLiteral("PERMISSION_DENIED"));
+    QCOMPARE(logger.logs().size(), entriesBeforeRequest);
+    QCOMPARE(logTable->rowCount(), rowsBeforeRequest);
+
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+    const QJsonObject rejectedPending = controller.handleToolCall(QStringLiteral("clear_runtime_logs"), {});
+    QCOMPARE(rejectedPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString rejectedId = controller.pendingConfirmationId();
+    QVERIFY(!rejectedId.isEmpty());
+    QCoreApplication::processEvents();
+    QLabel* previewText = window.findChild<QLabel*>(QStringLiteral("AgentToolPreviewContent"));
+    QPushButton* cancelButton = window.findChild<QPushButton*>(QStringLiteral("AgentCancelTools"));
+    QVERIFY(previewText);
+    QVERIFY(cancelButton);
+    QVERIFY(previewText->text().contains(QStringLiteral("清空运行日志内存")));
+    QVERIFY(previewText->text().contains(QStringLiteral("保留磁盘日志文件和 Agent 操作历史")));
+    QVERIFY(previewText->text().contains(QStringLiteral("高风险")));
+    const int actionRowsBeforeReject = actionLog->entries().size();
+    cancelButton->click();
+    QCoreApplication::processEvents();
+    QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    QCOMPARE(logger.logs().size(), entriesBeforeRequest);
+    QCOMPARE(logTable->rowCount(), rowsBeforeRequest);
+    QCOMPARE(actionLog->entries().size(), actionRowsBeforeReject + 1);
+    QCOMPARE(actionLog->entries().last().result, QStringLiteral("rejected"));
+
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+    const QJsonObject downgradePending = controller.handleToolCall(QStringLiteral("clear_runtime_logs"), {});
+    QCOMPARE(downgradePending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString downgradeId = controller.pendingConfirmationId();
+    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    QVERIFY(confirmPendingToolsAndWait(controller, downgradeId));
+    QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    QCOMPARE(logger.logs().size(), entriesBeforeRequest);
+    QCOMPARE(logTable->rowCount(), rowsBeforeRequest);
+    QCOMPARE(actionLog->entries().last().result, QStringLiteral("denied"));
+
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents();
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+    const QJsonObject approvedPending = controller.handleToolCall(QStringLiteral("clear_runtime_logs"), {});
+    QCOMPARE(approvedPending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString approvedId = controller.pendingConfirmationId();
+    QVERIFY(!approvedId.isEmpty());
+    const QString logFilePath = logger.logFilePath();
+    QFile diskLog(logFilePath);
+    QVERIFY(diskLog.open(QIODevice::ReadOnly));
+    const QByteArray diskBytesBeforeClear = diskLog.readAll();
+    diskLog.close();
+    const int actionRowsBeforeApproval = actionLog->entries().size();
+    QCoreApplication::processEvents();
+    QPushButton* confirmButton = window.findChild<QPushButton*>(QStringLiteral("AgentConfirmTools"));
+    QVERIFY(confirmButton);
+    confirmButton->click();
+    QCoreApplication::processEvents();
+    QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    QVERIFY(logger.logs().isEmpty());
+    QCOMPARE(logTable->rowCount(), 0);
+    QCOMPARE(actionLog->entries().size(), actionRowsBeforeApproval + 1);
+    QCOMPARE(actionLog->entries().last().action, QStringLiteral("clear_runtime_logs"));
+    QCOMPARE(actionLog->entries().last().result, QStringLiteral("success"));
+    QCOMPARE(QJsonDocument::fromJson(actionLog->entries().last().params.toUtf8()).object(), QJsonObject());
+    QVERIFY(diskLog.open(QIODevice::ReadOnly));
+    QCOMPARE(diskLog.readAll(), diskBytesBeforeClear);
+    diskLog.close();
+
+    logger.info(QStringLiteral("slice16-direct-count"), QStringLiteral("Slice16Test"));
+    QCoreApplication::processEvents();
+    const int directLoggerCount = logger.logs().size();
+    const int directRowCount = logTable->rowCount();
+    const QJsonObject directResult = controller.executeDataSourceViewAction(QStringLiteral("clear_runtime_logs"), {});
+    QCOMPARE(directResult.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
+    QCOMPARE(directResult.value(QStringLiteral("clearedLoggerEntries")).toInt(), directLoggerCount);
+    QCOMPARE(directResult.value(QStringLiteral("clearedRuntimeRows")).toInt(), directRowCount);
+    QVERIFY(logger.logs().isEmpty());
+    QCOMPARE(logTable->rowCount(), 0);
+
+    logger.info(QStringLiteral("slice16-manual-clear"), QStringLiteral("Slice16Test"));
+    QCoreApplication::processEvents();
+    clearButton->click();
+    QCoreApplication::processEvents();
+    QVERIFY(logger.logs().isEmpty());
+    QCOMPARE(logTable->rowCount(), 0);
+    QVERIFY(!actionLog->entries().isEmpty());
+
+    QJsonObject affinityResult;
+    std::thread worker(
+        [&]() { affinityResult = controller.executeDataSourceViewAction(QStringLiteral("clear_runtime_logs"), {}); });
+    worker.join();
+    QCOMPARE(affinityResult.value(QStringLiteral("errorCode")).toString(), QStringLiteral("THREAD_AFFINITY"));
+    QVERIFY(logger.logs().isEmpty());
+
+    logger.info(QStringLiteral("slice16-before-missing-table"), QStringLiteral("Slice16Test"));
+    QCoreApplication::processEvents();
+    delete logTable;
+    QCoreApplication::processEvents();
+    const int loggerEntriesWithoutTable = logger.logs().size();
+    const QJsonObject unavailable = controller.executeDataSourceViewAction(QStringLiteral("clear_runtime_logs"), {});
+    QCOMPARE(unavailable.value(QStringLiteral("errorCode")).toString(), QStringLiteral("GUI_UNAVAILABLE"));
+    QCOMPARE(logger.logs().size(), loggerEntriesWithoutTable);
+
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+    logger.clearLogs();
+    logger.setMinLevel(previousMinimum);
+    logger.setLogToFile(previousFileLogging);
+    QVERIFY(!ProjectManager::instance().currentProject());
+    QVERIFY(!RunEngine::instance().isBusy());
+}
+
+void TestMainWindow::testAgentLogLevelFilterIsBoundedToRuntimeTable() {
+    ProjectManager::instance().closeProject();
+    QVERIFY(!ProjectManager::instance().currentProject());
+    AgentController& controller = AgentController::instance();
+    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    QTableWidget* logTable = window.findChild<QTableWidget*>(QStringLiteral("LogTable"));
+    QVERIFY(logTable);
+    logTable->setRowCount(0);
+
+    const auto append = [&window](LogLevel level, const QString& message) {
+        const LogEntry entry{QDateTime::currentDateTime(), level, message, QStringLiteral("Slice12Test")};
+        return QMetaObject::invokeMethod(&window, "onLogAdded", Qt::DirectConnection, Q_ARG(DeepLux::LogEntry, entry));
+    };
+    QVERIFY(append(LogLevel::Debug, QStringLiteral("slice12-debug")));
+    QVERIFY(append(LogLevel::Info, QStringLiteral("slice12-info")));
+    QVERIFY(append(LogLevel::Warning, QStringLiteral("slice12-warning")));
+    QVERIFY(append(LogLevel::Error, QStringLiteral("slice12-error")));
+    QVERIFY(append(LogLevel::Success, QStringLiteral("slice12-success")));
+    QCOMPARE(logTable->rowCount(), 5);
+
+    const QStringList levels{QStringLiteral("all"), QStringLiteral("debug"), QStringLiteral("info"),
+                             QStringLiteral("warning"), QStringLiteral("error")};
+    const int expectedFixtureVisibleRows[]{5, 5, 4, 2, 1};
+    const AgentController::PermissionLevel permissions[]{AgentController::PermissionLevel::Observer,
+                                                         AgentController::PermissionLevel::Advisor,
+                                                         AgentController::PermissionLevel::Autopilot};
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    for (const AgentController::PermissionLevel level : permissions) {
+        controller.setPermissionLevel(level);
+        for (int i = 0; i < levels.size(); ++i) {
+            const QJsonObject result =
+                controller.handleToolCall(QStringLiteral("set_log_level_filter"),
+                                          QJsonObject{{QStringLiteral("minimumLevel"), levels.at(i)},
+                                                      {QStringLiteral("private"), QStringLiteral("secret")}});
+            QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+            QCOMPARE(result.value(QStringLiteral("minimumLevel")).toString(), levels.at(i));
+            int allVisibleRows = 0;
+            int fixtureVisibleRows = 0;
+            for (int row = 0; row < logTable->rowCount(); ++row) {
+                if (logTable->isRowHidden(row))
+                    continue;
+                ++allVisibleRows;
+                const QString message = logTable->item(row, 2)->text();
+                if (message.startsWith(QStringLiteral("[Slice12Test] slice12-")))
+                    ++fixtureVisibleRows;
+            }
+            QCOMPARE(result.value(QStringLiteral("visibleRows")).toInt(), allVisibleRows);
+            QCOMPARE(fixtureVisibleRows, expectedFixtureVisibleRows[i]);
+            QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        }
+    }
+    QCOMPARE(auditSpy.count(), 15);
+    const AgentActionLogEntry audit = auditSpy.last().at(0).value<AgentActionLogEntry>();
+    const QJsonObject auditParams = QJsonDocument::fromJson(audit.params.toUtf8()).object();
+    const QJsonObject expectedAuditParams{{QStringLiteral("minimumLevel"), QStringLiteral("error")}};
+    QCOMPARE(auditParams, expectedAuditParams);
+    QVERIFY(!audit.params.contains(QStringLiteral("secret")));
+
+    const QJsonObject errorOnly = controller.handleToolCall(
+        QStringLiteral("set_log_level_filter"), QJsonObject{{QStringLiteral("minimumLevel"), QStringLiteral("error")}});
+    QCOMPARE(errorOnly.value(QStringLiteral("visibleRows")).toInt(), 1);
+    const int rowsBeforeFutureLowLog = logTable->rowCount();
+    QVERIFY(append(LogLevel::Debug, QStringLiteral("slice12-future-debug")));
+    QCOMPARE(logTable->rowCount(), rowsBeforeFutureLowLog);
+    const QJsonObject lowered = controller.handleToolCall(
+        QStringLiteral("set_log_level_filter"), QJsonObject{{QStringLiteral("minimumLevel"), QStringLiteral("all")}});
+    int allVisibleRows = 0;
+    for (int row = 0; row < logTable->rowCount(); ++row) {
+        if (!logTable->isRowHidden(row))
+            ++allVisibleRows;
+    }
+    QCOMPARE(lowered.value(QStringLiteral("visibleRows")).toInt(), allVisibleRows);
+    for (int row = 0; row < logTable->rowCount(); ++row)
+        QVERIFY(logTable->item(row, 2)->text() != QStringLiteral("[Slice12Test] slice12-future-debug"));
+    const int loggerCountBeforeDirectCall = Logger::instance().logs().size();
+    controller.actor()->executeTool(QStringLiteral("set_log_level_filter"),
+                                    QJsonObject{{QStringLiteral("minimumLevel"), QStringLiteral("all")}});
+    QCOMPARE(Logger::instance().logs().size(), loggerCountBeforeDirectCall);
+    QVERIFY(!ProjectManager::instance().currentProject());
+    QVERIFY(!RunEngine::instance().isBusy());
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+}
+
+void TestMainWindow::testAgentWorkspacePanelVisibilityWithoutProjectAndInFocusMode() {
+    ProjectManager::instance().closeProject();
+    QVERIFY(!ProjectManager::instance().currentProject());
+
+    AgentController& controller = AgentController::instance();
+    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+
+    const QStringList panels{QStringLiteral("tools"), QStringLiteral("process"), QStringLiteral("bottom")};
+    const QHash<QString, QString> actionNames{
+        {QStringLiteral("tools"), QStringLiteral("WorkspaceToolsPanelAction")},
+        {QStringLiteral("process"), QStringLiteral("WorkspaceProcessPanelAction")},
+        {QStringLiteral("bottom"), QStringLiteral("WorkspaceBottomPanelAction")}};
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    const AgentController::PermissionLevel permissions[]{AgentController::PermissionLevel::Observer,
+                                                         AgentController::PermissionLevel::Advisor,
+                                                         AgentController::PermissionLevel::Autopilot};
+    for (int levelIndex = 0; levelIndex < 3; ++levelIndex) {
+        controller.setPermissionLevel(permissions[levelIndex]);
+        for (const QString& panel : panels) {
+            QAction* action = window.findChild<QAction*>(actionNames.value(panel));
+            QVERIFY(action);
+            QJsonObject params{{QStringLiteral("panel"), panel},
+                               {QStringLiteral("visible"), false},
+                               {QStringLiteral("private"), QStringLiteral("secret")}};
+            const QJsonObject hidden =
+                controller.handleToolCall(QStringLiteral("set_workspace_panel_visibility"), params);
+            QCOMPARE(hidden.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+            QCOMPARE(hidden.value(QStringLiteral("visible")).toBool(), false);
+            QCOMPARE(hidden.value(QStringLiteral("effectivelyVisible")).toBool(), false);
+            QVERIFY(!action->isChecked());
+
+            params.insert(QStringLiteral("visible"), true);
+            const QJsonObject shown =
+                controller.handleToolCall(QStringLiteral("set_workspace_panel_visibility"), params);
+            QCOMPARE(shown.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+            QCOMPARE(shown.value(QStringLiteral("visible")).toBool(), true);
+            QVERIFY(action->isChecked());
+            QVERIFY(shown.value(QStringLiteral("effectivelyVisible")).toBool());
+
+            const QJsonObject repeated =
+                controller.handleToolCall(QStringLiteral("set_workspace_panel_visibility"), params);
+            QCOMPARE(repeated.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+            QCOMPARE(repeated.value(QStringLiteral("visible")).toBool(), true);
+            QVERIFY(action->isChecked());
+        }
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    }
+    QCOMPARE(auditSpy.count(), 27);
+    const AgentActionLogEntry audited = auditSpy.last().at(0).value<AgentActionLogEntry>();
+    const QJsonObject auditedParams = QJsonDocument::fromJson(audited.params.toUtf8()).object();
+    QCOMPARE(auditedParams.keys(), QStringList({QStringLiteral("panel"), QStringLiteral("visible")}));
+    QVERIFY(!audited.params.contains(QStringLiteral("secret")));
+    QVERIFY(!ProjectManager::instance().currentProject());
+
+    QAction* bottomAction = window.findChild<QAction*>(QStringLiteral("WorkspaceBottomPanelAction"));
+    QToolButton* collapseBottomButton = window.findChild<QToolButton*>(QStringLiteral("CollapseLogButton"));
+    QDockWidget* bottomDock = window.findChild<QDockWidget*>(QStringLiteral("LogDock"));
+    QVERIFY(bottomAction);
+    QVERIFY(collapseBottomButton);
+    QVERIFY(bottomDock);
+    QCOMPARE(controller
+                 .handleToolCall(QStringLiteral("set_workspace_panel_visibility"),
+                                 QJsonObject{{QStringLiteral("panel"), QStringLiteral("bottom")},
+                                             {QStringLiteral("visible"), true}})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("ok"));
+    QVERIFY(bottomDock->isVisible());
+    collapseBottomButton->click();
+    QCoreApplication::processEvents();
+    QVERIFY(!bottomDock->isVisible());
+    QVERIFY(!bottomAction->isChecked());
+    const QJsonObject bottomExpanded = controller.handleToolCall(
+        QStringLiteral("set_workspace_panel_visibility"),
+        QJsonObject{{QStringLiteral("panel"), QStringLiteral("bottom")}, {QStringLiteral("visible"), true}});
+    QCOMPARE(bottomExpanded.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+    QVERIFY(bottomDock->isVisible());
+    QVERIFY(bottomAction->isChecked());
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "_phase8_toggleFocusMode"));
+    QCoreApplication::processEvents();
+    QCOMPARE(controller
+                 .handleToolCall(
+                     QStringLiteral("set_workspace_panel_visibility"),
+                     QJsonObject{{QStringLiteral("panel"), QStringLiteral("tools")}, {QStringLiteral("visible"), true}})
+                 .value(QStringLiteral("suppressedByFocusMode"))
+                 .toBool(),
+             true);
+    const QJsonObject focusProcess = controller.handleToolCall(
+        QStringLiteral("set_workspace_panel_visibility"),
+        QJsonObject{{QStringLiteral("panel"), QStringLiteral("process")}, {QStringLiteral("visible"), true}});
+    QCOMPARE(focusProcess.value(QStringLiteral("visible")).toBool(), true);
+    QCOMPARE(focusProcess.value(QStringLiteral("effectivelyVisible")).toBool(), false);
+    QCOMPARE(focusProcess.value(QStringLiteral("suppressedByFocusMode")).toBool(), true);
+    const QJsonObject focusBottom = controller.handleToolCall(
+        QStringLiteral("set_workspace_panel_visibility"),
+        QJsonObject{{QStringLiteral("panel"), QStringLiteral("bottom")}, {QStringLiteral("visible"), true}});
+    QCOMPARE(focusBottom.value(QStringLiteral("visible")).toBool(), true);
+    QCOMPARE(focusBottom.value(QStringLiteral("effectivelyVisible")).toBool(), false);
+    QCOMPARE(focusBottom.value(QStringLiteral("suppressedByFocusMode")).toBool(), true);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "_phase8_toggleFocusMode"));
+    QCoreApplication::processEvents();
+    QVERIFY(window.findChild<QWidget*>(QStringLiteral("ToolPanelDock"))->isVisible());
+    QVERIFY(window.findChild<QWidget*>(QStringLiteral("ProcessPanelWidget"))->isVisible());
+    QVERIFY(window.findChild<QWidget*>(QStringLiteral("LogDock"))->isVisible());
+
+    QAction* toolsAction = window.findChild<QAction*>(QStringLiteral("WorkspaceToolsPanelAction"));
+    QWidget* toolsDock = window.findChild<QWidget*>(QStringLiteral("ToolPanelDock"));
+    QVERIFY(toolsAction);
+    QVERIFY(toolsDock);
+    window.resize(1000, 720);
+    QCoreApplication::processEvents();
+    QVERIFY(!toolsDock->isVisible());
+    QVERIFY(!toolsAction->isChecked());
+    const QJsonObject explicitlyHidden = controller.handleToolCall(
+        QStringLiteral("set_workspace_panel_visibility"),
+        QJsonObject{{QStringLiteral("panel"), QStringLiteral("tools")}, {QStringLiteral("visible"), false}});
+    QCOMPARE(explicitlyHidden.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+    window.resize(1500, 900);
+    QCoreApplication::processEvents();
+    QVERIFY(!toolsDock->isVisible());
+    const QJsonObject explicitlyShown = controller.handleToolCall(
+        QStringLiteral("set_workspace_panel_visibility"),
+        QJsonObject{{QStringLiteral("panel"), QStringLiteral("tools")}, {QStringLiteral("visible"), true}});
+    QCOMPARE(explicitlyShown.value(QStringLiteral("visible")).toBool(), true);
+    QVERIFY(toolsDock->isVisible());
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+}
+
+void TestMainWindow::testAgentSelectFlowModuleSynchronizesGuiAndRespectsPinnedInspector() {
+    AgentController& controller = AgentController::instance();
+    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    MainWindowOutputProbeModule firstModule(QStringLiteral("agent_select_first"));
+    MainWindowOutputProbeModule secondModule(QStringLiteral("agent_select_second"));
+    QVERIFY(firstModule.initialize());
+    QVERIFY(secondModule.initialize());
+
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    for (const QString& id : {QStringLiteral("agent_select_first"), QStringLiteral("agent_select_second")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("OutputProbe");
+        instance.name = id;
+        project->addModule(instance);
+    }
+    window.registerFlowModule(QStringLiteral("agent_select_first"), &firstModule);
+    window.registerFlowModule(QStringLiteral("agent_select_second"), &secondModule);
+    QCoreApplication::processEvents();
+
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>();
+    ModuleInspectorPanel* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(processTree);
+    QVERIFY(canvas);
+    QVERIFY(inspector);
+    const QJsonObject projectBefore = project->toJson();
+    const int undoCountBefore = controller.actor()->undoStack()->count();
+    const QJsonObject selected = controller.actor()->executeTool(
+        QStringLiteral("select_flow_module"),
+        QJsonObject{{QStringLiteral("instanceId"), QStringLiteral("agent_select_second")}});
+    QCOMPARE(selected.value(QStringLiteral("status")).toString(), QStringLiteral("selected"));
+    QCOMPARE(processTree->currentItem()->data(0, Qt::UserRole + 1).toString(), QStringLiteral("agent_select_second"));
+    QVERIFY(canvas->nodeItem(QStringLiteral("agent_select_second"))->isSelected());
+    QCOMPARE(inspector->currentInstanceId(), QStringLiteral("agent_select_second"));
+    QVERIFY(selected.value(QStringLiteral("inspectorVisible")).toBool());
+    QVERIFY(selected.value(QStringLiteral("paramsTabVisible")).toBool());
+    QCOMPARE(inspector->findChild<QTabWidget*>(QStringLiteral("InspectorTabs"))->currentIndex(), 0);
+    QCOMPARE(project->toJson(), projectBefore);
+    QCOMPARE(controller.actor()->undoStack()->count(), undoCountBefore);
+    QVERIFY(!RunEngine::instance().isBusy());
+
+    QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
+    const QJsonObject paramsWithExtraField{{QStringLiteral("instanceId"), QStringLiteral("agent_select_first")},
+                                           {QStringLiteral("private"), QStringLiteral("secret")}};
+    for (const AgentController::PermissionLevel level :
+         {AgentController::PermissionLevel::Observer, AgentController::PermissionLevel::Advisor,
+          AgentController::PermissionLevel::Autopilot}) {
+        controller.setPermissionLevel(level);
+        const QJsonObject result =
+            controller.handleToolCall(QStringLiteral("select_flow_module"), paramsWithExtraField);
+        QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("selected"));
+        QCOMPARE(result.value(QStringLiteral("paramsTabVisible")).toBool(), true);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    }
+    QCOMPARE(auditSpy.count(), 3);
+    const AgentActionLogEntry audited = auditSpy.last().at(0).value<AgentActionLogEntry>();
+    QCOMPARE(audited.action, QStringLiteral("select_flow_module"));
+    const QJsonObject auditedParams = QJsonDocument::fromJson(audited.params.toUtf8()).object();
+    const QJsonObject expectedAuditedParams{{QStringLiteral("instanceId"), QStringLiteral("agent_select_first")}};
+    QCOMPARE(auditedParams, expectedAuditedParams);
+    QVERIFY(!audited.params.contains(QStringLiteral("secret")));
+    QCOMPARE(inspector->findChild<QTabWidget*>(QStringLiteral("InspectorTabs"))->currentIndex(), 0);
+    QCOMPARE(project->toJson(), projectBefore);
+    QCOMPARE(controller.actor()->undoStack()->count(), undoCountBefore);
+
+    const QJsonObject restoreSelection = controller.actor()->executeTool(
+        QStringLiteral("select_flow_module"),
+        QJsonObject{{QStringLiteral("instanceId"), QStringLiteral("agent_select_second")}});
+    QCOMPARE(restoreSelection.value(QStringLiteral("status")).toString(), QStringLiteral("selected"));
+    inspector->setPinned(true);
+    const QJsonObject pinned = controller.actor()->executeTool(
+        QStringLiteral("select_flow_module"),
+        QJsonObject{{QStringLiteral("instanceId"), QStringLiteral("agent_select_first")}});
+    QCOMPARE(pinned.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INSPECTOR_PINNED"));
+    QCoreApplication::processEvents();
+    QCOMPARE(processTree->currentItem()->data(0, Qt::UserRole + 1).toString(), QStringLiteral("agent_select_second"));
+    QVERIFY(canvas->nodeItem(QStringLiteral("agent_select_second"))->isSelected());
+    QVERIFY(!canvas->nodeItem(QStringLiteral("agent_select_first"))->isSelected());
+    QCOMPARE(inspector->currentInstanceId(), QStringLiteral("agent_select_second"));
+
+    const QJsonObject missing = controller.actor()->executeTool(
+        QStringLiteral("select_flow_module"), QJsonObject{{QStringLiteral("instanceId"), QStringLiteral("missing")}});
+    QCOMPARE(missing.value(QStringLiteral("errorCode")).toString(), QStringLiteral("MODULE_NOT_FOUND"));
+    inspector->setPinned(false);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+}
+
+void TestMainWindow::testG4NewImageImportIsRejectedWhileBusyThenCommitsAfterStop() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString imagePath = tempDir.filePath(QStringLiteral("busy-import.png"));
+    QImage image(12, 10, QImage::Format_RGB32);
+    image.fill(Qt::green);
+    QVERIFY(image.save(imagePath));
+
+    TestGrabImageParamModule runtimeGrab(QStringLiteral("import_grab"));
+    TestableMainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance grab;
+    grab.id = QStringLiteral("import_grab");
+    grab.moduleId = QStringLiteral("GrabImage");
+    grab.name = QStringLiteral("import grab");
+    grab.params = QJsonObject{{QStringLiteral("grabSource"), QStringLiteral("Camera")},
+                              {QStringLiteral("filePath"), QString()},
+                              {QStringLiteral("folderPath"), QString()},
+                              {QStringLiteral("folderLoop"), true},
+                              {QStringLiteral("cameraId"), QString()},
+                              {QStringLiteral("exposureTime"), 0.0},
+                              {QStringLiteral("gain"), 1.0},
+                              {QStringLiteral("grabTimeout"), 5000.0}};
+    project->addModule(grab);
+    window.registerFlowModule(grab.id, &runtimeGrab);
+    DataSource existingSource;
+    existingSource.id = QStringLiteral("existing_image_source");
+    existingSource.name = QStringLiteral("existing image");
+    existingSource.filePath = imagePath;
+    existingSource.type = QStringLiteral("image");
+    project->addDataSource(existingSource);
+    QCoreApplication::processEvents();
+
+    QWidget* imageDisplay = window.findChild<QWidget*>(QStringLiteral("ImageDisplayWidget"));
+    QVERIFY(imageDisplay);
+    QMimeData mime;
+    mime.setUrls({QUrl::fromLocalFile(imagePath)});
+    QSemaphore entered;
+    QSemaphore release;
+    MainWindowOutputProbeModule probe(QStringLiteral("busy_import_probe"));
+    probe.duringProcess = [&]() {
+        entered.release();
+        release.acquire();
+    };
+    QVERIFY(probe.initialize());
+    RunEngine& engine = RunEngine::instance();
+    engine.addModule(&probe);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
+    struct ReleaseOnExit {
+        QSemaphore& semaphore;
+        ~ReleaseOnExit() {
+            semaphore.release();
+        }
+    } releaseOnExit{release};
+    QString runId;
+    QVERIFY(engine.runOnceAsync(&runId));
+    QVERIFY(entered.tryAcquire(1, 2000));
+    QVERIFY(engine.isBusy());
+
+    const QJsonObject projectBefore = project->toJson();
+    QDropEvent busyDrop(QPointF(10, 10), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier);
+    window.eventFilter(imageDisplay, &busyDrop);
+    QCOMPARE(project->toJson(), projectBefore);
+    QCOMPARE(project->dataSources().size(), 1);
+    QCOMPARE(project->moduleById(grab.id)->params.value(QStringLiteral("grabSource")).toString(),
+             QStringLiteral("Camera"));
+    QVERIFY(project->moduleById(grab.id)->params.value(QStringLiteral("filePath")).toString().isEmpty());
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("运行或维护期间不能")));
+    QObject* dataSourcePanel = window.findChild<QObject*>(QStringLiteral("DataSourcePanel"));
+    QVERIFY(dataSourcePanel);
+    QVERIFY(QMetaObject::invokeMethod(dataSourcePanel, "requestDisplay", Qt::DirectConnection,
+                                      Q_ARG(QString, existingSource.id)));
+    QCOMPARE(project->toJson(), projectBefore);
+    QCOMPARE(project->moduleById(grab.id)->params.value(QStringLiteral("grabSource")).toString(),
+             QStringLiteral("Camera"));
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport);
+    QVERIFY(viewport->imageWidget()->hasImage());
+
+    release.release();
+    QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 3000);
+    engine.clearModules();
+    probe.shutdown();
+
+    AgentController& controller = AgentController::instance();
+    AgentActor* importUndoActor = controller.actor();
+    QVERIFY(importUndoActor);
+    QCOMPARE(importUndoActor
+                 ->executeTool(QStringLiteral("set_param"),
+                               QJsonObject{{QStringLiteral("instanceId"), grab.id},
+                                           {QStringLiteral("key"), QStringLiteral("filePath")},
+                                           {QStringLiteral("value"), QStringLiteral("agent-before-import.png")}})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("param_set"));
+    QDropEvent idleDrop(QPointF(10, 10), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier);
+    window.eventFilter(imageDisplay, &idleDrop);
+    QCOMPARE(project->dataSources().size(), 1);
+    QCOMPARE(project->moduleById(grab.id)->params.value(QStringLiteral("grabSource")).toString(),
+             QStringLiteral("Path"));
+    QCOMPARE(project->moduleById(grab.id)->params.value(QStringLiteral("filePath")).toString(), imagePath);
+    QCOMPARE(runtimeGrab.currentParams().value(QStringLiteral("grabSource")).toString(), QStringLiteral("Path"));
+    QCOMPARE(runtimeGrab.currentParams().value(QStringLiteral("filePath")).toString(), imagePath);
+    window.selectModuleForCapture(grab.id);
+    QCoreApplication::processEvents();
+    QComboBox* sourceEditor = window.findChild<QComboBox*>(QStringLiteral("ParamEditor_grabSource"));
+    QVERIFY(sourceEditor);
+    QCOMPARE(sourceEditor->currentData().toString(), QStringLiteral("Path"));
+    project->setModified(false);
+
+    // Re-importing an already-bound image leaves the Project values unchanged, so
+    // Project change signals cannot repair a stale runtime module value.
+    runtimeGrab.setParam(QStringLiteral("grabSource"), QStringLiteral("File"));
+    QDropEvent reimportDrop(QPointF(10, 10), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier);
+    window.eventFilter(imageDisplay, &reimportDrop);
+    QCOMPARE(project->dataSources().size(), 1);
+    QCOMPARE(project->moduleById(grab.id)->params.value(QStringLiteral("grabSource")).toString(),
+             QStringLiteral("Path"));
+    QCOMPARE(runtimeGrab.currentParams().value(QStringLiteral("grabSource")).toString(), QStringLiteral("Path"));
+    QCOMPARE(runtimeGrab.currentParams().value(QStringLiteral("filePath")).toString(), imagePath);
+
+    QSignalSpy expiredUndoSpy(&controller, &AgentController::actionLogEntryAdded);
+    QVERIFY(!controller.undoLastAgentAction());
+    QVERIFY(!expiredUndoSpy.isEmpty());
+    QCOMPARE(expiredUndoSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
+    QCOMPARE(project->moduleById(grab.id)->params.value(QStringLiteral("filePath")).toString(), imagePath);
+    QVERIFY(!project->isModified());
+}
+
+void TestMainWindow::testG4AdvancedConfigKeepsDraftWhenEngineBecomesBusy() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    QVERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("CropImage")));
+    ModuleInstance crop;
+    crop.id = QStringLiteral("busy_crop_config");
+    crop.moduleId = QStringLiteral("CropImage");
+    crop.name = QStringLiteral("busy crop");
+    crop.params =
+        QJsonObject{{QStringLiteral("rectangles"), QJsonArray{}}, {QStringLiteral("outputFirstAsImage"), true}};
+    project->addModule(crop);
+    QCoreApplication::processEvents();
+
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    auto* undoStack = window.findChild<QUndoStack*>();
+    QVERIFY(inspector);
+    QVERIFY(undoStack);
+    QVERIFY(QMetaObject::invokeMethod(window.findChild<FlowCanvas*>(), "nodeSelected", Qt::DirectConnection,
+                                      Q_ARG(QString, crop.id)));
+    auto* advancedAction = inspector->findChild<QAction*>(QStringLiteral("InspectorAdvancedAction"));
+    QVERIFY(advancedAction);
+    const QJsonObject projectBefore = project->toJson();
+    const int undoCountBefore = undoStack->count();
+    QSemaphore entered;
+    QSemaphore release;
+    MainWindowOutputProbeModule probe(QStringLiteral("busy_advanced_config_probe"));
+    probe.duringProcess = [&]() {
+        entered.release();
+        release.acquire();
+    };
+    QVERIFY(probe.initialize());
+    RunEngine& engine = RunEngine::instance();
+    engine.addModule(&probe);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
+    struct ReleaseOnExit {
+        QSemaphore& semaphore;
+        ~ReleaseOnExit() {
+            semaphore.release();
+        }
+    } releaseOnExit{release};
+    QString runId;
+    bool rejectedDialogStayedOpen = false;
+    bool draftWasRetained = false;
+    QTimer::singleShot(0, &window, [&]() {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        QVERIFY(dialog);
+        auto* rectangles = dialog->findChild<QLineEdit*>(QStringLiteral("CropImageRectanglesEdit"));
+        auto* ok = dialog->findChild<QPushButton*>(QStringLiteral("PluginConfigOkButton"));
+        QVERIFY(rectangles);
+        QVERIFY(ok);
+        rectangles->setText(QStringLiteral("[[10,10,5,5,0]]"));
+        QCOMPARE(project->toJson(), projectBefore);
+        QVERIFY(engine.runOnceAsync(&runId));
+        QVERIFY(entered.tryAcquire(1, 2000));
+        QVERIFY(engine.isBusy());
+        ok->click();
+        rejectedDialogStayedOpen = QApplication::activeModalWidget() == dialog && dialog->isVisible();
+        draftWasRetained = rectangles->text() == QStringLiteral("[[10,10,5,5,0]]");
+        QCOMPARE(project->toJson(), projectBefore);
+        QCOMPARE(undoStack->count(), undoCountBefore);
+        release.release();
+        QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 3000);
+        engine.clearModules();
+        probe.shutdown();
+        ok->click();
+    });
+    advancedAction->trigger();
+
+    QVERIFY(rejectedDialogStayedOpen);
+    QVERIFY(draftWasRetained);
+    QCOMPARE(project->moduleById(crop.id)->params.value(QStringLiteral("rectangles")).toArray().size(), 1);
+    QCOMPARE(undoStack->count(), undoCountBefore + 1);
+}
+
+void TestMainWindow::testG4AdvancedConfigRejectsCrossSourceConflictAtomically() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    QVERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("CropImage")));
+    ModuleInstance crop;
+    crop.id = QStringLiteral("config_interleave");
+    crop.moduleId = QStringLiteral("CropImage");
+    const QJsonArray originalRectangles{QJsonValue(QJsonArray{0, 0, 1, 1, 0})};
+    crop.params =
+        QJsonObject{{QStringLiteral("rectangles"), originalRectangles}, {QStringLiteral("outputFirstAsImage"), true}};
+    project->addModule(crop);
+    QCoreApplication::processEvents();
+
+    auto* canvas = window.findChild<FlowCanvas*>(QStringLiteral("FlowCanvas"));
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    auto* undoStack = window.findChild<QUndoStack*>();
+    QVERIFY(canvas);
+    QVERIFY(inspector);
+    QVERIFY(undoStack);
+    QVERIFY(QMetaObject::invokeMethod(canvas, "nodeSelected", Qt::DirectConnection, Q_ARG(QString, crop.id)));
+    QTRY_COMPARE(inspector->currentInstanceId(), crop.id);
+    auto* advancedAction = inspector->findChild<QAction*>(QStringLiteral("InspectorAdvancedAction"));
+    QVERIFY(advancedAction);
+    AgentActor* actor = AgentController::instance().actor();
+    QVERIFY(actor);
+
+    bool staleDialogStayedOpen = false;
+    bool draftRetained = false;
+    const int undoCountBefore = undoStack->count();
+    QTimer::singleShot(0, &window, [&]() {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        QVERIFY(dialog);
+        auto* rectangles = dialog->findChild<QLineEdit*>(QStringLiteral("CropImageRectanglesEdit"));
+        auto* output = dialog->findChild<QCheckBox*>(QStringLiteral("CropImageOutputFirstCheck"));
+        auto* ok = dialog->findChild<QPushButton*>(QStringLiteral("PluginConfigOkButton"));
+        auto* error = dialog->findChild<QLabel*>(QStringLiteral("PluginConfigErrorLabel"));
+        QVERIFY(rectangles);
+        QVERIFY(output);
+        QVERIFY(ok);
+        QVERIFY(error);
+        rectangles->setText(QStringLiteral("[[10,10,5,5,0]]"));
+        output->setChecked(false);
+        QCOMPARE(
+            actor
+                ->executeTool("set_param",
+                              QJsonObject{{"instanceId", crop.id}, {"key", "outputFirstAsImage"}, {"value", false}})
+                .value("status")
+                .toString(),
+            QStringLiteral("param_set"));
+        const QJsonObject afterAgentEdit = project->moduleById(crop.id)->params;
+        ok->click();
+        staleDialogStayedOpen = QApplication::activeModalWidget() == dialog && dialog->isVisible();
+        draftRetained = rectangles->text() == QStringLiteral("[[10,10,5,5,0]]");
+        QCOMPARE(project->moduleById(crop.id)->params, afterAgentEdit);
+        QCOMPARE(project->moduleById(crop.id)->params.value(QStringLiteral("rectangles")).toArray(),
+                 originalRectangles);
+        QCOMPARE(project->moduleById(crop.id)->params.value(QStringLiteral("outputFirstAsImage")), QJsonValue(false));
+        QVERIFY(error->isVisible());
+        QVERIFY(error->text().contains(QStringLiteral("其他入口修改")));
+        QCOMPARE(undoStack->count(), undoCountBefore + 1); // stale atomic command is visible and navigable
+        dialog->reject();
+    });
+    advancedAction->trigger();
+    QVERIFY(staleDialogStayedOpen);
+    QVERIFY(draftRetained);
+}
+
+void TestMainWindow::testG4AdvancedConfigDefersCalibrationPointClearUntilAccepted() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("NPointCalibration")));
+
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    QVERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("N点标定")));
+    const QJsonArray points{
+        QJsonObject{{QStringLiteral("image"), QJsonArray{0, 0}}, {QStringLiteral("world"), QJsonArray{0, 0}}},
+        QJsonObject{{QStringLiteral("image"), QJsonArray{100, 0}}, {QStringLiteral("world"), QJsonArray{100, 0}}},
+        QJsonObject{{QStringLiteral("image"), QJsonArray{100, 100}}, {QStringLiteral("world"), QJsonArray{100, 100}}},
+        QJsonObject{{QStringLiteral("image"), QJsonArray{0, 100}}, {QStringLiteral("world"), QJsonArray{0, 100}}}};
+    ModuleInstance calibration;
+    calibration.id = QStringLiteral("busy_calibration_config");
+    calibration.moduleId = QStringLiteral("N点标定");
+    calibration.name = QStringLiteral("busy calibration");
+    calibration.params = QJsonObject{{QStringLiteral("calibrationPoints"), points}};
+    project->addModule(calibration);
+    QCoreApplication::processEvents();
+
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>();
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    auto* undoStack = window.findChild<QUndoStack*>();
+    QVERIFY(canvas);
+    QVERIFY(inspector);
+    QVERIFY(undoStack);
+    QVERIFY(QMetaObject::invokeMethod(canvas, "nodeSelected", Qt::DirectConnection, Q_ARG(QString, calibration.id)));
+    auto* advancedAction = inspector->findChild<QAction*>(QStringLiteral("InspectorAdvancedAction"));
+    QVERIFY(advancedAction);
+
+    // Synchronize once to obtain the same GUI-owned module that advanced configuration will later mutate.
+    QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 3000);
+    auto* runtimeModule = dynamic_cast<NPointCalibrationPlugin*>(RunEngine::instance().getModule(calibration.id));
+    QVERIFY(runtimeModule);
+    runtimeModule->m_calibResult.isValid = true; // Sentinel for the deferred clearPointsPublic side effect.
+    RunEngine::instance().clearModules();
+
+    QSemaphore entered;
+    QSemaphore release;
+    RunEngine& engine = RunEngine::instance();
+    QVERIFY(engine.loadProject(project, [&](const ModuleInstance& loading) {
+        auto* probe = new MainWindowOutputProbeModule(loading.id);
+        probe->duringProcess = [&]() {
+            entered.release();
+            release.acquire();
+        };
+        return probe;
+    }));
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(calibration.id, ExecutionAffinity::Worker);
+    struct ReleaseOnExit {
+        QSemaphore& semaphore;
+        ~ReleaseOnExit() {
+            semaphore.release();
+        }
+    } releaseOnExit{release};
+
+    const QJsonObject projectBefore = project->toJson();
+    const int undoCountBefore = undoStack->count();
+    QString runId;
+    bool stayedOpen = false;
+    QTimer::singleShot(0, &window, [&]() {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        QVERIFY(dialog);
+        auto* clearButton = dialog->findChild<QPushButton*>();
+        const auto buttons = dialog->findChildren<QPushButton*>();
+        clearButton = nullptr;
+        for (QPushButton* button : buttons) {
+            if (button->text().contains(QStringLiteral("清除所有标定点"))) {
+                clearButton = button;
+                break;
+            }
+        }
+        auto* ok = dialog->findChild<QPushButton*>(QStringLiteral("PluginConfigOkButton"));
+        QVERIFY(clearButton);
+        QVERIFY(ok);
+        clearButton->click();
+        QVERIFY(runtimeModule->m_calibResult.isValid);
+        QCOMPARE(project->toJson(), projectBefore);
+        QVERIFY(engine.runOnceAsync(&runId));
+        QVERIFY(entered.tryAcquire(1, 2000));
+        QVERIFY(engine.isBusy());
+        ok->click();
+        stayedOpen = QApplication::activeModalWidget() == dialog && dialog->isVisible();
+        QVERIFY(runtimeModule->m_calibResult.isValid);
+        QCOMPARE(project->toJson(), projectBefore);
+        QCOMPARE(undoStack->count(), undoCountBefore);
+        release.release();
+        QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 3000);
+        engine.clearModules();
+        ok->click();
+    });
+    advancedAction->trigger();
+
+    QVERIFY(stayedOpen);
+    QVERIFY(!runtimeModule->m_calibResult.isValid);
+    QVERIFY(project->moduleById(calibration.id)->params.value(QStringLiteral("calibrationPoints")).toArray().isEmpty());
+    QCOMPARE(undoStack->count(), undoCountBefore + 1);
+}
+
+void TestMainWindow::testG4BusyRejectsNonPendingMeasurementPickOnly() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    QVERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+    ModuleInstance measurement;
+    measurement.id = QStringLiteral("manual_measurement_pick");
+    measurement.moduleId = QStringLiteral("MeasurementInput");
+    measurement.name = QStringLiteral("manual measurement");
+    measurement.params = QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")},
+                                     {QStringLiteral("point1"), QJsonArray{1.0, 2.0}},
+                                     {QStringLiteral("point2"), QJsonArray{3.0, 4.0}},
+                                     {QStringLiteral("awaitUserPick"), false}};
+    project->addModule(measurement);
+    QCoreApplication::processEvents();
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>();
+    QVERIFY(canvas);
+    QVERIFY(QMetaObject::invokeMethod(canvas, "nodeSelected", Qt::DirectConnection, Q_ARG(QString, measurement.id)));
+
+    QSemaphore entered;
+    QSemaphore release;
+    MainWindowOutputProbeModule probe(QStringLiteral("busy_measurement_pick_probe"));
+    probe.duringProcess = [&]() {
+        entered.release();
+        release.acquire();
+    };
+    QVERIFY(probe.initialize());
+    RunEngine& engine = RunEngine::instance();
+    engine.addModule(&probe);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
+    struct ReleaseOnExit {
+        QSemaphore& semaphore;
+        ~ReleaseOnExit() {
+            semaphore.release();
+        }
+    } releaseOnExit{release};
+    QString runId;
+    QVERIFY(engine.runOnceAsync(&runId));
+    QVERIFY(entered.tryAcquire(1, 2000));
+    QVERIFY(engine.isBusy());
+
+    const QJsonObject projectBefore = project->toJson();
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(10.0, 20.0))));
+    QCOMPARE(project->toJson(), projectBefore);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("运行或维护期间不能")));
+
+    release.release();
+    QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 3000);
+    engine.clearModules();
+    probe.shutdown();
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(10.0, 20.0))));
+    const QJsonArray pickedPoint =
+        project->moduleById(measurement.id)->params.value(QStringLiteral("point1")).toArray();
+    QCOMPARE(pickedPoint, QJsonArray::fromVariantList(QVariantList{10.0, 20.0}));
+}
+
+void TestMainWindow::testG4BusyTreeDropRejectsAndPlaceholderCleanupIsViewOnly() {
+    TestableMainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    for (const QString& id : {QStringLiteral("tree_first"), QStringLiteral("tree_second")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("OutputProbe");
+        instance.name = id;
+        project->addModule(instance);
+    }
+    MainWindowOutputProbeModule firstRuntime(QStringLiteral("tree_first"));
+    MainWindowOutputProbeModule secondRuntime(QStringLiteral("tree_second"));
+    QVERIFY(firstRuntime.initialize());
+    QVERIFY(secondRuntime.initialize());
+    window.registerFlowModule(QStringLiteral("tree_first"), &firstRuntime);
+    window.registerFlowModule(QStringLiteral("tree_second"), &secondRuntime);
+    QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
+    auto* controller = window.findChild<ProcessTreeController*>();
+    auto* undoStack = window.findChild<QUndoStack*>();
+    QVERIFY(controller);
+    QVERIFY(undoStack);
+    QTreeWidget* tree = controller->tree();
+    QVERIFY(tree);
+    const QJsonObject projectBefore = project->toJson();
+    const int undoCountBefore = undoStack->count();
+    const int undoIndexBefore = undoStack->index();
+    const QStringList orderBefore{tree->topLevelItem(0)->data(0, Qt::UserRole + 1).toString(),
+                                  tree->topLevelItem(1)->data(0, Qt::UserRole + 1).toString()};
+
+    QSemaphore entered;
+    QSemaphore release;
+    MainWindowOutputProbeModule probe(QStringLiteral("busy_tree_drop_probe"));
+    probe.duringProcess = [&]() {
+        entered.release();
+        release.acquire();
+    };
+    QVERIFY(probe.initialize());
+    RunEngine& engine = RunEngine::instance();
+    engine.addModule(&probe);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
+    struct ReleaseOnExit {
+        QSemaphore& semaphore;
+        ~ReleaseOnExit() {
+            semaphore.release();
+        }
+    } releaseOnExit{release};
+    QString runId;
+    QVERIFY(engine.runOnceAsync(&runId));
+    QVERIFY(entered.tryAcquire(1, 2000));
+    QVERIFY(engine.isBusy());
+
+    auto performTreeDrag = [&window, tree](QTreeWidgetItem* sourceItem, const QPointF& targetPos) {
+        tree->setCurrentItem(sourceItem);
+        const QModelIndex index = treeModelIndexForItem(tree, sourceItem);
+        QMimeData* mimeData = tree->model()->mimeData({index});
+        QDropEvent drop(targetPos, Qt::MoveAction, mimeData, Qt::NoButton, Qt::NoModifier);
+        window.eventFilter(tree->viewport(), &drop);
+        const bool accepted = drop.isAccepted();
+        delete mimeData;
+        return accepted;
+    };
+    const QPointF belowSecond(5, tree->visualItemRect(tree->topLevelItem(1)).bottom() - 1);
+    QVERIFY(!performTreeDrag(tree->topLevelItem(0), belowSecond));
+    QCOMPARE(project->toJson(), projectBefore);
+    QCOMPARE(controller->topLevelItemCount(), 2);
+    QCOMPARE(tree->topLevelItem(0)->data(0, Qt::UserRole + 1).toString(), orderBefore.at(0));
+    QCOMPARE(tree->topLevelItem(1)->data(0, Qt::UserRole + 1).toString(), orderBefore.at(1));
+    QCOMPARE(undoStack->count(), undoCountBefore);
+    QCOMPARE(undoStack->index(), undoIndexBefore);
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>();
+    QVERIFY(canvas);
+    emit canvas->connectionRequest(orderBefore.at(0), QStringLiteral("image"), orderBefore.at(1),
+                                   QStringLiteral("image"));
+    QVERIFY(project->connections().isEmpty());
+    QCOMPARE(project->toJson(), projectBefore);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("运行或维护期间不能")));
+
+    auto* placeholder = new QTreeWidgetItem();
+    const QString pendingId = QStringLiteral("pending_drop_placeholder");
+    placeholder->setData(0, Qt::UserRole, QStringLiteral("flow_item"));
+    placeholder->setData(0, Qt::UserRole + 1, pendingId);
+    const QString placeholderToken = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    placeholder->setData(0, Qt::UserRole + 3, placeholderToken);
+    controller->insertTopLevelItem(controller->topLevelItemCount(), placeholder);
+    controller->insertPendingInsertion(pendingId, placeholder, placeholderToken);
+    controller->insertUsedName(pendingId);
+    const int withPlaceholder = controller->topLevelItemCount();
+    QCOMPARE(withPlaceholder, 3);
+    controller->discardPendingInsertion(pendingId, placeholder, placeholderToken);
+    QCOMPARE(controller->topLevelItemCount(), 2);
+    QVERIFY(controller->instanceItem(pendingId) == nullptr);
+    QVERIFY(!controller->isUsedName(pendingId));
+    QCOMPARE(project->toJson(), projectBefore);
+    QVERIFY(engine.isBusy());
+    QCOMPARE(engine.modules().size(), 1);
+    QCOMPARE(undoStack->count(), undoCountBefore);
+    QCOMPARE(undoStack->index(), undoIndexBefore);
+
+    release.release();
+    QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 3000);
+    engine.clearModules();
+    probe.shutdown();
+    QVERIFY(window.reorderProcessTreeForTest(0, 2).isEmpty());
+    QCOMPARE(tree->topLevelItem(0)->data(0, Qt::UserRole + 1).toString(), orderBefore.at(1));
+    QCOMPARE(tree->topLevelItem(1)->data(0, Qt::UserRole + 1).toString(), orderBefore.at(0));
+    QCOMPARE(project->modules().at(0).id, orderBefore.at(1));
+    emit canvas->connectionRequest(orderBefore.at(1), QStringLiteral("image"), orderBefore.at(0),
+                                   QStringLiteral("image"));
+    QCOMPARE(project->connections().size(), 1);
+}
+
+void TestMainWindow::testG4PendingToolboxCallbacksRejectStaleDrops() {
+    TestableMainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    auto* controller = window.findChild<ProcessTreeController*>();
+    auto* undoStack = window.findChild<QUndoStack*>();
+    QVERIFY(controller);
+    QVERIFY(undoStack);
+    QTreeWidget* tree = controller->tree();
+    QVERIFY(tree);
+    const QJsonObject projectBefore = project->toJson();
+    const int undoCountBefore = undoStack->count();
+
+    auto addPlaceholder = [controller, tree](const QString& id, const QString& token) {
+        auto* item = new QTreeWidgetItem();
+        item->setData(0, Qt::UserRole + 1, id);
+        item->setData(0, Qt::UserRole + 3, token);
+        tree->addTopLevelItem(item);
+        controller->insertPendingInsertion(id, item, token);
+        controller->insertUsedName(id);
+        return item;
+    };
+
+    // Deliver a real Drop event with the toolbox model MIME payload; enter the engine after the
+    // event handler has queued its zero-timer callback but before Qt can dispatch that callback.
+    QTreeWidget* toolbox = window.findChild<QTreeWidget*>(QStringLiteral("ToolBoxTree"));
+    QVERIFY(toolbox);
+    QTreeWidgetItem* pluginItem = nullptr;
+    for (QTreeWidgetItemIterator it(toolbox); *it; ++it) {
+        if ((*it)->data(0, Qt::UserRole).toString() == QStringLiteral("plugin") &&
+            (*it)->data(0, Qt::UserRole + 1).toString() == QStringLiteral("GrabImage")) {
+            pluginItem = *it;
+            break;
+        }
+    }
+    QVERIFY(pluginItem);
+    const QModelIndex pluginIndex = treeModelIndexForItem(toolbox, pluginItem);
+    QVERIFY(pluginIndex.isValid());
+    QMimeData* pluginMime = toolbox->model()->mimeData({pluginIndex});
+    QVERIFY(pluginMime);
+    QCOMPARE(PluginDragPayload::pluginName(pluginMime), QStringLiteral("GrabImage"));
+    QSemaphore entered;
+    QSemaphore release;
+    MainWindowOutputProbeModule probe(QStringLiteral("pending_drop_callback_probe"));
+    probe.duringProcess = [&]() {
+        entered.release();
+        release.acquire();
+    };
+    QVERIFY(probe.initialize());
+    RunEngine& engine = RunEngine::instance();
+    engine.addModule(&probe);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
+    struct ReleaseOnExit {
+        QSemaphore& semaphore;
+        ~ReleaseOnExit() {
+            semaphore.release();
+        }
+    } releaseOnExit{release};
+    QString runId;
+    QString busyId;
+    window.afterProcessTreeDrop = [&](QDropEvent* drop) {
+        QVERIFY(drop->mimeData()->hasFormat("application/x-qabstractitemmodeldatalist"));
+        QCOMPARE(PluginDragPayload::pluginName(drop->mimeData()), QStringLiteral("GrabImage"));
+        QVERIFY(controller->topLevelItemCount() == 1);
+        busyId = controller->topLevelItem(0)->data(0, Qt::UserRole + 1).toString();
+        QVERIFY(!busyId.isEmpty());
+        QVERIFY(engine.runOnceAsync(&runId));
+        QVERIFY(entered.tryAcquire(1, 2000));
+        QVERIFY(engine.isBusy());
+    };
+    QTimer::singleShot(0, &window, [&]() {
+        QDropEvent drop(QPointF(20, 20), Qt::CopyAction, pluginMime, Qt::NoButton, Qt::NoModifier);
+        window.eventFilter(tree->viewport(), &drop);
+    });
+    QCoreApplication::processEvents(QEventLoop::AllEvents);
+    delete pluginMime;
+    QCOMPARE(window.lastDroppedPlugin, QStringLiteral("GrabImage"));
+    QVERIFY(!busyId.isEmpty());
+    QTRY_VERIFY_WITH_TIMEOUT(controller->instanceItem(busyId) == nullptr, 1000);
+    QVERIFY(!controller->isUsedName(busyId));
+    QCOMPARE(project->toJson(), projectBefore);
+    QCOMPARE(undoStack->count(), undoCountBefore);
+    QVERIFY(engine.isBusy());
+
+    release.release();
+    QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 3000);
+    engine.clearModules();
+    probe.shutdown();
+
+    // If the tree discarded the placeholder first, a delayed callback only cleans controller bookkeeping.
+    const QString removedId = QStringLiteral("pending_removed_callback");
+    const QString removedToken = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QTreeWidgetItem* removedItem = addPlaceholder(removedId, removedToken);
+    const int row = tree->indexOfTopLevelItem(removedItem);
+    QVERIFY(row >= 0);
+    delete tree->takeTopLevelItem(row);
+    window.schedulePendingToolboxDrop(QStringLiteral("NotARealPlugin"), removedId, removedItem, removedToken, project);
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->isUsedName(removedId), 1000);
+    QVERIFY(controller->instanceItem(removedId) == nullptr);
+    QVERIFY(!controller->isUsedName(removedId));
+    QCOMPARE(project->toJson(), projectBefore);
+    QCOMPARE(undoStack->count(), undoCountBefore);
+
+    // Run the real AgentActor -> MainWindow module-sync signal while another placeholder is pending.
+    const QString syncedId = QStringLiteral("pending_sync_callback");
+    const QString syncedToken = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QTreeWidgetItem* syncedItem = addPlaceholder(syncedId, syncedToken);
+    controller->markModulesNeedSync();
+    AgentActor* actor = AgentController::instance().actor();
+    QVERIFY(actor);
+    QVERIFY(QMetaObject::invokeMethod(actor, "runEngineSyncRequested", Qt::DirectConnection));
+    QVERIFY(controller->isPendingInsertion(syncedId, syncedItem, syncedToken));
+    window.schedulePendingToolboxDrop(QStringLiteral("NotARealPlugin"), syncedId, syncedItem, syncedToken, project);
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->isUsedName(syncedId), 1000);
+    QVERIFY(controller->instanceItem(syncedId) == nullptr);
+    QVERIFY(!controller->isUsedName(syncedId));
+    QCOMPARE(project->toJson(), projectBefore);
+    QCOMPARE(undoStack->count(), undoCountBefore);
+
+    // Project replacement invalidates the token before the callback can touch the old placeholder.
+    const QString switchedId = QStringLiteral("pending_switched_callback");
+    const QString switchedToken = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QTreeWidgetItem* switchedItem = addPlaceholder(switchedId, switchedToken);
+    QPointer<Project> oldProject(project);
+    ProjectManager::instance().closeProject();
+    QVERIFY(oldProject.isNull());
+    Project* replacement = ProjectManager::instance().newProject();
+    QVERIFY(replacement);
+    window.schedulePendingToolboxDrop(QStringLiteral("NotARealPlugin"), switchedId, switchedItem, switchedToken,
+                                      oldProject.data());
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->isUsedName(switchedId), 1000);
+    QVERIFY(controller->instanceItem(switchedId) == nullptr);
+    QVERIFY(!controller->isUsedName(switchedId));
+    QVERIFY(replacement->modules().isEmpty());
+    QCOMPARE(undoStack->count(), undoCountBefore);
+}
+
+void TestMainWindow::testG4SourceLessDropRequiresMatchingPayload() {
+    TestableMainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+
+    ModuleInstance first;
+    first.id = QStringLiteral("source_less_first");
+    first.moduleId = QStringLiteral("GrabImage");
+    first.name = first.id;
+    project->addModule(first);
+    ModuleInstance second;
+    second.id = QStringLiteral("source_less_second");
+    second.moduleId = QStringLiteral("Blob");
+    second.name = second.id;
+    project->addModule(second);
+    QCoreApplication::processEvents();
+
+    auto* controller = window.findChild<ProcessTreeController*>();
+    auto* undoStack = window.findChild<QUndoStack*>();
+    QVERIFY(controller);
+    QVERIFY(undoStack);
+    QTreeWidget* tree = controller->tree();
+    QVERIFY(tree);
+    QCOMPARE(tree->topLevelItemCount(), 2);
+    const QJsonObject beforeMismatch = project->toJson();
+    const int undoCountBefore = undoStack->count();
+    const QModelIndex firstIndex = treeModelIndexForItem(tree, tree->topLevelItem(0));
+    QVERIFY(firstIndex.isValid());
+    QMimeData* flowMime = tree->model()->mimeData({firstIndex});
+    QVERIFY(flowMime);
+    QCOMPARE(PluginDragPayload::flowInstanceId(flowMime), first.id);
+
+    // A source-less tree MIME must not reorder the currently selected, different instance.
+    tree->setCurrentItem(tree->topLevelItem(1));
+    const QPointF treeDropPos(5, tree->visualItemRect(tree->topLevelItem(1)).bottom() - 1);
+    QDropEvent mismatchedFlowDrop(treeDropPos, Qt::MoveAction, flowMime, Qt::NoButton, Qt::NoModifier);
+    QVERIFY(window.eventFilter(tree->viewport(), &mismatchedFlowDrop));
+    QVERIFY(!mismatchedFlowDrop.isAccepted());
+    QCOMPARE(project->toJson(), beforeMismatch);
+    QCOMPARE(tree->topLevelItem(0)->data(0, Qt::UserRole + 1).toString(), first.id);
+    QCOMPARE(tree->topLevelItem(1)->data(0, Qt::UserRole + 1).toString(), second.id);
+    QCOMPARE(undoStack->count(), undoCountBefore);
+    delete flowMime;
+
+    // A source-less toolbox MIME remains a toolbox insert even when a flow item is selected.
+    QTreeWidget* toolbox = window.findChild<QTreeWidget*>(QStringLiteral("ToolBoxTree"));
+    QVERIFY(toolbox);
+    QTreeWidgetItem* pluginItem = nullptr;
+    for (QTreeWidgetItemIterator it(toolbox); *it; ++it) {
+        if ((*it)->data(0, Qt::UserRole).toString() == QStringLiteral("plugin") &&
+            (*it)->data(0, Qt::UserRole + 1).toString() == QStringLiteral("GrabImage")) {
+            pluginItem = *it;
+            break;
+        }
+    }
+    QVERIFY(pluginItem);
+    const QModelIndex pluginIndex = treeModelIndexForItem(toolbox, pluginItem);
+    QVERIFY(pluginIndex.isValid());
+    QMimeData* pluginMime = toolbox->model()->mimeData({pluginIndex});
+    QVERIFY(pluginMime);
+    QCOMPARE(PluginDragPayload::pluginName(pluginMime), QStringLiteral("GrabImage"));
+    tree->setCurrentItem(tree->topLevelItem(1));
+    QDropEvent toolboxDrop(treeDropPos, Qt::CopyAction, pluginMime, Qt::NoButton, Qt::NoModifier);
+    QVERIFY(window.eventFilter(tree->viewport(), &toolboxDrop));
+    QVERIFY(toolboxDrop.isAccepted());
+    QTRY_COMPARE_WITH_TIMEOUT(project->modules().size(), 3, 2000);
+    QCOMPARE(project->modules().at(0).id, first.id);
+    QCOMPARE(project->modules().at(1).id, second.id);
+    QVERIFY(project->modules().at(2).moduleId == QStringLiteral("GrabImage"));
+    QCOMPARE(undoStack->count(), undoCountBefore);
+    delete pluginMime;
+}
+
+void TestMainWindow::testG4AgentEnabledLeavesOtherInspectorStateAlone() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    for (const QString& id : {QStringLiteral("first"), QStringLiteral("second")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("FindCircle");
+        instance.name = id;
+        project->addModule(instance);
+    }
+    QCoreApplication::processEvents();
+    QTreeWidget* tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(tree != nullptr);
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      tree->visualItemRect(tree->topLevelItem(0)).center());
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(inspector != nullptr);
+    QTRY_COMPARE(inspector->currentInstanceId(), QStringLiteral("first"));
+    auto* enabledCheck = inspector->findChild<QCheckBox*>(QStringLiteral("InspectorEnabledCheck"));
+    QVERIFY(enabledCheck != nullptr);
+    QVERIFY(enabledCheck->isChecked());
+
+    AgentActor actor;
+    QCOMPARE(actor.executeTool("set_module_enabled", QJsonObject{{"instanceId", "second"}, {"enabled", false}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("updated"));
+    QCOMPARE(inspector->currentInstanceId(), QStringLiteral("first"));
+    QVERIFY(enabledCheck->isChecked());
+    QVERIFY(!project->moduleById(QStringLiteral("second"))->enabled);
+    QVERIFY(RunEngine::instance().isModuleDisabled(QStringLiteral("second")));
+}
+
+void TestMainWindow::testG4AgentBreakpointUpdatesInspectorWithoutLosingNoteDraft() {
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance instance;
+    instance.id = QStringLiteral("breakpoint_id");
+    instance.moduleId = QStringLiteral("FindCircle");
+    instance.name = QStringLiteral("Circle");
+    project->addModule(instance);
+    QCoreApplication::processEvents();
+    QTreeWidget* tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(tree != nullptr);
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      tree->visualItemRect(tree->topLevelItem(0)).center());
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(inspector != nullptr);
+    QTRY_COMPARE(inspector->currentInstanceId(), instance.id);
+    auto* breakpointBtn = inspector->findChild<QToolButton*>(QStringLiteral("InspectorBreakpointBtn"));
+    auto* noteEdit = inspector->findChild<QLineEdit*>(QStringLiteral("InspectorNoteEdit"));
+    QVERIFY(breakpointBtn != nullptr);
+    QVERIFY(noteEdit != nullptr);
+    QVERIFY(!breakpointBtn->isChecked());
+    noteEdit->setText(QStringLiteral("unfinished draft"));
+    noteEdit->setModified(true);
+
+    AgentActor actor;
+    QCOMPARE(actor.executeTool("set_breakpoint", QJsonObject{{"instanceId", instance.id}, {"enabled", true}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("updated"));
+    QVERIFY(breakpointBtn->isChecked());
+    QVERIFY(RunEngine::instance().hasBreakpoint(instance.id));
+    QCOMPARE(noteEdit->text(), QStringLiteral("unfinished draft"));
+    QCOMPARE(project->moduleById(instance.id)->note, QString());
+    actor.undoStack()->undo();
+    QVERIFY(!breakpointBtn->isChecked());
+    QVERIFY(!RunEngine::instance().hasBreakpoint(instance.id));
+    QCOMPARE(noteEdit->text(), QStringLiteral("unfinished draft"));
+    actor.undoStack()->redo();
+    QVERIFY(breakpointBtn->isChecked());
+
+    QCOMPARE(actor.executeTool("set_module_note", QJsonObject{{"instanceId", instance.id}, {"note", "agent note"}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("updated"));
+    QCOMPARE(noteEdit->text(), QStringLiteral("unfinished draft"));
+    QCOMPARE(project->moduleById(instance.id)->note, QStringLiteral("agent note"));
+    actor.undoStack()->undo();
+    QCOMPARE(noteEdit->text(), QStringLiteral("unfinished draft"));
+    QVERIFY(project->moduleById(instance.id)->note.isEmpty());
+    actor.undoStack()->redo();
+    QCOMPARE(noteEdit->text(), QStringLiteral("unfinished draft"));
+    noteEdit->setModified(false);
+    QCOMPARE(actor.executeTool("set_module_note", QJsonObject{{"instanceId", instance.id}, {"note", "visible note"}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("updated"));
+    QCOMPARE(noteEdit->text(), QStringLiteral("visible note"));
+    QCOMPARE(actor.executeTool("set_module_note", QJsonObject{{"instanceId", instance.id}, {"note", QString()}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("updated"));
+    QVERIFY(noteEdit->text().isEmpty());
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("breakpoint-gui.dproj"));
+    QVERIFY(project->save(path));
+    ProjectManager::instance().closeProject();
+    QVERIFY(ProjectManager::instance().openProject(path) != nullptr);
+    QCoreApplication::processEvents();
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      tree->visualItemRect(tree->topLevelItem(0)).center());
+    QTRY_COMPARE(inspector->currentInstanceId(), instance.id);
+    QVERIFY(breakpointBtn->isChecked());
+    QVERIFY(ProjectManager::instance().currentProject()->moduleById(instance.id)->breakpoint);
+}
+
+void TestMainWindow::testG4PreInsertedToolboxDropKeepsRequestedRow() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    for (const QString& id : {QStringLiteral("first"), QStringLiteral("last")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("GrabImage");
+        instance.name = id;
+        project->addModule(instance);
+    }
+    ProcessTreeController* controller = window.findChild<ProcessTreeController*>();
+    QVERIFY(controller != nullptr);
+    QTreeWidget* tree = controller->tree();
+    QVERIFY(tree != nullptr);
+    QCOMPARE(tree->topLevelItemCount(), 2);
+
+    // 工具箱拖放路径先插入临时树项，异步创建完成后才写入 Project。
+    auto* preInserted = new QTreeWidgetItem();
+    preInserted->setData(0, Qt::UserRole, QStringLiteral("flow_item"));
+    preInserted->setData(0, Qt::UserRole + 1, QStringLiteral("middle"));
+    preInserted->setData(0, Qt::UserRole + 2, QStringLiteral("GrabImage"));
+    controller->insertTopLevelItem(1, preInserted);
+    controller->insertInstanceItem(QStringLiteral("middle"), preInserted);
+
+    ModuleInstance middle;
+    middle.id = QStringLiteral("middle");
+    middle.moduleId = QStringLiteral("GrabImage");
+    middle.name = middle.id;
+    project->addModule(middle); // 默认追加；已有树项必须保持用户选中的行
+    QCOMPARE(tree->topLevelItemCount(), 3);
+    QCOMPARE(controller->indexOfTopLevelItem(preInserted), 1);
+    QVERIFY(project->moveModule(middle.id, controller->indexOfTopLevelItem(preInserted)));
+    QCOMPARE(project->modules().at(0).id, QStringLiteral("first"));
+    QCOMPARE(project->modules().at(1).id, middle.id);
+    QCOMPARE(project->modules().at(2).id, QStringLiteral("last"));
+    QCOMPARE(tree->topLevelItem(1)->data(0, Qt::UserRole + 1).toString(), middle.id);
+}
+
 void TestMainWindow::testClosingProjectClearsRunEngineReferencesAndOutputs() {
     MainWindow window;
     QVERIFY(ProjectManager::instance().newProject() != nullptr);
@@ -2171,11 +15577,54 @@ void TestMainWindow::testClosingProjectClearsRunEngineReferencesAndOutputs() {
     delete module;
 }
 
+void TestMainWindow::testG3VisibleGuiHeartbeatWhileWaitingForRun() {
+    MainWindow window;
+    window.show();
+    QVERIFY(window.isVisible());
+    QVERIFY(ProjectManager::instance().newProject() != nullptr);
+    RunEngine& engine = RunEngine::instance();
+    auto* module = new MainWindowOutputProbeModule(QStringLiteral("g3_gui_slow"));
+    module->duringProcess = []() { QThread::msleep(400); };
+    module->initialize();
+    engine.addModule(module);
+    QString runId;
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(module->instanceName(), ExecutionAffinity::Worker);
+    QVERIFY(engine.runOnceAsync(&runId));
+    AgentActor actor;
+    QCOMPARE(actor.executeTool("wait_for_run", QJsonObject{{"runId", runId}}).value("status").toString(),
+             QStringLiteral("pending"));
+    QElapsedTimer elapsed;
+    elapsed.start();
+    qint64 last = elapsed.elapsed();
+    qint64 maxInterval = 0;
+    int beats = 0;
+    QTimer heartbeat(&window);
+    heartbeat.setInterval(50);
+    connect(&heartbeat, &QTimer::timeout, &window, [&]() {
+        const qint64 now = elapsed.elapsed();
+        maxInterval = qMax(maxInterval, now - last);
+        last = now;
+        ++beats;
+    });
+    heartbeat.start();
+    QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 5000);
+    heartbeat.stop();
+    QVERIFY(beats >= 3);
+    QVERIFY(maxInterval <= 500);
+    qInfo().noquote() << "G3 visible GUI heartbeat max interval (ms):" << maxInterval;
+    engine.clearModules();
+    delete module;
+}
+
 void TestMainWindow::testRunningFlowDefersCloseAndBlocksProjectReplacement() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
     MainWindow window;
     window.show();
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project != nullptr);
+    QVERIFY(ProjectManager::instance().saveProject(dir.filePath(QStringLiteral("saved-before-run.dproj"))));
+    project->setModified(false);
 
     RunEngine& engine = RunEngine::instance();
     auto* module = new MainWindowOutputProbeModule(QStringLiteral("busy_probe"));
@@ -2196,7 +15645,8 @@ void TestMainWindow::testRunningFlowDefersCloseAndBlocksProjectReplacement() {
     engine.runOnce();
 
     QVERIFY(callbackRan);
-    QTRY_VERIFY(!window.isVisible());
+    QTRY_VERIFY(!engine.isBusy());
+    QCoreApplication::processEvents();
     QCOMPARE(ProjectManager::instance().currentProject(), project);
     engine.clearModules();
     delete module;
@@ -2240,6 +15690,124 @@ void TestMainWindow::testRunningFlowRejectsModuleDeletion() {
     project->removeModule(instance.id);
     QCoreApplication::processEvents();
     QVERIFY(guard == nullptr);
+}
+
+void TestMainWindow::testFlowCanvasPortDragAddsProjectConnection() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    QCoreApplication::processEvents();
+
+    auto* canvas = window.findChild<FlowCanvas*>(QStringLiteral("FlowCanvas"));
+    QVERIFY(canvas != nullptr);
+    const QString sourceId = canvas->addNode(QStringLiteral("slice23.source"), QStringLiteral("Source"),
+                                             QPointF(80, 60), QStringLiteral("slice23-source"));
+    const QString targetId = canvas->addNode(QStringLiteral("slice23.target"), QStringLiteral("Target"),
+                                             QPointF(380, 240), QStringLiteral("slice23-target"));
+    FlowNodeItem* source = canvas->nodeItem(sourceId);
+    FlowNodeItem* target = canvas->nodeItem(targetId);
+    QVERIFY(source != nullptr);
+    QVERIFY(target != nullptr);
+
+    PortSpec output;
+    output.id = QStringLiteral("image_out");
+    output.displayName = QStringLiteral("Image out");
+    output.type = DataType::Any;
+    PortSpec input = output;
+    input.id = QStringLiteral("image_in");
+    input.displayName = QStringLiteral("Image in");
+    source->setPortSpecs({}, {output});
+    target->setPortSpecs({input}, {});
+
+    QVERIFY(project->connections().isEmpty());
+    QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
+    press.setScenePos(source->scenePos() + source->outputPortPos(QStringLiteral("image_out")));
+    press.setButton(Qt::LeftButton);
+    press.setButtons(Qt::LeftButton);
+    QVERIFY(canvas->scene()->sendEvent(source, &press));
+
+    QGraphicsSceneMouseEvent move(QEvent::GraphicsSceneMouseMove);
+    move.setScenePos(target->scenePos() + target->inputPortPos(QStringLiteral("image_in")));
+    move.setButtons(Qt::LeftButton);
+    QVERIFY(canvas->scene()->sendEvent(source, &move));
+
+    QGraphicsSceneMouseEvent release(QEvent::GraphicsSceneMouseRelease);
+    release.setScenePos(target->scenePos() + target->inputPortPos(QStringLiteral("image_in")));
+    release.setButton(Qt::LeftButton);
+    QVERIFY(canvas->scene()->sendEvent(source, &release));
+
+    QCOMPARE(project->connections().size(), 1);
+    const ModuleConnection connection = project->connections().first();
+    QCOMPARE(connection.fromModuleId, sourceId);
+    QCOMPARE(connection.fromPort, QStringLiteral("image_out"));
+    QCOMPARE(connection.toModuleId, targetId);
+    QCOMPARE(connection.toPort, QStringLiteral("image_in"));
+}
+
+void TestMainWindow::testInspectorRerunButtonRunsWholeFlow() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    QStringList executionLog;
+    const QStringList moduleIds = {QStringLiteral("rerun-first"), QStringLiteral("rerun-selected")};
+    for (const QString& id : moduleIds) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("OutputProbe");
+        instance.name = id;
+        project->addModule(instance);
+
+        auto* module = new MainWindowOutputProbeModule(id);
+        module->executionLog = &executionLog;
+        QVERIFY(module->initialize());
+        window.registerFlowModule(id, module);
+    }
+    QCoreApplication::processEvents();
+    window.selectModuleForCapture(moduleIds.last());
+
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(inspector != nullptr);
+    QCOMPARE(inspector->currentInstanceId(), moduleIds.last());
+    auto* rerunButton = window.findChild<QPushButton*>(QStringLiteral("InspectorRerunBtn"));
+    QVERIFY(rerunButton != nullptr);
+    QVERIFY(rerunButton->isEnabled());
+
+    rerunButton->click();
+    QVERIFY(waitForServiceIdle());
+    QCOMPARE(executionLog, moduleIds);
+}
+
+void TestMainWindow::testStatusBarShowsRunDurationClockAndUserPlaceholder() {
+    MainWindow window;
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    ModuleInstance instance;
+    instance.id = QStringLiteral("slice27-status-probe");
+    instance.moduleId = QStringLiteral("OutputProbe");
+    instance.name = QStringLiteral("Status probe");
+    project->addModule(instance);
+
+    auto* module = new MainWindowOutputProbeModule(instance.id);
+    QVERIFY(module->initialize());
+    window.registerFlowModule(instance.id, module);
+    QCoreApplication::processEvents();
+
+    auto* runLabel = window.findChild<QLabel*>(QStringLiteral("RunStatusLabel"));
+    auto* userLabel = window.findChild<QLabel*>(QStringLiteral("UserStatusLabel"));
+    auto* timeLabel = window.findChild<QLabel*>(QStringLiteral("TimeStatusLabel"));
+    QVERIFY(runLabel && userLabel && timeLabel);
+    QVERIFY(runLabel->text().contains(QStringLiteral("最近运行")));
+    QCOMPARE(userLabel->text(), QStringLiteral("用户：未登录"));
+    QTRY_VERIFY_WITH_TIMEOUT(QDateTime::fromString(timeLabel->text(), QStringLiteral("yyyy-MM-dd HH:mm:ss")).isValid(),
+                             1500);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
+
+    QVERIFY(runLabel->text().contains(QStringLiteral("最近运行：")));
+    QTRY_VERIFY_WITH_TIMEOUT(runLabel->text().contains(QStringLiteral(" ms")), 3000);
+    QCOMPARE(userLabel->text(), QStringLiteral("用户：未登录"));
 }
 
 void TestMainWindow::testConnectionChangeRebuildsExecutionTopology() {
@@ -2348,6 +15916,127 @@ void TestMainWindow::testBreakpointPauseAndContinueFromRunButton() {
     RunEngine::instance().clearModules();
     project->removeModule(first.id);
     project->removeModule(second.id);
+    QCoreApplication::processEvents();
+}
+
+void TestMainWindow::testG4AgentBreakpointRunAlternatesGuiAndAgentResumeSameRunId() {
+    MainWindow window;
+    window.show();
+    AgentActor* actor = AgentController::instance().actor();
+    QVERIFY(actor);
+    RunEngine& engine = RunEngine::instance();
+    engine.stop();
+    QTRY_VERIFY(!engine.isBusy());
+    engine.clearModules();
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    const QJsonObject firstAdded = actor->executeTool(
+        "add_module", QJsonObject{{"plugin", "创建字符串"}, {"instanceName", "g4_breakpoint_first"}});
+    QCOMPARE(firstAdded.value("status").toString(), QStringLiteral("added"));
+    const QString firstId = firstAdded.value("instanceId").toString();
+    QVERIFY(!firstId.isEmpty());
+    const QJsonObject secondAdded = actor->executeTool(
+        "add_module", QJsonObject{{"plugin", "创建字符串"}, {"instanceName", "g4_breakpoint_second"}});
+    QCOMPARE(secondAdded.value("status").toString(), QStringLiteral("added"));
+    const QString secondId = secondAdded.value("instanceId").toString();
+    QVERIFY(!secondId.isEmpty());
+    QVERIFY(project->moduleById(firstId));
+    QVERIFY(project->moduleById(secondId));
+    QVERIFY(!project->moduleById(firstId)->breakpoint);
+    QVERIFY(!project->moduleById(secondId)->breakpoint);
+
+    QCOMPARE(actor->executeTool("set_breakpoint", QJsonObject{{"instanceId", firstId}, {"enabled", true}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("updated"));
+    QCOMPARE(actor->executeTool("set_breakpoint", QJsonObject{{"instanceId", secondId}, {"enabled", true}})
+                 .value("status")
+                 .toString(),
+             QStringLiteral("updated"));
+    QVERIFY(project->moduleById(firstId)->breakpoint);
+    QVERIFY(project->moduleById(secondId)->breakpoint);
+
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    QAction* runAction = window.findChild<QAction*>(QStringLiteral("RunOnceAction"));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(runButton);
+    QVERIFY(runAction);
+    QVERIFY(processTree);
+    QSignalSpy breakpointSpy(&engine, &RunEngine::breakpointHit);
+    QSignalSpy startedSpy(&engine, &RunEngine::moduleStarted);
+    QSignalSpy finishedModuleSpy(&engine, &RunEngine::moduleFinished);
+    QSignalSpy finishedRunSpy(&engine, &RunEngine::runFinished);
+
+    const QJsonObject start = actor->executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
+    QCOMPARE(start.value("status").toString(), QStringLiteral("started"));
+    QVERIFY(start.value("async").toBool());
+    const QString runId = start.value("runId").toString();
+    QVERIFY(!runId.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(breakpointSpy.count(), 1, 5000);
+    QCOMPARE(breakpointSpy.first().at(0).toString(), firstId);
+    QCOMPARE(engine.state(), RunState::Paused);
+    QVERIFY(engine.isPausedAtBreakpoint());
+    QCOMPARE(startedSpy.count(), 0);
+    QCOMPARE(finishedModuleSpy.count(), 0);
+    QCOMPARE(finishedRunSpy.count(), 0);
+    QCOMPARE(engine.runObservation(runId).currentModule, firstId);
+    const QJsonObject firstPause = actor->executeTool("get_run_results", QJsonObject{{"runId", runId}});
+    QCOMPARE(firstPause.value("status").toString(), QStringLiteral("paused"));
+    QCOMPARE(firstPause.value("isBusy").toBool(), true);
+    QCOMPARE(firstPause.value("currentModule").toString(), firstId);
+    QTRY_COMPARE(runButton->text(), QStringLiteral("继续"));
+    QCOMPARE(runAction->text(), QStringLiteral("继续"));
+    QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 1).toString(), firstId);
+    QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 5).toString(), QStringLiteral("paused"));
+
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_COMPARE_WITH_TIMEOUT(breakpointSpy.count(), 2, 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(runButton->text(), QStringLiteral("继续"), 1000);
+    QCOMPARE(breakpointSpy.at(1).at(0).toString(), secondId);
+    QTRY_COMPARE_WITH_TIMEOUT(engine.state(), RunState::Paused, 1000);
+    QVERIFY(engine.isPausedAtBreakpoint());
+    QCOMPARE(engine.lastRunId(), runId);
+    QCOMPARE(startedSpy.count(), 1);
+    QCOMPARE(startedSpy.first().at(0).toString(), firstId);
+    QCOMPARE(finishedModuleSpy.count(), 1);
+    QCOMPARE(finishedModuleSpy.first().at(0).toString(), firstId);
+    QCOMPARE(finishedRunSpy.count(), 0);
+    QCOMPARE(engine.runObservation(runId).runId, runId);
+    QCOMPARE(engine.runObservation(runId).currentModule, secondId);
+    const QJsonObject secondPause = actor->executeTool("get_run_results", QJsonObject{{"runId", runId}});
+    QCOMPARE(secondPause.value("status").toString(), QStringLiteral("paused"));
+    QCOMPARE(secondPause.value("isBusy").toBool(), true);
+    QCOMPARE(secondPause.value("runId").toString(), runId);
+    QCOMPARE(secondPause.value("currentModule").toString(), secondId);
+    QCOMPARE(runButton->text(), QStringLiteral("继续"));
+    QCOMPARE(runAction->text(), QStringLiteral("继续"));
+    QCOMPARE(processTree->topLevelItem(1)->data(0, Qt::UserRole + 1).toString(), secondId);
+    QCOMPARE(processTree->topLevelItem(1)->data(0, Qt::UserRole + 5).toString(), QStringLiteral("paused"));
+
+    const QJsonObject resumed = actor->executeTool("resume_flow", {});
+    QCOMPARE(resumed.value("status").toString(), QStringLiteral("resumed"));
+    QTRY_COMPARE_WITH_TIMEOUT(finishedRunSpy.count(), 1, 5000);
+    const RunResult result = finishedRunSpy.first().at(0).value<RunResult>();
+    QVERIFY(result.success);
+    QCOMPARE(result.runId, runId);
+    QCOMPARE(engine.runObservation(runId).runId, runId);
+    QVERIFY(engine.runObservation(runId).finished);
+    QCOMPARE(startedSpy.count(), 2);
+    QCOMPARE(startedSpy.at(1).at(0).toString(), secondId);
+    QCOMPARE(finishedModuleSpy.count(), 2);
+    QCOMPARE(finishedModuleSpy.at(1).at(0).toString(), secondId);
+    const QJsonObject completed = actor->executeTool("get_run_results", QJsonObject{{"runId", runId}});
+    QCOMPARE(completed.value("status").toString(), QStringLiteral("completed"));
+    QCOMPARE(completed.value("isBusy").toBool(), false);
+    QCOMPARE(completed.value("runId").toString(), runId);
+    QVERIFY(!engine.isPausedAtBreakpoint());
+
+    engine.clearModules();
+    QString errorCode;
+    QString errorMessage;
+    QVERIFY(ProjectManager::instance().closeProjectChecked(ProjectManager::UnsavedPolicy::Discard, &errorCode,
+                                                           &errorMessage));
     QCoreApplication::processEvents();
 }
 
@@ -2505,6 +16194,7 @@ void TestMainWindow::testAgentComposerPreservesDraftAndAttachmentsWhileBusy() {
     QVERIFY(input && send);
     QSignalSpy textSpy(&panel, &AgentChatPanel::userMessageSent);
     QSignalSpy imageSpy(&panel, &AgentChatPanel::userMessageWithImagesSent);
+    QSignalSpy cancelSpy(&panel, &AgentChatPanel::cancelRequested);
     input->setPlainText(QStringLiteral("下一步测量"));
     QPixmap image(24, 24);
     image.fill(Qt::red);
@@ -2514,7 +16204,12 @@ void TestMainWindow::testAgentComposerPreservesDraftAndAttachmentsWhileBusy() {
     QCOMPARE(input->toPlainText(), QStringLiteral("下一步测量"));
     QCOMPARE(panel.imageAttachments().size(), 1);
     QCOMPARE(textSpy.count() + imageSpy.count(), 0);
-    QVERIFY(!send->isEnabled());
+    // Enter preserves the draft; the explicit stop control cancels the request.
+    QVERIFY(send->isEnabled());
+    QCOMPARE(send->toolTip(), QStringLiteral("取消 Agent 请求"));
+    QCOMPARE(cancelSpy.count(), 0);
+    QTest::mouseClick(send, Qt::LeftButton);
+    QCOMPARE(cancelSpy.count(), 1);
     panel.setThinking(false);
     panel.showToolPreview({{QStringLiteral("set_param"), {{"value", "<literal>"}}}});
     QTest::keyClick(input, Qt::Key_Return);
@@ -2651,10 +16346,13 @@ void TestMainWindow::testAgentThinkingStatusStaysCompactAndSafe() {
 }
 
 void TestMainWindow::testAgentInputErrorPathDoesNotCrashOrStayThinking() {
-    AgentController::instance().setLLMClient(nullptr);
-    AgentController::instance().clearConversation();
+    AgentController& controller = AgentController::instance();
+    AgentControllerStateRestore restore(controller);
+    controller.clearConversation();
 
     MainWindow window;
+    controller.setLLMClient(nullptr);
+    controller.clearConversation();
     AgentChatPanel* agentPanel = window.findChild<AgentChatPanel*>();
     QVERIFY(agentPanel != nullptr);
 
@@ -2678,14 +16376,294 @@ void TestMainWindow::testAgentInputErrorPathDoesNotCrashOrStayThinking() {
     QVERIFY(status != nullptr);
     QVERIFY2(!status->text().contains(QStringLiteral("正在思考")),
              "Agent error path should leave the compact thinking status");
-    QCOMPARE(AgentController::instance().state(), AgentController::AgentState::Idle);
+    QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+}
+
+void TestMainWindow::testAgentPartialFailureSummaryAppearsInChat() {
+    AgentController& controller = AgentController::instance();
+    controller.clearConversation();
+    MainWindow window;
+    AgentChatPanel* panel = window.findChild<AgentChatPanel*>();
+    QVERIFY(panel);
+    MainWindowReplyClient client;
+    AgentControllerStateRestore restoreController(controller);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+    controller.setLLMClient(&client);
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance module;
+    module.id = QStringLiteral("slice20_ui_module");
+    module.moduleId = QStringLiteral("创建字符串");
+    module.name = QStringLiteral("Before");
+    project->addModule(module);
+
+    controller.sendUserMessage(QStringLiteral("Run batch"));
+    AgentResponse response;
+    response.success = true;
+    const QString canary = QStringLiteral("slice20_ui_private_canary");
+    response.toolCalls.append(
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("ui_call_success")},
+                    {QStringLiteral("name"), QStringLiteral("rename_module")},
+                    {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("instanceId"), module.id},
+                                                              {QStringLiteral("name"), QStringLiteral("After")}}}});
+    response.toolCalls.append(
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("ui_call_started")},
+                    {QStringLiteral("name"), QStringLiteral("run_flow")},
+                    {QStringLiteral("arguments"),
+                     QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}}}});
+    response.toolCalls.append(
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("ui_call_failure")},
+                    {QStringLiteral("name"), QStringLiteral("get_run_results")},
+                    {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("runId"), canary}}}});
+    response.toolCalls.append(QJsonObject{{QStringLiteral("id"), QStringLiteral("ui_call_skipped")},
+                                          {QStringLiteral("name"), QStringLiteral("get_flow_state")},
+                                          {QStringLiteral("arguments"), QJsonObject()}});
+    client.reply(response);
+    if (controller.state() == AgentController::AgentState::Confirming)
+        QVERIFY(confirmPendingToolsAndWait(controller, controller.pendingConfirmationId()));
+
+    AgentMessageBubble* failureBubble = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        [&]() {
+            for (AgentMessageBubble* bubble : panel->findChildren<AgentMessageBubble*>()) {
+                if (bubble->text().contains(QStringLiteral("批次部分失败"))) {
+                    failureBubble = bubble;
+                    return true;
+                }
+            }
+            return false;
+        }(),
+        3000);
+    const QString visibleText = failureBubble->text();
+    QVERIFY(visibleText.contains(QStringLiteral("ui_call_success")));
+    QVERIFY(visibleText.contains(QStringLiteral("ui_call_started")));
+    QVERIFY(visibleText.contains(QStringLiteral("ui_call_failure")));
+    QVERIFY(visibleText.contains(QStringLiteral("ui_call_skipped")));
+    QVERIFY(visibleText.contains(QStringLiteral("已发生的副作用未自动回滚")));
+    QVERIFY(visibleText.contains(QStringLiteral("已受理/进行中（started）")));
+    QVERIFY(!visibleText.contains(canary));
+    QLabel* status = panel->findChild<QLabel*>("AgentChatStatusLabel");
+    QVERIFY(status);
+    QCOMPARE(status->text(), QStringLiteral("请求失败"));
+    AgentActionLogWidget* actionLog = window.findChild<AgentActionLogWidget*>();
+    QVERIFY(actionLog);
+    const QList<AgentActionLogEntry> batchLogEntries = actionLog->entries();
+    QVERIFY(std::any_of(batchLogEntries.cbegin(), batchLogEntries.cend(), [](const AgentActionLogEntry& entry) {
+        return entry.action == QStringLiteral("LLM Error") && entry.result == QStringLiteral("error");
+    }));
+    QTRY_VERIFY(!RunEngine::instance().isBusy());
+
+    controller.sendUserMessage(QStringLiteral("Run one failing tool"));
+    AgentResponse singleFailure;
+    singleFailure.success = true;
+    singleFailure.toolCalls.append(
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("ui_single_failure")},
+                    {QStringLiteral("name"), QStringLiteral("get_run_results")},
+                    {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("runId"), canary}}}});
+    client.reply(singleFailure);
+    QTRY_COMPARE(controller.state(), AgentController::AgentState::Idle);
+    const QList<AgentActionLogEntry> allLogEntries = actionLog->entries();
+    int visibleErrorLogEntries = 0;
+    for (const AgentActionLogEntry& entry : allLogEntries) {
+        if (entry.action == QStringLiteral("LLM Error") && entry.result == QStringLiteral("error"))
+            ++visibleErrorLogEntries;
+    }
+    QCOMPARE(visibleErrorLogEntries, 2);
+    int singleFailureBubbles = 0;
+    for (AgentMessageBubble* bubble : panel->findChildren<AgentMessageBubble*>()) {
+        if (bubble->text().contains(QStringLiteral("ui_single_failure")))
+            ++singleFailureBubbles;
+    }
+    QCOMPARE(singleFailureBubbles, 1);
+    QVERIFY(!panel->findChildren<AgentMessageBubble*>().last()->text().contains(canary));
+
+    ProjectManager::instance().closeProject();
+}
+
+void TestMainWindow::testToolBoxSearchFiltersItemsAndRestoresOnClear() {
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+
+    auto* search = window.findChild<QLineEdit*>(QStringLiteral("ToolSearchEdit"));
+    auto* toolTree = window.findChild<QTreeWidget*>(QStringLiteral("ToolBoxTree"));
+    QVERIFY(search != nullptr);
+    QVERIFY(toolTree != nullptr);
+
+    const auto findPluginItem = [toolTree](const QString& pluginId) {
+        for (QTreeWidgetItemIterator it(toolTree); *it; ++it) {
+            if ((*it)->data(0, Qt::UserRole + 1).toString() == pluginId)
+                return *it;
+        }
+        return static_cast<QTreeWidgetItem*>(nullptr);
+    };
+    const auto findCategory = [toolTree](const QString& title) {
+        for (int i = 0; i < toolTree->topLevelItemCount(); ++i) {
+            QTreeWidgetItem* item = toolTree->topLevelItem(i);
+            if (item->text(0) == title)
+                return item;
+        }
+        return static_cast<QTreeWidgetItem*>(nullptr);
+    };
+
+    QTreeWidgetItem* findCircle = findPluginItem(QStringLiteral("FindCircle"));
+    QTreeWidgetItem* fitCircle = findPluginItem(QStringLiteral("FitCircle"));
+    QTreeWidgetItem* imageCategory = findCategory(QStringLiteral("图像处理"));
+    QVERIFY(findCircle != nullptr);
+    QVERIFY(fitCircle != nullptr);
+    QVERIFY(imageCategory != nullptr);
+    QVERIFY(!findCircle->isHidden());
+    QVERIFY(!fitCircle->isHidden());
+
+    search->setText(QStringLiteral("FindCircle"));
+    QVERIFY(!findCircle->isHidden());
+    QVERIFY(fitCircle->isHidden());
+    QVERIFY(!findCircle->parent()->isHidden());
+    QVERIFY(findCircle->parent()->isExpanded());
+    QVERIFY(imageCategory->isHidden());
+
+    search->setText(QStringLiteral("  ") + findCircle->text(0) + QStringLiteral("  "));
+    QVERIFY(!findCircle->isHidden());
+    QVERIFY(fitCircle->isHidden());
+
+    search->clear();
+    QVERIFY(!findCircle->isHidden());
+    QVERIFY(!fitCircle->isHidden());
+    QVERIFY(!imageCategory->isHidden());
+}
+
+void TestMainWindow::testQuickModeRunsCurrentFlowOnce() {
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    const QString instanceId = QStringLiteral("quick_mode_probe");
+    ModuleInstance instance;
+    instance.id = instanceId;
+    instance.moduleId = QStringLiteral("OutputProbe");
+    instance.name = QStringLiteral("Quick Mode Probe");
+    project->addModule(instance);
+
+    QStringList executionLog;
+    auto* module = new MainWindowOutputProbeModule(instanceId);
+    module->executionLog = &executionLog;
+    module->initialize();
+    window.registerFlowModule(instanceId, module);
+    QCoreApplication::processEvents();
+
+    RunEngine& engine = RunEngine::instance();
+    QSignalSpy startedSpy(&engine, &RunEngine::runStarted);
+    QSignalSpy finishedSpy(&engine, &RunEngine::runFinished);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onQuickMode", Qt::DirectConnection));
+
+    QTRY_COMPARE(finishedSpy.count(), 1);
+    QCOMPARE(startedSpy.count(), 1);
+    QCOMPARE(executionLog, QStringList{instanceId});
+    QCOMPARE(engine.runMode(), RunMode::RunOnce);
+    engine.clearModules();
+}
+
+void TestMainWindow::testOpenProjectMenuActionLoadsAndSyncsProject() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("menu-open-project.dproj"));
+
+    Project sourceProject;
+    sourceProject.setName(QStringLiteral("menu-open-project"));
+    ModuleInstance sourceModule;
+    sourceModule.id = QStringLiteral("menu_open_grab");
+    sourceModule.moduleId = QStringLiteral("GrabImage");
+    sourceModule.name = QStringLiteral("Open UI Grab");
+    sourceProject.addModule(sourceModule);
+    QVERIFY(sourceProject.save(path));
+
+    MainWindow window;
+    window.show();
+    ProjectManager& manager = ProjectManager::instance();
+    QPointer<Project> previousProject = manager.newProject();
+    QVERIFY(previousProject != nullptr);
+    previousProject->setModified(false);
+
+    bool chooserShown = false;
+    QTimer::singleShot(0, &window, [&]() {
+        auto* chooser = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+        if (!chooser)
+            return;
+        chooserShown = true;
+        chooser->selectFile(path);
+        QVERIFY(QMetaObject::invokeMethod(chooser, "accept", Qt::DirectConnection));
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "onOpenProject", Qt::DirectConnection));
+    QVERIFY(chooserShown);
+
+    Project* openedProject = manager.currentProject();
+    QVERIFY(openedProject != nullptr);
+    QVERIFY(previousProject.isNull());
+    QCOMPARE(openedProject->name(), QStringLiteral("menu-open-project"));
+    QCOMPARE(openedProject->modules().size(), 1);
+    QCOMPARE(openedProject->modules().first().id, sourceModule.id);
+
+    QCoreApplication::processEvents();
+    auto* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    auto* canvas = window.findChild<FlowCanvas*>();
+    QVERIFY(processTree != nullptr);
+    QVERIFY(canvas != nullptr);
+    QCOMPARE(processTree->topLevelItemCount(), 1);
+    QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 1).toString(), sourceModule.id);
+    QVERIFY(canvas->nodeItem(sourceModule.id) != nullptr);
+}
+
+void TestMainWindow::testProcessTreeDoubleClickOpensInspectorParams() {
+    const QString instanceId = QStringLiteral("double_click_inspector_probe");
+    MainWindowOutputProbeModule module(instanceId);
+    QVERIFY(module.initialize());
+
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    ModuleInstance instance;
+    instance.id = instanceId;
+    instance.moduleId = QStringLiteral("OutputProbe");
+    instance.name = QStringLiteral("Double Click Probe");
+    project->addModule(instance);
+    window.registerFlowModule(instanceId, &module);
+    QCoreApplication::processEvents();
+
+    auto* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(processTree != nullptr);
+    QVERIFY(inspector != nullptr);
+    QCOMPARE(processTree->topLevelItemCount(), 1);
+    inspector->setPinned(false);
+    const QModelIndex itemIndex = processTree->model()->index(0, 0);
+    QVERIFY(itemIndex.isValid());
+    const QPoint itemCenter = processTree->visualRect(itemIndex).center();
+    QVERIFY(processTree->visualRect(itemIndex).isValid());
+
+    QTest::mouseDClick(processTree->viewport(), Qt::LeftButton, Qt::NoModifier, itemCenter);
+
+    QTRY_COMPARE(inspector->currentInstanceId(), instanceId);
+    QVERIFY(inspector->isVisible());
+    QTabWidget* inspectorTabs = inspector->findChild<QTabWidget*>(QStringLiteral("InspectorTabs"));
+    QVERIFY(inspectorTabs != nullptr);
+    QCOMPARE(inspectorTabs->currentIndex(), 0);
+    QCOMPARE(processTree->currentItem()->data(0, Qt::UserRole + 1).toString(), instanceId);
 }
 
 void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTheme() {
+    ConfigThemeStateRestore restoreTheme;
     MainWindow window;
     window.resize(1024, 700);
     window.show();
     QCoreApplication::processEvents();
+    if (window.styleSheet() != ThemeManager::styleSheet(false))
+        QVERIFY(QMetaObject::invokeMethod(&window, "onToggleTheme", Qt::DirectConnection));
+    QCOMPARE(window.styleSheet(), ThemeManager::styleSheet(false));
 
     QToolBar* mainToolbar = nullptr;
     const QList<QToolBar*> toolbars = window.findChildren<QToolBar*>();
@@ -2809,7 +16787,7 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
         }
     }
     QVERIFY2(processCircle != nullptr, "Agent-added module should appear in the process panel");
-    QCOMPARE(processCircle->text(0), findCircleTool->text(0));
+    QCOMPARE(processCircle->text(0), agentAddedCircle.name);
     QVERIFY2(processCircle->flags() & Qt::ItemIsDragEnabled,
              "Process panel modules should be draggable for reordering");
     QVERIFY2(!(processCircle->flags() & Qt::ItemIsDropEnabled),
@@ -3150,6 +17128,48 @@ void TestMainWindow::testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTh
     QVERIFY(!previewButtonTexts.contains(QStringLiteral("Confirm")));
 }
 
+void TestMainWindow::testRunFlowConfirmationShowsIrreversibleLabelEndToEnd() {
+    MainWindow window;
+    window.resize(900, 650);
+    window.show();
+    QCoreApplication::processEvents();
+
+    AgentController& controller = AgentController::instance();
+    QVERIFY(controller.initialize());
+    controller.clearConversation();
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+    ProjectManager::instance().closeProject();
+    QVERIFY(ProjectManager::instance().newProject());
+
+    const QJsonObject pending = controller.handleToolCall(
+        QStringLiteral("run_flow"),
+        QJsonObject{{QStringLiteral("mode"), QStringLiteral("cycle")}, {QStringLiteral("maxCycles"), 3}});
+    QCOMPARE(pending.value(QStringLiteral("status")).toString(), QStringLiteral("pending_confirmation"));
+    const QString confirmationId = controller.pendingConfirmationId();
+    QVERIFY(!confirmationId.isEmpty());
+    const QString label = QStringLiteral("不可撤销：Agent Undo 不会回滚外部副作用");
+    QCOMPARE(pending.value(QStringLiteral("confirmation"))
+                 .toObject()
+                 .value(QStringLiteral("context"))
+                 .toObject()
+                 .value(QStringLiteral("reversibilityLabel"))
+                 .toString(),
+             label);
+    QCoreApplication::processEvents();
+
+    QLabel* content = window.findChild<QLabel*>("AgentToolPreviewContent");
+    QPushButton* confirm = window.findChild<QPushButton*>("AgentConfirmTools");
+    QVERIFY(content && confirm);
+    QVERIFY(content->text().contains(label));
+    QCOMPARE(content->parentWidget(), confirm->parentWidget());
+    QVERIFY(content->geometry().bottom() < confirm->geometry().top());
+
+    QVERIFY(controller.rejectPendingTools(confirmationId));
+    controller.clearConversation();
+    controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
+    ProjectManager::instance().closeProject();
+}
+
 void TestMainWindow::testProcessControlsFitCompactWindow() {
     MainWindow window;
     window.resize(1280, 800);
@@ -3245,8 +17265,29 @@ void TestMainWindow::testMeasurementPickingUpdatesInputAndClipboard() {
     QVERIFY(processTree->topLevelItemCount() > 0);
     processTree->setCurrentItem(processTree->topLevelItem(processTree->topLevelItemCount() - 1));
 
+    AgentController& controller = AgentController::instance();
+    AgentActor* measurementActor = controller.actor();
+    QVERIFY(measurementActor);
+    QCOMPARE(measurementActor
+                 ->executeTool(QStringLiteral("set_param"),
+                               QJsonObject{{QStringLiteral("instanceId"), lineInput.id},
+                                           {QStringLiteral("key"), QStringLiteral("point")},
+                                           {QStringLiteral("value"), QJsonArray{1.0, 2.0, 3.0}}})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("param_set"));
+
     QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
                                       Q_ARG(QPointF, QPointF(10.0, 20.0))));
+    const QJsonValue pickedPoint = project->moduleById(lineInput.id)->params.value(QStringLiteral("point"));
+    QCOMPARE(pickedPoint.toArray(), QJsonArray({10.0, 20.0}));
+    project->setModified(false);
+    QSignalSpy expiredUndoSpy(&controller, &AgentController::actionLogEntryAdded);
+    QVERIFY(!controller.undoLastAgentAction());
+    QVERIFY(!expiredUndoSpy.isEmpty());
+    QCOMPARE(expiredUndoSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
+    QCOMPARE(project->moduleById(lineInput.id)->params.value(QStringLiteral("point")), pickedPoint);
+    QVERIFY(!project->isModified());
     QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
                                       Q_ARG(QPointF, QPointF(30.0, 40.0))));
     QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
@@ -3254,11 +17295,13 @@ void TestMainWindow::testMeasurementPickingUpdatesInputAndClipboard() {
 
     ModuleInstance* lineModule = project->findModule(QStringLiteral("measure_line_input"));
     QVERIFY(lineModule != nullptr);
+    QCOMPARE(lineModule->params["point"].toArray().size(), 2);
     QCOMPARE(lineModule->params["point"].toArray().at(0).toDouble(), 10.0);
     QCOMPARE(lineModule->params["point"].toArray().at(1).toDouble(), 20.0);
-    QCOMPARE(lineModule->params["point"].toArray().at(2).toDouble(), 0.0);
     QCOMPARE(lineModule->params["line"].toArray().at(0).toDouble(), 30.0);
     QCOMPARE(lineModule->params["line"].toArray().at(3).toDouble(), 60.0);
+    QCOMPARE(lineModule->params.value(QStringLiteral("pick_coordinate_frame")).toString(),
+             QStringLiteral("ImageLocalPixel"));
 
     Logger::instance().clearLogs();
     QVERIFY(QMetaObject::invokeMethod(&window, "onPoint3DPicked", Qt::DirectConnection,
@@ -3283,6 +17326,8 @@ void TestMainWindow::testMeasurementPickingUpdatesInputAndClipboard() {
         }
     }
     QVERIFY2(lineZLogged, "3D point_line picking should log that line endpoints use z=0");
+    QCOMPARE(lineModule->params.value(QStringLiteral("pick_coordinate_frame")).toString(),
+             QStringLiteral("Unspecified"));
 
     ModuleInstance planeInput;
     planeInput.id = QStringLiteral("measure_plane_input");
@@ -3333,6 +17378,144 @@ void TestMainWindow::testMeasurementPickingUpdatesInputAndClipboard() {
     QCOMPARE(linePairModule->params["line1"].toArray().at(3).toDouble(), 4.0);
     QCOMPARE(linePairModule->params["line2"].toArray().at(0).toDouble(), 5.0);
     QCOMPARE(linePairModule->params["line2"].toArray().at(3).toDouble(), 8.0);
+    QCOMPARE(linePairModule->params.value(QStringLiteral("pick_coordinate_frame")).toString(),
+             QStringLiteral("ImageLocalPixel"));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint3DPicked", Qt::DirectConnection,
+                                      Q_ARG(QVector3D, QVector3D(11.0f, 12.0f, 101.0f))));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint3DPicked", Qt::DirectConnection,
+                                      Q_ARG(QVector3D, QVector3D(13.0f, 14.0f, 102.0f))));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint3DPicked", Qt::DirectConnection,
+                                      Q_ARG(QVector3D, QVector3D(21.0f, 22.0f, 201.0f))));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint3DPicked", Qt::DirectConnection,
+                                      Q_ARG(QVector3D, QVector3D(23.0f, 24.0f, 202.0f))));
+    QCOMPARE(linePairModule->params.value(QStringLiteral("line1")).toArray(), QJsonArray({11.0, 12.0, 13.0, 14.0}));
+    QCOMPARE(linePairModule->params.value(QStringLiteral("line2")).toArray(), QJsonArray({21.0, 22.0, 23.0, 24.0}));
+    QCOMPARE(linePairModule->params.value(QStringLiteral("pick_coordinate_frame")).toString(),
+             QStringLiteral("Unspecified"));
+}
+
+void TestMainWindow::testMeasurementInput3DPickingPreservesWorldPrecisionAndSingleStep() {
+    QTemporaryDir appDir;
+    QVERIFY(appDir.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
+    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
+
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+    const QJsonArray initialPlane{10.0, 11.0, 12.0, 20.0, 11.0, 12.0, 10.0, 21.0, 12.0};
+    const QJsonArray initialPoint2{101.0, 102.0, 103.0};
+
+    ModuleInstance planeInput;
+    planeInput.id = QStringLiteral("measure_plane_precision");
+    planeInput.moduleId = QStringLiteral("MeasurementInput");
+    planeInput.params.insert(QStringLiteral("mode"), QStringLiteral("point_plane"));
+    planeInput.params.insert(QStringLiteral("point"), QJsonArray{1.0, 2.0, 3.0});
+    planeInput.params.insert(QStringLiteral("plane"), initialPlane);
+    project->addModule(planeInput);
+
+    ModuleInstance pairInput;
+    pairInput.id = QStringLiteral("measure_pair_precision");
+    pairInput.moduleId = QStringLiteral("MeasurementInput");
+    pairInput.params.insert(QStringLiteral("mode"), QStringLiteral("point_pair"));
+    pairInput.params.insert(QStringLiteral("point1"), QJsonArray{4.0, 5.0, 6.0});
+    pairInput.params.insert(QStringLiteral("point2"), initialPoint2);
+    project->addModule(pairInput);
+    QCoreApplication::processEvents();
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree != nullptr);
+    const auto selectProcessItem = [processTree](const QString& instanceId) {
+        for (int row = 0; row < processTree->topLevelItemCount(); ++row) {
+            QTreeWidgetItem* item = processTree->topLevelItem(row);
+            if (item->data(0, Qt::UserRole + 1).toString() == instanceId) {
+                processTree->setCurrentItem(item);
+                return true;
+            }
+        }
+        return false;
+    };
+
+    DisplayManager* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    ViewportWidget* viewport = displayManager->allViewports().first();
+    QVERIFY(viewport != nullptr);
+    const double x = 16777217.125;
+    const double y = 12.5;
+    const double z = -3.75;
+    const QJsonArray expectedWorldPoint{x, y, z};
+    PointCloudData cloud;
+    cloud.points = {{x, y, z},       {x + 2.0, y, z}, {x - 2.0, y, z}, {x, y + 2.0, z},
+                    {x, y - 2.0, z}, {x, y, z + 2.0}, {x, y, z - 2.0}};
+    DisplayData data;
+    data.variant() = cloud;
+    viewport->displayData(data);
+    QCoreApplication::processEvents();
+    Viewport3DContent* content = viewport->viewport3D();
+    QVERIFY(content != nullptr);
+    QVERIFY(content->width() > 20);
+    QVERIFY(content->height() > 20);
+
+    CameraController camera;
+    camera.frameData(QVector3D(static_cast<float>(x - 2.0), static_cast<float>(y - 2.0), static_cast<float>(z - 2.0)),
+                     QVector3D(static_cast<float>(x + 2.0), static_cast<float>(y + 2.0), static_cast<float>(z + 2.0)));
+    const QMatrix4x4 projection = camera.projectionMatrix(static_cast<float>(content->width()) / content->height());
+    const QVector3D displayPoint(static_cast<float>(x), static_cast<float>(y), static_cast<float>(z));
+    const QVector3D projected =
+        displayPoint.project(camera.viewMatrix(), projection, QRect(0, 0, content->width(), content->height()));
+    const QPoint clickPoint(projected.x(), content->height() - projected.y());
+    QVERIFY(content->rect().contains(clickPoint));
+
+    QSignalSpy compatPickSpy(viewport, &ViewportWidget::point3DClicked);
+    QSignalSpy worldPickSpy(viewport, &ViewportWidget::point3DWorldClicked);
+    auto clickPointCloud = [&]() {
+        viewport->setPickMode(true);
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(clickPoint), Qt::LeftButton, Qt::LeftButton,
+                          Qt::NoModifier);
+        QApplication::sendEvent(content, &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(clickPoint), Qt::LeftButton, Qt::NoButton,
+                            Qt::NoModifier);
+        QApplication::sendEvent(content, &release);
+    };
+
+    QVERIFY(selectProcessItem(planeInput.id));
+    QCOMPARE(processTree->currentItem()->data(0, Qt::UserRole).toString(), QStringLiteral("flow_item"));
+    Logger::instance().clearLogs();
+    clickPointCloud();
+    QCOMPARE(compatPickSpy.count(), 1);
+    QCOMPARE(worldPickSpy.count(), 1);
+    QCOMPARE(worldPickSpy.first().at(0).toDouble(), x);
+    QCOMPARE(worldPickSpy.first().at(1).toDouble(), y);
+    QCOMPARE(worldPickSpy.first().at(2).toDouble(), z);
+    QVERIFY(!Logger::instance().logs(QStringLiteral("Picking")).isEmpty());
+    QCOMPARE(project->moduleById(planeInput.id)->params.value(QStringLiteral("point")).toArray(), expectedWorldPoint);
+    QCOMPARE(project->moduleById(planeInput.id)->params.value(QStringLiteral("plane")).toArray(), initialPlane);
+
+    QVERIFY(selectProcessItem(pairInput.id));
+    clickPointCloud();
+    QCOMPARE(compatPickSpy.count(), 2);
+    QCOMPARE(worldPickSpy.count(), 2);
+    const auto pairState = project->moduleById(pairInput.id)->params;
+    QCOMPARE(pairState.value(QStringLiteral("point1")).toArray(), expectedWorldPoint);
+    QCOMPARE(pairState.value(QStringLiteral("point2")).toArray(), initialPoint2);
+
+    window.clearSelectionForCapture();
+    QSignalSpy runFinishedSpy(&RunEngine::instance(), &RunEngine::runFinished);
+    QVERIFY(QMetaObject::invokeMethod(&window, "executeFlowOnce", Qt::DirectConnection));
+    QTRY_COMPARE(runFinishedSpy.count(), 1);
+    ModuleBase* runtimePlane = RunEngine::instance().getModule(planeInput.id);
+    ModuleBase* runtimePair = RunEngine::instance().getModule(pairInput.id);
+    QVERIFY(runtimePlane != nullptr);
+    QVERIFY(runtimePair != nullptr);
+    QCOMPARE(runtimePlane->currentParams().value(QStringLiteral("point")).toArray(), expectedWorldPoint);
+    QCOMPARE(runtimePlane->currentParams().value(QStringLiteral("plane")).toArray(), initialPlane);
+    QCOMPARE(runtimePair->currentParams().value(QStringLiteral("point1")).toArray(), expectedWorldPoint);
+    QCOMPARE(runtimePair->currentParams().value(QStringLiteral("point2")).toArray(), initialPoint2);
 }
 
 void TestMainWindow::testMeasurementPickingViaImageViewportClick() {
@@ -3869,6 +18052,500 @@ void TestMainWindow::testCycleRunDoesNotStealSelection() {
     delete mod2;
 }
 
+void TestMainWindow::testG4AgentCanPauseGuiCycleBetweenIterations() {
+    QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
+    RunEngine& engine = RunEngine::instance();
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+
+    ModuleInstance first;
+    first.id = QStringLiteral("gui_cycle_pause_probe_1");
+    first.moduleId = QStringLiteral("延时");
+    first.name = QStringLiteral("GUI Cycle Pause Probe 1");
+    first.params = QJsonObject{{QStringLiteral("delayMs"), 1}};
+    project->addModule(first);
+    ModuleInstance second = first;
+    second.id = QStringLiteral("gui_cycle_pause_probe_2");
+    second.name = QStringLiteral("GUI Cycle Pause Probe 2");
+    project->addModule(second);
+
+    QVERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("延时")));
+    auto* firstModule = qobject_cast<ModuleBase*>(PluginManager::instance().createModule(QStringLiteral("延时")));
+    auto* secondModule = qobject_cast<ModuleBase*>(PluginManager::instance().createModule(QStringLiteral("延时")));
+    QVERIFY(firstModule);
+    QVERIFY(secondModule);
+    QVERIFY(firstModule->initialize());
+    window.registerFlowModule(first.id, firstModule);
+    QVERIFY(secondModule->initialize());
+    window.registerFlowModule(second.id, secondModule);
+
+    QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
+    auto* inspector = window.findChild<ModuleInspectorPanel*>();
+    QVERIFY(inspector);
+    QVERIFY(QMetaObject::invokeMethod(window.findChild<FlowCanvas*>(), "nodeSelected", Qt::DirectConnection,
+                                      Q_ARG(QString, first.id)));
+    QTRY_COMPARE(inspector->currentInstanceId(), first.id);
+    auto* delayMs = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("ParamEditor_delayMs"));
+    QVERIFY(delayMs);
+
+    QToolButton* cycleButton = window.findChild<QToolButton*>(QStringLiteral("FlowCycleButton"));
+    QVERIFY(cycleButton);
+    AgentActor* actor = AgentController::instance().actor();
+    QVERIFY(actor);
+
+    const QJsonObject modelBefore = project->toJson();
+    const bool modifiedBefore = project->isModified();
+    QUndoStack* undoStack = window.findChild<QUndoStack*>();
+    QVERIFY(undoStack);
+    const int undoCountBefore = undoStack->count();
+    const int undoIndexBefore = undoStack->index();
+    QTemporaryDir targetDir;
+    QVERIFY(targetDir.isValid());
+    Project targetProject;
+    const QString targetProjectPath = QDir(targetDir.path()).filePath(QStringLiteral("target.dproj"));
+    QVERIFY(targetProject.save(targetProjectPath));
+    const QString saveTarget = QDir(targetDir.path()).filePath(QStringLiteral("must-not-be-saved.dproj"));
+    QVERIFY(!QFileInfo::exists(saveTarget));
+
+    QJsonObject pauseResult;
+    QString sessionId;
+    int finishedIterations = 0;
+    const QMetaObject::Connection pauseAtFirstIteration = connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&](const RunResult&) {
+            ++finishedIterations;
+            if (pauseResult.isEmpty()) {
+                const RunObservation observation = engine.runObservation();
+                sessionId = observation.sessionId;
+                pauseResult = actor->executeTool(QStringLiteral("pause_flow"), QJsonObject{});
+            }
+        },
+        Qt::DirectConnection);
+
+    cycleButton->click();
+    QTRY_VERIFY_WITH_TIMEOUT(!pauseResult.isEmpty(), 5000);
+    QCOMPARE(pauseResult.value(QStringLiteral("status")).toString(), QStringLiteral("paused"));
+    QVERIFY(!sessionId.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Paused, 5000);
+    QVERIFY(FlowExecutionService::instance().isActive());
+    QCOMPARE(finishedIterations, 1);
+    const QJsonObject sessionResult =
+        actor->executeTool(QStringLiteral("get_run_results"), QJsonObject{{QStringLiteral("runId"), sessionId}});
+    QCOMPARE(sessionResult.value(QStringLiteral("runId")).toString(), sessionId);
+    QCOMPARE(sessionResult.value(QStringLiteral("sessionId")).toString(), sessionId);
+    QCOMPARE(sessionResult.value(QStringLiteral("status")).toString(), QStringLiteral("paused"));
+    QVERIFY(sessionResult.value(QStringLiteral("isBusy")).toBool());
+    QCOMPARE(sessionResult.value(QStringLiteral("isRunning")).toBool(), engine.isRunning());
+    const QString firstIterationRunId = engine.runObservation(sessionId).lastIterationRunId;
+    QVERIFY(!firstIterationRunId.isEmpty());
+    QCOMPARE(sessionResult.value(QStringLiteral("lastIterationRunId")).toString(), firstIterationRunId);
+
+    // Agent structure and parameter edits must be rejected without touching Project or Undo.
+    QCOMPARE(actor
+                 ->executeTool(QStringLiteral("move_module"),
+                               QJsonObject{{QStringLiteral("instanceId"), first.id}, {QStringLiteral("index"), 1}})
+                 .value(QStringLiteral("errorCode"))
+                 .toString(),
+             QStringLiteral("ENGINE_BUSY"));
+    QCOMPARE(
+        actor
+            ->executeTool(QStringLiteral("set_param"), QJsonObject{{QStringLiteral("instanceId"), first.id},
+                                                                   {QStringLiteral("key"), QStringLiteral("delayMs")},
+                                                                   {QStringLiteral("value"), 2}})
+            .value(QStringLiteral("errorCode"))
+            .toString(),
+        QStringLiteral("ENGINE_BUSY"));
+    delayMs->setValue(2.0);
+    QVERIFY(QMetaObject::invokeMethod(delayMs, "editingFinished", Qt::DirectConnection));
+    QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    QVERIFY(processTree);
+    ProcessTreeController* treeController = window.findChild<ProcessTreeController*>();
+    QVERIFY(treeController);
+    QTreeWidgetItem* firstTreeItem = treeController->instanceItem(first.id);
+    QVERIFY(firstTreeItem);
+    processTree->setCurrentItem(firstTreeItem);
+    firstTreeItem->setSelected(true);
+    QTest::keyClick(processTree->viewport(), Qt::Key_Delete);
+    QCOMPARE(project->toJson(), modelBefore);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("运行或维护期间不能")));
+    QCOMPARE(project->toJson(), modelBefore);
+    QCOMPARE(project->isModified(), modifiedBefore);
+    QCOMPARE(undoStack->count(), undoCountBefore);
+    QCOMPARE(undoStack->index(), undoIndexBefore);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("运行或维护期间不能")));
+
+    // Both direct and checked ProjectManager entrances gate before save/discard side effects.
+    ProjectManager& manager = ProjectManager::instance();
+    QCOMPARE(manager.currentProject(), project);
+    QVERIFY(manager.newProject() == nullptr);
+    QVERIFY(manager.openProject(targetProjectPath) == nullptr);
+    manager.closeProject();
+    QString errorCode, errorMessage;
+    QVERIFY(manager.newProjectChecked(ProjectManager::UnsavedPolicy::Save, &errorCode, &errorMessage, saveTarget) ==
+            nullptr);
+    QCOMPARE(errorCode, QStringLiteral("ENGINE_BUSY"));
+    QVERIFY(!QFileInfo::exists(saveTarget));
+    errorCode.clear();
+    QVERIFY(manager.openProjectChecked(targetProjectPath, ProjectManager::UnsavedPolicy::Discard, &errorCode,
+                                       &errorMessage) == nullptr);
+    QCOMPARE(errorCode, QStringLiteral("ENGINE_BUSY"));
+    errorCode.clear();
+    QVERIFY(!manager.closeProjectChecked(ProjectManager::UnsavedPolicy::Save, &errorCode, &errorMessage));
+    QCOMPARE(errorCode, QStringLiteral("ENGINE_BUSY"));
+    QCOMPARE(manager.currentProject(), project);
+    QCOMPARE(project->toJson(), modelBefore);
+    QCOMPARE(project->isModified(), modifiedBefore);
+    QCOMPARE(undoStack->count(), undoCountBefore);
+    QCOMPARE(undoStack->index(), undoIndexBefore);
+
+    // Real file-switch and close slots reject before opening a chooser or unsaved modal.
+    QVERIFY(QMetaObject::invokeMethod(&window, "onNewSolution", Qt::DirectConnection));
+    QVERIFY(QApplication::activeModalWidget() == nullptr);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onSolutionList", Qt::DirectConnection));
+    QVERIFY(QApplication::activeModalWidget() == nullptr);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onOpenProject", Qt::DirectConnection));
+    QVERIFY(QApplication::activeModalWidget() == nullptr);
+    window.show();
+    QCOMPARE(manager.currentProject(), project);
+
+    QJsonObject stopAfterResume;
+    const QMetaObject::Connection stopOnSecondIteration = connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&](const RunResult&) {
+            if (finishedIterations > 1 && stopAfterResume.isEmpty())
+                stopAfterResume = actor->executeTool(QStringLiteral("stop_flow"), QJsonObject{});
+        },
+        Qt::DirectConnection);
+    const QJsonObject resumeResult = actor->executeTool(QStringLiteral("resume_flow"), QJsonObject{});
+    QCOMPARE(resumeResult.value(QStringLiteral("status")).toString(), QStringLiteral("resumed"));
+    QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Running, 3000);
+    const QJsonObject resumedSession =
+        actor->executeTool(QStringLiteral("get_run_results"), QJsonObject{{QStringLiteral("runId"), sessionId}});
+    QCOMPARE(resumedSession.value(QStringLiteral("sessionId")).toString(), sessionId);
+    QCOMPARE(resumedSession.value(QStringLiteral("status")).toString(), QStringLiteral("running"));
+    QVERIFY(resumedSession.value(QStringLiteral("isBusy")).toBool());
+    QTRY_VERIFY_WITH_TIMEOUT(!stopAfterResume.isEmpty(), 3000);
+    disconnect(stopOnSecondIteration);
+    disconnect(pauseAtFirstIteration);
+    QCOMPARE(stopAfterResume.value(QStringLiteral("status")).toString(), QStringLiteral("stopped"));
+    QCOMPARE(finishedIterations, 2);
+    const RunObservation stoppedSession = engine.runObservation(sessionId);
+    QCOMPARE(stoppedSession.sessionId, sessionId);
+    QVERIFY(stoppedSession.lastIterationRunId != firstIterationRunId);
+    const QJsonObject stoppedResult =
+        actor->executeTool(QStringLiteral("get_run_results"), QJsonObject{{QStringLiteral("runId"), sessionId}});
+    QCOMPARE(stoppedResult.value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+    QVERIFY(!stoppedResult.value(QStringLiteral("isBusy")).toBool());
+    QVERIFY(!stoppedResult.value(QStringLiteral("isRunning")).toBool());
+    QCOMPARE(engine.state(), RunState::Stopped);
+    const int stoppedIterations = finishedIterations;
+    QTest::qWait(10);
+    QCOMPARE(finishedIterations, stoppedIterations);
+
+    // Stale RunEngine cycle-timer callbacks are covered at that layer by
+    // testOldCycleTimerCannotTickNewSession. MainWindow cycles are service-managed
+    // and do not own a RunEngineCycleTimer.
+    const QString unchangedPath = QDir(targetDir.path()).filePath(QStringLiteral("after-rejected-edit.dproj"));
+    QVERIFY(project->save(unchangedPath));
+    Project unchangedReopen;
+    QVERIFY(unchangedReopen.load(unchangedPath));
+    QVERIFY(unchangedReopen.findModule(first.id));
+    QVERIFY(unchangedReopen.findModule(second.id));
+    QCOMPARE(unchangedReopen.moduleById(first.id)->params.value(QStringLiteral("delayMs")).toInt(), 1);
+
+    QCOMPARE(actor
+                 ->executeTool(QStringLiteral("move_module"),
+                               QJsonObject{{QStringLiteral("instanceId"), first.id}, {QStringLiteral("index"), 1}})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("moved"));
+    QCOMPARE(
+        actor
+            ->executeTool(QStringLiteral("set_param"), QJsonObject{{QStringLiteral("instanceId"), first.id},
+                                                                   {QStringLiteral("key"), QStringLiteral("delayMs")},
+                                                                   {QStringLiteral("value"), 2}})
+            .value(QStringLiteral("status"))
+            .toString(),
+        QStringLiteral("param_set"));
+    QTreeWidgetItem* secondTreeItem = treeController->instanceItem(second.id);
+    QVERIFY(secondTreeItem);
+    processTree->setCurrentItem(secondTreeItem);
+    secondTreeItem->setSelected(true);
+    QTest::keyClick(processTree->viewport(), Qt::Key_Delete);
+    QVERIFY(!project->findModule(second.id));
+    const QString reopenedPath = QDir(targetDir.path()).filePath(QStringLiteral("after-stop.dproj"));
+    QVERIFY(project->save(reopenedPath));
+    Project reopened;
+    QVERIFY(reopened.load(reopenedPath));
+    QVERIFY(!reopened.findModule(second.id));
+    QVERIFY(manager.newProjectChecked(ProjectManager::UnsavedPolicy::Discard, &errorCode, &errorMessage));
+}
+
+void TestMainWindow::testG4AgentCanStopPausedGuiCycle() {
+    RunEngine& engine = RunEngine::instance();
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+
+    ModuleInstance instance;
+    instance.id = QStringLiteral("gui_cycle_paused_stop");
+    instance.moduleId = QStringLiteral("延时");
+    instance.name = QStringLiteral("GUI Cycle Pause Stop Probe");
+    instance.params = QJsonObject{{QStringLiteral("delayMs"), 1}};
+    project->addModule(instance);
+    auto* module = qobject_cast<ModuleBase*>(PluginManager::instance().createModule(QStringLiteral("延时")));
+    QVERIFY(module);
+    QVERIFY(module->initialize());
+    window.registerFlowModule(instance.id, module);
+    QCoreApplication::processEvents();
+
+    AgentActor* actor = AgentController::instance().actor();
+    QVERIFY(actor);
+    QToolButton* cycleButton = window.findChild<QToolButton*>(QStringLiteral("FlowCycleButton"));
+    QVERIFY(cycleButton);
+    QJsonObject pauseResult;
+    const QMetaObject::Connection pauseAtIteration = connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&](const RunResult&) {
+            if (pauseResult.isEmpty())
+                pauseResult = actor->executeTool(QStringLiteral("pause_flow"), QJsonObject{});
+        },
+        Qt::DirectConnection);
+
+    cycleButton->click();
+    QTRY_COMPARE_WITH_TIMEOUT(pauseResult.value(QStringLiteral("status")).toString(), QStringLiteral("paused"), 5000);
+    const QJsonObject stopResult = actor->executeTool(QStringLiteral("stop_flow"), QJsonObject{});
+    QCOMPARE(stopResult.value(QStringLiteral("status")).toString(), QStringLiteral("stopped"));
+    disconnect(pauseAtIteration);
+    QCOMPARE(engine.state(), RunState::Stopped);
+    const int completedBeforeWait = engine.totalRuns();
+    QTest::qWait(10);
+    QCOMPARE(engine.totalRuns(), completedBeforeWait);
+
+    QVERIFY(waitForServiceIdle());
+    engine.clearModules();
+    PluginManager::instance().destroyModule(module);
+}
+
+void TestMainWindow::testG4FailedGuiCycleIterationStopsSession() {
+    RunEngine& engine = RunEngine::instance();
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    ModuleInstance instance;
+    instance.id = QStringLiteral("gui_cycle_failure_probe");
+    instance.moduleId = QStringLiteral("com.deeplux.test.mainwindowoutputprobe");
+    instance.name = QStringLiteral("GUI Cycle Failure Probe");
+    project->addModule(instance);
+    QStringList executions;
+    auto* module = new MainWindowOutputProbeModule(instance.id);
+    module->executeResult = false;
+    module->executionLog = &executions;
+    QVERIFY(module->initialize());
+    window.registerFlowModule(instance.id, module);
+    QCoreApplication::processEvents();
+
+    AgentActor* actor = AgentController::instance().actor();
+    QVERIFY(actor);
+    QToolButton* cycleButton = window.findChild<QToolButton*>(QStringLiteral("FlowCycleButton"));
+    QVERIFY(cycleButton);
+    QString sessionId;
+    QString firstIterationId;
+    QJsonObject failedIterationResult;
+    QJsonObject failedSessionResult;
+    int completed = 0;
+    QSignalSpy cycleJobFailed(&FlowExecutionService::instance(), &FlowExecutionService::jobFailed);
+    const QMetaObject::Connection inspectAndStop = connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&](const RunResult& iterationResult) {
+            ++completed;
+            if (completed == 1) {
+                const RunObservation observation = engine.runObservation();
+                sessionId = observation.sessionId;
+                firstIterationId = iterationResult.runId;
+                failedIterationResult = actor->executeTool(QStringLiteral("get_run_results"),
+                                                           QJsonObject{{QStringLiteral("runId"), firstIterationId}});
+                failedSessionResult = actor->executeTool(QStringLiteral("get_run_results"),
+                                                         QJsonObject{{QStringLiteral("runId"), sessionId}});
+            }
+        },
+        Qt::DirectConnection);
+
+    cycleButton->click();
+    QTRY_COMPARE_WITH_TIMEOUT(failedIterationResult.value(QStringLiteral("status")).toString(),
+                              QStringLiteral("failed"), 5000);
+    QCOMPARE(failedIterationResult.value(QStringLiteral("runId")).toString(), firstIterationId);
+    QCOMPARE(failedSessionResult.value(QStringLiteral("status")).toString(), QStringLiteral("failed"));
+    QCOMPARE(failedSessionResult.value(QStringLiteral("sessionId")).toString(), sessionId);
+    QCOMPARE(failedSessionResult.value(QStringLiteral("lastIterationRunId")).toString(), firstIterationId);
+    QCOMPARE(failedSessionResult.value(QStringLiteral("lastCompletedRunId")).toString(), firstIterationId);
+    QVERIFY(!failedSessionResult.value(QStringLiteral("isBusy")).toBool());
+    QTRY_COMPARE_WITH_TIMEOUT(cycleJobFailed.count(), 1, 3000);
+    QCOMPARE(completed, 1);
+    QCOMPARE(executions.size(), 1);
+    QVERIFY(!FlowExecutionService::instance().isActive());
+    QVERIFY(!engine.isBusy());
+    const int iterationsAfterStop = executions.size();
+    QTest::qWait(10);
+    QCOMPARE(executions.size(), iterationsAfterStop);
+    disconnect(inspectAndStop);
+
+    engine.clearModules();
+    PluginManager::instance().destroyModule(module);
+}
+
+void TestMainWindow::testG4GuiCycleMeasurementPickKeepsSharedSession() {
+    RunEngine& engine = RunEngine::instance();
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    QVERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    ModuleInstance instance;
+    instance.id = QStringLiteral("gui_cycle_measurement_pick");
+    instance.moduleId = QStringLiteral("MeasurementInput");
+    instance.name = QStringLiteral("GUI Cycle Measurement Pick");
+    instance.params =
+        QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")}, {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(instance);
+    auto* module =
+        qobject_cast<ModuleBase*>(PluginManager::instance().createModule(QStringLiteral("MeasurementInput")));
+    QVERIFY(module);
+    QVERIFY(module->initialize());
+    module->setParam(QStringLiteral("mode"), QStringLiteral("point_pair"));
+    module->setParam(QStringLiteral("awaitUserPick"), true);
+    window.registerFlowModule(instance.id, module);
+    QCoreApplication::processEvents();
+
+    AgentActor* actor = AgentController::instance().actor();
+    QVERIFY(actor);
+    QToolButton* cycleButton = window.findChild<QToolButton*>(QStringLiteral("FlowCycleButton"));
+    QVERIFY(cycleButton);
+    QSignalSpy runStartedSpy(&engine, &RunEngine::runStarted);
+    cycleButton->click();
+    const QString sessionId = engine.cycleSessionId();
+    QVERIFY(!sessionId.isEmpty());
+    const QJsonObject initialSessionResult =
+        actor->executeTool(QStringLiteral("get_run_results"), QJsonObject{{QStringLiteral("runId"), sessionId}});
+    QVERIFY(!initialSessionResult.value(QStringLiteral("stale")).toBool());
+    QCOMPARE(engine.runMode(), RunMode::RunCycle);
+    QCOMPARE(engine.state(), RunState::Running);
+    QVERIFY(engine.isBusy());
+    QVERIFY(engine.runObservation(sessionId).lastIterationRunId.isEmpty());
+    QCOMPARE(runStartedSpy.count(), 0);
+
+    const QJsonObject pauseResult = actor->executeTool(QStringLiteral("pause_flow"), QJsonObject{});
+    QCOMPARE(pauseResult.value(QStringLiteral("status")).toString(), QStringLiteral("paused"));
+    const QJsonObject resumeResult = actor->executeTool(QStringLiteral("resume_flow"), QJsonObject{});
+    QCOMPARE(resumeResult.value(QStringLiteral("status")).toString(), QStringLiteral("resumed"));
+    QCoreApplication::processEvents();
+    QCOMPARE(runStartedSpy.count(), 0);
+
+    QJsonObject stopResult;
+    const QMetaObject::Connection stopAfterMeasurementIteration = connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&](const RunResult&) { stopResult = actor->executeTool(QStringLiteral("stop_flow"), QJsonObject{}); },
+        Qt::DirectConnection);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(10.0, 20.0))));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(30.0, 40.0))));
+    QTRY_VERIFY_WITH_TIMEOUT(runStartedSpy.count() >= 1, 1000);
+    disconnect(stopAfterMeasurementIteration);
+    QCOMPARE(stopResult.value(QStringLiteral("status")).toString(), QStringLiteral("stopped"));
+    const RunObservation resumedSession = engine.runObservation(sessionId);
+    QCOMPARE(resumedSession.sessionId, sessionId);
+    QVERIFY(!resumedSession.lastIterationRunId.isEmpty());
+    const QJsonObject refreshedSessionResult =
+        actor->executeTool(QStringLiteral("get_run_results"), QJsonObject{{QStringLiteral("runId"), sessionId}});
+    QVERIFY(!refreshedSessionResult.value(QStringLiteral("stale")).toBool());
+    QVERIFY(!engine.isBusy());
+    engine.clearModules();
+    PluginManager::instance().destroyModule(module);
+}
+
+void TestMainWindow::testG4AgentStopClearsDeferredMeasurementPick() {
+    RunEngine& engine = RunEngine::instance();
+    MainWindow window;
+    window.show();
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    QVERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
+
+    ModuleInstance instance;
+    instance.id = QStringLiteral("gui_cycle_stopped_measurement_pick");
+    instance.moduleId = QStringLiteral("MeasurementInput");
+    instance.name = QStringLiteral("Stopped GUI Cycle Measurement Pick");
+    instance.params =
+        QJsonObject{{QStringLiteral("mode"), QStringLiteral("point_pair")}, {QStringLiteral("awaitUserPick"), true}};
+    project->addModule(instance);
+    auto* module =
+        qobject_cast<ModuleBase*>(PluginManager::instance().createModule(QStringLiteral("MeasurementInput")));
+    QVERIFY(module);
+    QVERIFY(module->initialize());
+    module->setParam(QStringLiteral("mode"), QStringLiteral("point_pair"));
+    module->setParam(QStringLiteral("awaitUserPick"), true);
+    window.registerFlowModule(instance.id, module);
+    QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
+
+    AgentActor* actor = AgentController::instance().actor();
+    QVERIFY(actor);
+    QToolButton* cycleButton = window.findChild<QToolButton*>(QStringLiteral("FlowCycleButton"));
+    QVERIFY(cycleButton);
+    cycleButton->click();
+    const QString deferredSessionId = engine.cycleSessionId();
+    QVERIFY(!deferredSessionId.isEmpty());
+    QVERIFY(engine.isBusy());
+    QVERIFY(engine.runObservation(deferredSessionId).lastIterationRunId.isEmpty());
+
+    const QJsonObject stopDeferredResult = actor->executeTool(QStringLiteral("stop_flow"), QJsonObject{});
+    QCOMPARE(stopDeferredResult.value(QStringLiteral("status")).toString(), QStringLiteral("stopped"));
+    QVERIFY(!engine.isBusy());
+    QCOMPARE(engine.state(), RunState::Stopped);
+
+    // Start a new, unrelated busy run after stop. A stale pending input ID would bypass the pick busy gate here.
+    module->setParam(QStringLiteral("awaitUserPick"), false);
+    QVERIFY(project->setModuleParam(instance.id, QStringLiteral("awaitUserPick"), false));
+    const QJsonObject projectBeforeRejectedPick = project->toJson();
+    QJsonObject pauseResult;
+    const QMetaObject::Connection pauseNewSession = connect(
+        &engine, &RunEngine::runFinished, &window,
+        [&](const RunResult&) {
+            if (pauseResult.isEmpty())
+                pauseResult = actor->executeTool(QStringLiteral("pause_flow"), QJsonObject{});
+        },
+        Qt::DirectConnection);
+    cycleButton->click();
+    QTRY_VERIFY_WITH_TIMEOUT(!pauseResult.isEmpty(), 2000);
+    disconnect(pauseNewSession);
+    QCOMPARE(pauseResult.value(QStringLiteral("status")).toString(), QStringLiteral("paused"));
+    QVERIFY(engine.isBusy());
+    const int runsBeforeRejectedPick = engine.totalRuns();
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(11.0, 21.0))));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onPoint2DPicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(31.0, 41.0))));
+    QCoreApplication::processEvents();
+    QCOMPARE(project->toJson(), projectBeforeRejectedPick);
+    QCOMPARE(engine.totalRuns(), runsBeforeRejectedPick);
+    QVERIFY(engine.isBusy());
+
+    const QJsonObject stopReplacement = actor->executeTool(QStringLiteral("stop_flow"), QJsonObject{});
+    QCOMPARE(stopReplacement.value(QStringLiteral("status")).toString(), QStringLiteral("stopped"));
+    QCOMPARE(engine.state(), RunState::Stopped);
+    engine.clearModules();
+    PluginManager::instance().destroyModule(module);
+}
+
 void TestMainWindow::testStepRunFollowsExecution() {
     RunEngine& engine = RunEngine::instance();
 
@@ -3913,6 +18590,53 @@ void TestMainWindow::testStepRunFollowsExecution() {
     delete mod2;
 }
 
+void TestMainWindow::testG4AgentAndGuiSingleStepSharePosition() {
+    MainWindow window;
+    AgentActor* actor = AgentController::instance().actor();
+    QVERIFY(actor != nullptr);
+    QVERIFY(!actor->executeTool("create_project", QJsonObject{{"name", "mixed_step"}}).contains("error"));
+    for (const QString& id : {QStringLiteral("mixed_a"), QStringLiteral("mixed_b")}) {
+        QVERIFY(!actor->executeTool("add_module", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", id}})
+                     .contains("error"));
+        QVERIFY(
+            !actor->executeTool("set_param", QJsonObject{{"instanceId", id}, {"key", "grabSource"}, {"value", "Demo"}})
+                 .contains("error"));
+    }
+    QCoreApplication::processEvents();
+
+    QStringList executed;
+    const QMetaObject::Connection finishedConn = QObject::connect(
+        &RunEngine::instance(), &RunEngine::moduleFinished, this, [&executed](const QString& id, bool success, int) {
+            if (success)
+                executed.append(id);
+        });
+    struct DisconnectOnExit {
+        QMetaObject::Connection connection;
+        ~DisconnectOnExit() {
+            QObject::disconnect(connection);
+        }
+    } disconnectOnExit{finishedConn};
+    QSignalSpy jobFinishedSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
+    QJsonObject result = actor->executeTool("step_once", {});
+    QVERIFY2(!result.contains("error"), qPrintable(result.value("error").toString()));
+    QTRY_COMPARE_WITH_TIMEOUT(jobFinishedSpy.count(), 1, 5000);
+    QCOMPARE(executed, QStringList{QStringLiteral("mixed_a")});
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(jobFinishedSpy.count(), 2, 5000);
+    QCOMPARE(executed, (QStringList{QStringLiteral("mixed_a"), QStringLiteral("mixed_b")}));
+
+    QCOMPARE(actor->executeTool("reset_step", {}).value("status").toString(), QStringLiteral("reset"));
+    QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(jobFinishedSpy.count(), 3, 5000);
+    QCOMPARE(executed.last(), QStringLiteral("mixed_a"));
+    result = actor->executeTool("step_once", {});
+    QVERIFY2(!result.contains("error"), qPrintable(result.value("error").toString()));
+    QTRY_COMPARE_WITH_TIMEOUT(jobFinishedSpy.count(), 4, 5000);
+    QCOMPARE(executed.last(), QStringLiteral("mixed_b"));
+    QObject::disconnect(finishedConn);
+}
+
 void TestMainWindow::testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns() {
     MainWindow window;
     window.resize(1024, 700);
@@ -3939,6 +18663,12 @@ void TestMainWindow::testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns() {
     auto* blockingProbe = new MainWindowBlockingWorkerProbe(blocking.id);
     blockingProbe->initialize();
     window.registerFlowModule(blocking.id, blockingProbe);
+    struct ReleaseBlockingProbeOnExit {
+        MainWindowBlockingWorkerProbe* probe;
+        ~ReleaseBlockingProbeOnExit() {
+            probe->release.release();
+        }
+    } releaseBlockingProbeOnExit{blockingProbe};
 
     QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
     QToolButton* stopButton = window.findChild<QToolButton*>(QStringLiteral("FlowStopButton"));
@@ -3949,7 +18679,9 @@ void TestMainWindow::testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns() {
     // 因此把两个探针都标记为 worker 亲和必须发生在这之后（确定性注入，不依赖执行时序）。
     // 两个模块都必须 worker 亲和：断言会阻塞 GUI 线程等待 entered，gui 亲和模块的
     // BlockingQueuedConnection 无法被服务，会让运行卡在第一个模块上。
+    QSignalSpy syncJobSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(syncJobSpy.count(), 1, 5000);
     QVERIFY(waitForServiceIdle());
     RunEngineTestAccess(RunEngine::instance()).setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
     RunEngineTestAccess(RunEngine::instance())
@@ -3991,7 +18723,9 @@ void TestMainWindow::testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns() {
     RunEngine::instance().clearModules();
     project->removeModule(cheap.id);
     project->removeModule(blocking.id);
+    ProjectManager::instance().closeProject();
     QCoreApplication::processEvents();
+    QVERIFY(waitForServiceIdle());
 }
 
 // B10 Step1（t26 F1）：性能验收只覆盖已审计 worker 流程（至少 FindCircle）。
@@ -4266,10 +19000,10 @@ void TestMainWindow::testModuleFinishedAfterProjectClosedDoesNotTouchDeletedItem
     QCOMPARE(processTree->topLevelItemCount(), 0);
 
     // 迟到的 queued moduleFinished：覆盖信号在 clear() 之后才送达的窗口。
-    QMetaObject::invokeMethod(
-        &RunEngine::instance(), [&ghost]() { emit RunEngine::instance().moduleFinished(ghost.id, true, 2); },
-        Qt::QueuedConnection);
-    QCoreApplication::processEvents();
+    QSignalSpy lateFinishedSpy(&RunEngine::instance(), &RunEngine::moduleFinished);
+    QVERIFY(QMetaObject::invokeMethod(&RunEngine::instance(), "moduleFinished", Qt::QueuedConnection,
+                                      Q_ARG(QString, ghost.id), Q_ARG(bool, true), Q_ARG(int, 2)));
+    QTRY_COMPARE_WITH_TIMEOUT(lateFinishedSpy.count(), 1, 1000);
     QCOMPARE(processTree->topLevelItemCount(), 0);
     QVERIFY(waitForServiceIdle());
 }
@@ -4301,6 +19035,13 @@ void TestMainWindow::testStepRunExecutesExactlyOneModulePerClick() {
     auto* blockingProbe = new MainWindowBlockingWorkerProbe(blocking.id);
     blockingProbe->initialize();
     window.registerFlowModule(blocking.id, blockingProbe);
+    struct ReleaseBlockingProbeOnExit {
+        QPointer<MainWindowBlockingWorkerProbe> probe;
+        ~ReleaseBlockingProbeOnExit() {
+            if (probe)
+                probe->release.release();
+        }
+    } releaseBlockingProbeOnExit{blockingProbe};
 
     QToolButton* stepButton = window.findChild<QToolButton*>(QStringLiteral("FlowStepButton"));
     QVERIFY(stepButton != nullptr);
@@ -4329,6 +19070,7 @@ void TestMainWindow::testStepRunExecutesExactlyOneModulePerClick() {
     QCOMPARE(executionLog.size(), 1);
 
     blockingProbe->release.release();
+    releaseBlockingProbeOnExit.probe = nullptr;
     QVERIFY(waitForServiceIdle());
     QTRY_COMPARE(jobSpy.count(), 2);
     QCOMPARE(executionLog.size(), 1); // 阻塞模块本身不写日志；本次单步只执行了它
@@ -4418,6 +19160,7 @@ void TestMainWindow::testCloseDeferredUntilRunningJobFinishes() {
     blocking.moduleId = QStringLiteral("BlockingProbe");
     blocking.name = QStringLiteral("B7 关闭阻塞");
     project->addModule(blocking);
+    project->setModified(false); // 该用例关注运行中延迟关闭；关闭时应视为已保存工程。
     QCoreApplication::processEvents();
 
     auto* cheapProbe = new MainWindowOutputProbeModule(cheap.id);
@@ -4426,18 +19169,27 @@ void TestMainWindow::testCloseDeferredUntilRunningJobFinishes() {
     auto* blockingProbe = new MainWindowBlockingWorkerProbe(blocking.id);
     blockingProbe->initialize();
     window.registerFlowModule(blocking.id, blockingProbe);
+    struct ReleaseBlockingProbeOnExit {
+        MainWindowBlockingWorkerProbe* probe;
+        ~ReleaseBlockingProbeOnExit() {
+            probe->release.release();
+        }
+    } releaseBlockingProbeOnExit{blockingProbe};
 
     QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
     QVERIFY(runButton != nullptr);
 
     // 断言会阻塞 GUI 线程等待 entered：两个模块都必须 worker 亲和，否则 gui 亲和模块的
     // BlockingQueuedConnection 无法被服务，运行会卡在第一个模块上。
+    QSignalSpy syncJobSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
+    QSignalSpy guiJobFinishedSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(syncJobSpy.count(), 1, 5000);
     QVERIFY(waitForServiceIdle());
+    guiJobFinishedSpy.clear();
     RunEngineTestAccess(RunEngine::instance()).setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
     RunEngineTestAccess(RunEngine::instance())
         .setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
-
     QTest::mouseClick(runButton, Qt::LeftButton);
     QVERIFY2(blockingProbe->entered.tryAcquire(1, 5000), "worker module must enter execution");
     QVERIFY(window.isVisible());
@@ -4451,8 +19203,23 @@ void TestMainWindow::testCloseDeferredUntilRunningJobFinishes() {
     QVERIFY2(window.isVisible(), "close must be ignored while a job is running");
     QVERIFY(FlowExecutionService::instance().isActive());
 
+    QSemaphore jobFinishedSignal;
+    const auto finishedConnection = connect(
+        &FlowExecutionService::instance(), &FlowExecutionService::jobFinished, &window,
+        [&jobFinishedSignal](FlowExecutionService::JobType, bool) { jobFinishedSignal.release(); },
+        Qt::DirectConnection);
+    struct DisconnectFinishedSignal {
+        QMetaObject::Connection connection;
+        ~DisconnectFinishedSignal() {
+            QObject::disconnect(connection);
+        }
+    } disconnectFinishedSignal{finishedConnection};
+
     blockingProbe->release.release();
     // jobFinished 后重试关闭。
+    QVERIFY2(jobFinishedSignal.tryAcquire(1, 5000), "service job must finish after releasing its worker module");
+    project->setModified(false); // keep this test focused on deferred close rather than an unsaved prompt.
+    QTRY_COMPARE_WITH_TIMEOUT(guiJobFinishedSpy.count(), 1, 3000);
     QTRY_VERIFY_WITH_TIMEOUT(!window.isVisible(), 5000);
     QVERIFY(waitForServiceIdle());
 
@@ -4542,7 +19309,8 @@ void TestMainWindow::testAgentRunTimeoutDoesNotBlockGuiThread() {
         actor.executeTool(QStringLiteral("run_flow"), QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")},
                                                                   {QStringLiteral("wait"), true},
                                                                   {QStringLiteral("timeoutMs"), 1000}});
-    QCOMPARE(run.value(QStringLiteral("code")).toString(), QStringLiteral("timeout"));
+    QCOMPARE(run.value(QStringLiteral("status")).toString(), QStringLiteral("timeout"));
+    QCOMPARE(run.value(QStringLiteral("errorCode")).toString(), QStringLiteral("RUN_TIMEOUT"));
     runFlowReturned = true;
     QVERIFY2(queuedTaskRanDuringWait,
              "GUI event loop must keep processing queued work while waiting for the job to stop (t13)");

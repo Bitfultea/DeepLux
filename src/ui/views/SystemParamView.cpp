@@ -2,6 +2,7 @@
 
 #include "../widgets/AppIconProvider.h"
 #include "common/Logger.h"
+#include "core/common/UserManager.h"
 #include "core/config/SystemConfig.h"
 #include "core/manager/ConfigManager.h"
 
@@ -14,13 +15,15 @@
 
 namespace DeepLux {
 
-SystemParamView::SystemParamView(QWidget* parent) : QDialog(parent) {
+SystemParamView::SystemParamView(QWidget* parent, const QString& requiredPermission)
+    : QDialog(parent), m_requiredPermission(requiredPermission) {
     setWindowTitle(tr("System Parameters"));
     setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
     setMinimumSize(600, 550);
 
     setupUI();
-    loadSettings();
+    connect(&UserManager::instance(), &UserManager::permissionChanged, this, &SystemParamView::updatePermissionState);
+    updatePermissionState();
 }
 
 void SystemParamView::setupUI() {
@@ -28,18 +31,26 @@ void SystemParamView::setupUI() {
     mainLayout->setSpacing(15);
     mainLayout->setContentsMargins(20, 20, 20, 20);
 
+    m_permissionMessage = new QLabel(this);
+    m_permissionMessage->setObjectName(QStringLiteral("SystemParamPermissionMessage"));
+    m_permissionMessage->setWordWrap(true);
+    mainLayout->addWidget(m_permissionMessage);
+
     // General settings
     m_generalGroup = new QGroupBox(tr("General Settings"), this);
     QFormLayout* generalLayout = new QFormLayout(m_generalGroup);
     generalLayout->setSpacing(10);
 
     m_autoLoadCheck = new QCheckBox(tr("Auto-load last project"), this);
+    m_autoLoadCheck->setObjectName(QStringLiteral("SystemParamAutoLoadCheck"));
     generalLayout->addRow(QString(), m_autoLoadCheck);
 
     m_autoSaveCheck = new QCheckBox(tr("Auto-save enabled"), this);
+    m_autoSaveCheck->setObjectName(QStringLiteral("SystemParamAutoSaveCheck"));
     generalLayout->addRow(QString(), m_autoSaveCheck);
 
     m_autoSaveIntervalSpin = new QSpinBox(this);
+    m_autoSaveIntervalSpin->setObjectName(QStringLiteral("SystemParamAutoSaveInterval"));
     m_autoSaveIntervalSpin->setRange(30, 3600);
     m_autoSaveIntervalSpin->setSuffix(" s");
     generalLayout->addRow(tr("Auto-save Interval:"), m_autoSaveIntervalSpin);
@@ -52,12 +63,14 @@ void SystemParamView::setupUI() {
     displayLayout->setSpacing(10);
 
     m_languageCombo = new QComboBox(this);
+    m_languageCombo->setObjectName(QStringLiteral("SystemParamLanguageCombo"));
     m_languageCombo->addItem("English", "en");
     m_languageCombo->addItem("简体中文", "zh_CN");
     m_languageCombo->addItem("繁體中文", "zh_TW");
     displayLayout->addRow(tr("Language:"), m_languageCombo);
 
     mThemeCombo = new QComboBox(this);
+    mThemeCombo->setObjectName(QStringLiteral("SystemParamThemeCombo"));
     mThemeCombo->addItem(tr("Dark Theme"), "dark");
     mThemeCombo->addItem(tr("Light Theme"), "light");
     displayLayout->addRow(tr("Theme:"), mThemeCombo);
@@ -70,6 +83,7 @@ void SystemParamView::setupUI() {
     runLayout->setSpacing(10);
 
     m_cycleIntervalSpin = new QSpinBox(this);
+    m_cycleIntervalSpin->setObjectName(QStringLiteral("SystemParamCycleInterval"));
     m_cycleIntervalSpin->setRange(10, 10000);
     m_cycleIntervalSpin->setSuffix(" ms");
     runLayout->addRow(tr("Cycle Interval:"), m_cycleIntervalSpin);
@@ -82,10 +96,12 @@ void SystemParamView::setupUI() {
     logLayout->setSpacing(10);
 
     m_logLevelCombo = new QSpinBox(this);
+    m_logLevelCombo->setObjectName(QStringLiteral("SystemParamLogLevel"));
     m_logLevelCombo->setRange(0, 5);
     logLayout->addRow(tr("Log Level:"), m_logLevelCombo);
 
     m_enableFileLogCheck = new QCheckBox(tr("Enable file logging"), this);
+    m_enableFileLogCheck->setObjectName(QStringLiteral("SystemParamEnableFileLog"));
     m_enableFileLogCheck->setChecked(true);
     logLayout->addRow(QString(), m_enableFileLogCheck);
 
@@ -96,8 +112,10 @@ void SystemParamView::setupUI() {
     btnLayout->setSpacing(10);
 
     m_resetBtn = new QPushButton(tr("Reset"), this);
+    m_resetBtn->setObjectName(QStringLiteral("SystemParamResetButton"));
     m_resetBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Undo, 16, QColor("#D97706")));
     m_saveBtn = new QPushButton(tr("Save"), this);
+    m_saveBtn->setObjectName(QStringLiteral("SystemParamSaveButton"));
     m_saveBtn->setIcon(AppIconProvider::icon(AppIconProvider::Icon::Save, 16, QColor("#2563EB")));
     m_saveBtn->setProperty("default", true);
     m_closeBtn = new QPushButton(tr("Close"), this);
@@ -116,7 +134,61 @@ void SystemParamView::setupUI() {
     connect(m_closeBtn, &QPushButton::clicked, this, &SystemParamView::onCloseClicked);
 }
 
+bool SystemParamView::hasRequiredPermission() const {
+    const UserManager& users = UserManager::instance();
+    return users.isLoggedIn() && users.currentUser().type != UserType::Guest &&
+           users.hasPermission(m_requiredPermission);
+}
+
+bool SystemParamView::ensureRequiredPermission() {
+    if (hasRequiredPermission())
+        return true;
+    if (m_permissionGranted)
+        updatePermissionState();
+    Logger::instance().warning(
+        QStringLiteral("System settings denied: %1 permission required").arg(m_requiredPermission),
+        QStringLiteral("Auth"));
+    return false;
+}
+
+void SystemParamView::updatePermissionState() {
+    const bool allowed = hasRequiredPermission();
+    const bool permissionWasGranted = m_permissionGranted;
+    m_permissionGranted = allowed;
+    m_permissionMessage->setText(allowed ? QString() : tr("You do not have permission to manage these settings."));
+    m_permissionMessage->setVisible(!allowed);
+
+    for (QWidget* control : {static_cast<QWidget*>(m_autoLoadCheck), static_cast<QWidget*>(m_autoSaveCheck),
+                             static_cast<QWidget*>(m_autoSaveIntervalSpin), static_cast<QWidget*>(m_languageCombo),
+                             static_cast<QWidget*>(mThemeCombo), static_cast<QWidget*>(m_cycleIntervalSpin),
+                             static_cast<QWidget*>(m_logLevelCombo), static_cast<QWidget*>(m_enableFileLogCheck)}) {
+        control->setEnabled(allowed);
+    }
+    m_resetBtn->setEnabled(allowed);
+    m_saveBtn->setEnabled(allowed);
+
+    if (!allowed) {
+        clearSettings();
+        return;
+    }
+    if (!permissionWasGranted)
+        loadSettings();
+}
+
+void SystemParamView::clearSettings() {
+    m_autoLoadCheck->setChecked(false);
+    m_autoSaveCheck->setChecked(false);
+    m_autoSaveIntervalSpin->setValue(m_autoSaveIntervalSpin->minimum());
+    m_languageCombo->setCurrentIndex(-1);
+    mThemeCombo->setCurrentIndex(-1);
+    m_cycleIntervalSpin->setValue(m_cycleIntervalSpin->minimum());
+    m_logLevelCombo->setValue(m_logLevelCombo->minimum());
+    m_enableFileLogCheck->setChecked(false);
+}
+
 void SystemParamView::loadSettings() {
+    if (!ensureRequiredPermission())
+        return;
     // 问题 2: 主题从 ConfigManager 读取（与 MainWindow 一致），其余从 SystemConfig
     ConfigManager& cfg = ConfigManager::instance();
     if (cfg.isInitialized()) {
@@ -139,6 +211,8 @@ void SystemParamView::loadSettings() {
 }
 
 void SystemParamView::saveSettings() {
+    if (!ensureRequiredPermission())
+        return;
     // 问题 2: 主题写入 ConfigManager（与 MainWindow 一致）
     ConfigManager& cfg = ConfigManager::instance();
     if (cfg.isInitialized()) {
@@ -162,12 +236,16 @@ void SystemParamView::saveSettings() {
 }
 
 void SystemParamView::onResetClicked() {
+    if (!ensureRequiredPermission())
+        return;
     SystemConfig::instance().reset();
     loadSettings();
     Logger::instance().info("System parameters reset to defaults", "Config");
 }
 
 void SystemParamView::onSaveClicked() {
+    if (!ensureRequiredPermission())
+        return;
     saveSettings();
     Logger::instance().info("System parameters saved", "Config");
 }

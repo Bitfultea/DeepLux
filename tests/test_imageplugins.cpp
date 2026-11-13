@@ -2,6 +2,7 @@
 #include "core/deeplux/PayloadTypes.h"
 #include "core/model/ImageData.h"
 #include "plugins/detection/Matching/MatchingPlugin.h"
+#include "plugins/image_processing/Blob/BlobPlugin.h"
 #include "plugins/image_processing/PerProcessing/PerProcessingPlugin.h"
 
 #include <QJsonObject>
@@ -27,11 +28,15 @@ private slots:
     void testPerProcessingEmptyImageFails();
     void testPerProcessingValidateRejectsBadKernel();
     void testPerProcessingCloneIndependent();
+    void testPerProcessingBuiltinsPreserveCoordinateProvenance();
 
     // Matching
     void testMatchingFindsTemplateDeterministic();
     void testMatchingEmptyImageFails();
     void testMatchingCloneIndependent();
+
+    // Blob output freshness
+    void testBlobFailureClearsInheritedLargestBlobCenter();
 };
 
 #ifdef DEEPLUX_HAS_OPENCV
@@ -170,6 +175,54 @@ void TestImagePlugins::testPerProcessingCloneIndependent() {
     delete clone;
 }
 
+void TestImagePlugins::testPerProcessingBuiltinsPreserveCoordinateProvenance() {
+#ifdef DEEPLUX_HAS_OPENCV
+    cv::Mat pixels(47, 61, CV_8UC3);
+    for (int y = 0; y < pixels.rows; ++y) {
+        for (int x = 0; x < pixels.cols; ++x)
+            pixels.at<cv::Vec3b>(y, x) =
+                cv::Vec3b(uchar((3 * x + y) % 256), uchar((x + 5 * y) % 256), uchar((7 * x + 2 * y) % 256));
+    }
+    ImageData input;
+    input.setMat(pixels);
+    ImageCoordinateProvenance provenance;
+    provenance.sourceImageId = QStringLiteral("per-processing-parent");
+    provenance.sourceSize = QSize(200, 150);
+    const ImageCoordinateProvenance::Matrix3 matrix{{1.5, 0.0, 7.0, 0.0, 2.0, 9.0, 0.0, 0.0, 1.0}};
+    QVERIFY(provenance.composeLocalToSource(matrix));
+    input.setCoordinateProvenance(provenance);
+
+    PerProcessingPlugin plugin;
+    QVERIFY(plugin.initialize());
+    const QStringList operations{
+        QStringLiteral("GaussianBlur"), QStringLiteral("MedianBlur"), QStringLiteral("BilateralFilter"),
+        QStringLiteral("Sobel"),        QStringLiteral("Laplacian"),  QStringLiteral("Canny"),
+        QStringLiteral("Dilate"),       QStringLiteral("Erode"),      QStringLiteral("Open"),
+        QStringLiteral("Close"),        QStringLiteral("Gradient")};
+    for (const QString& operation : operations) {
+        ImageData output;
+        const QJsonObject params{{QStringLiteral("processType"), operation},
+                                 {QStringLiteral("kernelSize"), 5},
+                                 {QStringLiteral("sigmaX"), 1.5},
+                                 {QStringLiteral("iterations"), 1}};
+        QVERIFY2(runModule(plugin, params, input, output).success, qPrintable(operation));
+        QCOMPARE(output.width(), input.width());
+        QCOMPARE(output.height(), input.height());
+        const ImageCoordinateProvenance actual = output.coordinateProvenance();
+        QVERIFY(actual.isValid());
+        QCOMPARE(actual.sourceImageId, provenance.sourceImageId);
+        QCOMPARE(actual.sourceSize, provenance.sourceSize);
+        const auto actualMatrix = actual.localToSourceMatrix();
+        for (size_t i = 0; i < matrix.size(); ++i)
+            QCOMPARE(actualMatrix[i], matrix[i]);
+        for (const QPointF point : {QPointF(3, 5), QPointF(57, 43)})
+            QCOMPARE(actual.mapLocalToSource(point).value(), provenance.mapLocalToSource(point).value());
+    }
+#else
+    QSKIP("OpenCV not available");
+#endif
+}
+
 // ===== Matching =====
 
 void TestImagePlugins::testMatchingFindsTemplateDeterministic() {
@@ -179,11 +232,31 @@ void TestImagePlugins::testMatchingFindsTemplateDeterministic() {
 
     // 合成图像含中心白色矩形，默认模板取中心区域 → 应能匹配到自身
     ImageData input = makeSyntheticImage();
+    ImageCoordinateProvenance provenance;
+    provenance.sourceImageId = QStringLiteral("12345678-1234-4234-9234-123456789abc");
+    provenance.sourceSize = QSize(640, 480);
+    const ImageCoordinateProvenance::Matrix3 matrix{{1.5, 0.0, 13.0, 0.0, 2.0, 17.0, 0.0, 0.0, 1.0}};
+    QVERIFY(provenance.composeLocalToSource(matrix));
+    input.setCoordinateProvenance(provenance);
     QJsonObject params{{"matchThreshold", 0.5}, {"maxMatches", 5}};
 
     ImageData output;
     const ExecutionResult result = runModule(plugin, params, input, output);
     QVERIFY2(result.success, qPrintable(result.userMessage));
+    QCOMPARE(output.width(), input.width());
+    QCOMPARE(output.height(), input.height());
+    const ImageCoordinateProvenance outputProvenance = output.coordinateProvenance();
+    QVERIFY(outputProvenance.isValid());
+    QCOMPARE(outputProvenance.sourceImageId, provenance.sourceImageId);
+    QCOMPARE(outputProvenance.sourceSize, provenance.sourceSize);
+    QCOMPARE(outputProvenance.localToSourceMatrix(), provenance.localToSourceMatrix());
+    for (const QPointF point : {QPointF(0.0, 0.0), QPointF(input.width() - 1.0, input.height() - 1.0)}) {
+        const auto expectedPoint = provenance.mapLocalToSource(point);
+        const auto actualPoint = outputProvenance.mapLocalToSource(point);
+        QVERIFY(expectedPoint);
+        QVERIFY(actualPoint);
+        QCOMPARE(actualPoint.value(), expectedPoint.value());
+    }
     QVERIFY(output.data("match_count").toInt() >= 1);
     QVERIFY(output.hasData("match_x"));
     QVERIFY(output.hasData("match_y"));
@@ -194,7 +267,20 @@ void TestImagePlugins::testMatchingFindsTemplateDeterministic() {
     QVERIFY(output.data("detections").canConvert<DetectionList>());
     const DetectionList detections = output.data("detections").value<DetectionList>();
     QVERIFY(!detections.isEmpty());
-    QCOMPARE(detections.items.first().score, score);
+    const Detection& first = detections.items.first();
+    QCOMPARE(first.x, output.data("match_x").toDouble());
+    QCOMPARE(first.y, output.data("match_y").toDouble());
+    QCOMPARE(first.width, output.data("match_width").toDouble());
+    QCOMPARE(first.height, output.data("match_height").toDouble());
+    QCOMPARE(first.score, score);
+    QCOMPARE(first.label, QStringLiteral("Match 1"));
+    const auto sourceBounds =
+        outputProvenance.mapRectToSourceBounds(QRectF(first.x, first.y, first.width, first.height));
+    QVERIFY(sourceBounds);
+    const auto expectedSourceBounds =
+        provenance.mapRectToSourceBounds(QRectF(first.x, first.y, first.width, first.height));
+    QVERIFY(expectedSourceBounds);
+    QCOMPARE(sourceBounds.value(), expectedSourceBounds.value());
 #else
     QSKIP("OpenCV not available");
 #endif
@@ -231,6 +317,20 @@ void TestImagePlugins::testMatchingCloneIndependent() {
     cloneBase->setParam("maxMatches", 99);
     QCOMPARE(plugin.currentParams().value("maxMatches").toInt(), 3);
     delete clone;
+}
+
+void TestImagePlugins::testBlobFailureClearsInheritedLargestBlobCenter() {
+#ifdef DEEPLUX_HAS_OPENCV
+    BlobPlugin plugin;
+    QVERIFY(plugin.initialize());
+    ImageData input(cv::Mat::zeros(100, 120, CV_8UC1));
+    input.setData(QStringLiteral("largest_blob_center"), QPointF(999.0, -777.0));
+    ImageData output;
+    QVERIFY(!plugin.execute(input, output));
+    QVERIFY(!output.hasData(QStringLiteral("largest_blob_center")));
+#else
+    QSKIP("OpenCV not available");
+#endif
 }
 
 QTEST_MAIN(TestImagePlugins)

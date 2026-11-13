@@ -130,7 +130,9 @@ bool DefectDetectionPlugin::process(const ImageData& input, ImageData& output) {
 #else
     Q_UNUSED(input);
     Q_UNUSED(output);
-    Logger::instance().warning("HymsonVision3D 未启用，缺陷检测不可用", "DefectDetection");
+    const QString message = tr("HymsonVision3D SDK 未启用，缺陷检测不可用");
+    emit errorOccurred(message);
+    Logger::instance().warning(message, "DefectDetection");
     return false;
 #endif
 }

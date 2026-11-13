@@ -5,6 +5,7 @@
 
 #include <QLabel>
 #include <QVBoxLayout>
+#include <cmath>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -63,6 +64,12 @@ bool MeasureGapPlugin::process(const ImageData& input, ImageData& output) {
         return false;
     }
 
+    if (!std::isfinite(pt1->x) || !std::isfinite(pt1->y) || !std::isfinite(pt1->z) || !std::isfinite(pt2->x) ||
+        !std::isfinite(pt2->y) || !std::isfinite(pt2->z)) {
+        emit errorOccurred(tr("点坐标必须为有限数值"));
+        return false;
+    }
+
     // 确定测量维度
     bool is3d = (pt1->z != 0.0 || pt2->z != 0.0);
     QString dimension = is3d ? QStringLiteral("3d") : QStringLiteral("2d");
@@ -75,6 +82,7 @@ bool MeasureGapPlugin::process(const ImageData& input, ImageData& output) {
 
     // 设置输出数据
     output.setData("gap_distance", m_resultGap);
+    output.setData("gap", m_resultGap);
     output.setData("gap_delta_x", m_resultDeltaX);
     output.setData("gap_delta_y", m_resultDeltaY);
     output.setData("gap_delta_z", m_resultDeltaZ);

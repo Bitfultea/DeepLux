@@ -49,6 +49,7 @@ struct SamPromptItem {
 struct SamPredictOutcome {
     bool ok = false;
     QString error;
+    QString uncertainStage; // 已上传请求字节后等待响应/取消的阶段（set_image/predict）；空值表示未证实
     int failedIndex = -1;    // 失败发生在第几个 prompt（-1 = set_image/参数阶段）
     QString modelName;       // 后端模型名（成功时；空则调用方自行回退）
     QString nativeDevice;    // 原生模式实际使用的设备（auto 解析后）
@@ -72,6 +73,7 @@ SamPredictOutcome convertNativeCandidates(const SamNativeResult& prediction, con
  *   native 仅在 DEEPLUX_NATIVE_SAM=ON 构建中可用，不会静默回退 Python
  * - timeoutMs ∈ [100,120000]，为"单请求"客户端超时；外层 deadline=timeoutMs+2000
  *   仅作客户端定时器故障兜底，且每收到一次响应重置（批1 复核二轮 P2-2 口径）
+ * - cancel 非空时 100ms 轮询；已上传请求字节后取消会同时报告 uncertainStage
  * - HTTP 模式 cancel 每 100ms 轮询；原生模式在模型操作前后检查取消，
  *   timeoutMs 为操作完成后的失败关闭上限，不能中断正在执行的 ORT 调用
  * - 每个产物在返回前过 Region2D 端口契约门禁（portValueMatchesType），

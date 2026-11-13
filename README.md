@@ -7,9 +7,9 @@ DeepLux Vision 是面向工业现场的跨平台机器视觉软件：以可视�
 ## 当前状态
 
 - 仓库插件目录包含 **69 份 metadata**，其中包括跨平台相机替代项和可选插件；默认 Linux/Windows 配置构建 **66 个插件**，启用 Hymson 3D 后为 67 个。插件手册覆盖完整目录，构建产物数量以本机 CMake 生成的 `plugin-facts.json` 为准。
-- **本地验证快照（2026-11-13，`feature/review-hardening`，commit `86d335a`）**：干净 Linux 构建后运行 `ctest --output-on-failure -j4`，98/98 CTest 项通过；环境与边界见[验证记录](docs/reports/review-hardening-r4-local-verification.md)。这不是 Qt6、Windows、Sanitizer 或现场验收结果。
+- **当前集成候选（2026-11-13）**：隔离分支 `feature/review-hardening-pr` 正在整合，工作树尚未形成可发布提交；本地 Linux CTest 134/134 通过。准确基线、命令、证据和未完成门槛见[当前状态](docs/STATUS.md)。该结果不是托管 CI、Windows、Sanitizer 或现场验收。
 - CI 工作流包含 Linux Qt 5/6、Windows MSVC、Sanitizer 与插件亲和性检查；实际通过状态应以对应工作流运行记录为准，不由本地 CTest 代替。
-- 原生 SAM 的真实模型 CPU/CUDA Linux 产品流程已在本机 RTX 3090 环境验证；Windows 上仅验证编译/打包，其他目标机、约 3000×3000 工业原图以及相机/PLC 硬件仍待对应环境验收，见[SAM 部署记录](docs/sam_native/stage5_packaging.md)。
+- 原生 SAM 的真实模型 CPU/CUDA Linux 推理流程曾在本机 RTX 3090 环境验证；ONNX 与 Python 输出一致性及掩膜质量尚未形成完整门禁，曾报告的空掩膜问题待可复现样本/提示坐标后复测。Windows 上仅验证编译/打包；其他目标机、约 3000×3000 工业原图以及相机/PLC 硬件仍待对应环境验收，见[SAM 部署记录](docs/sam_native/stage5_packaging.md)。
 
 ## 核心能力
 
@@ -128,13 +128,15 @@ scripts/          # 构建、插件同步、部署和 CLI 辅助脚本
 
 | 文档 | 内容 |
 | --- | --- |
+| [软件操作手册](docs/user-manual.md) | 主界面、流程搭建、算法参数、2D/3D 配方、Agent/SAM、排错与上线验收。 |
 | [快速上手](docs/quick-start.md) | 创建找圆流程、单步检查、常见排查。 |
 | [Windows 构建与部署](docs/windows-build.md) | MSVC 依赖、Ninja/VS 配置、插件同步、CTest、windeployqt 打包与常见问题。 |
 | [架构说明](docs/architecture.md) | UI、工程、执行引擎、插件、Agent 与 SAM 的职责边界。 |
-| [插件手册](docs/plugins.md) | 运行时插件的用途、接入方式、配置与失败条件。 |
+| [插件手册](docs/plugins.md) | 69 份插件 metadata 的用途索引；默认单平台构建 66 个插件，启用 Hymson 3D 后为 67 个。 |
 | [CLI 文档](docs/cli.md) | GUI 之外的项目、模块与连接管理命令。 |
-| [终端与 Agent 设计](docs/Terminal_Agent_Design.md) | 受控工具调用、审计与权限模型。 |
-| [工程技能图谱](docs/skills/README.md) | UI、插件、测量、流程、Agent、SAM 与质量验证的方法集。 |
+| [终端与 Agent 设计](docs/Terminal_Agent_Design.md) | 受控 Agent 工具调用、审计与权限模型。 |
+| [Agent 能力完善与验收计划](docs/agent-capability-improvement-plan.md) | 分阶段实施范围、插件/操作覆盖矩阵、验收标准与外部 Agent 交接要求。 |
+| [工程技能图谱](docs/skills/README.md) | UI、插件、测量、流程、Agent、SAM 与质量验证的可复用方法。 |
 | [3D 设计文档](docs/design/) | 点云渲染、LOD 和相关设计记录。 |
 
 ## 开发与验证

@@ -51,6 +51,7 @@ enum class ReasoningEcho { None, CurrentTurn, Full };
 struct AgentConversation {
     QList<AgentMessage> messages;
     QString systemPrompt;
+    QString requestId; // internal correlation only; never serialized to provider messages
 
     QJsonArray toOpenAIMessages() const;
     QJsonArray toOpenAIMessages(ReasoningEcho echo, const QString& imageDetail = QString()) const;
@@ -109,6 +110,7 @@ inline QString llmErrorCategoryName(LLMErrorCategory category) {
  * @brief LLM 响应
  */
 struct AgentResponse {
+    QString requestId;
     bool success = false;
     QString errorMessage;
     LLMErrorCategory errorCategory = LLMErrorCategory::None; // 成功时为 None
@@ -141,9 +143,16 @@ public:
     virtual void setTemperature(double temp) = 0;
     virtual void setMaxTokens(int tokens) = 0;
     virtual void setToolsEnabled(bool enabled) = 0;
+    virtual bool supportsToolCalling() const {
+        return true;
+    }
     virtual bool supportsImageInput() const {
         return false;
     }
+    virtual bool supportsRequestCorrelation() const {
+        return false;
+    }
+
     virtual qint64 estimateImageTokens(const AgentImageAttachment& image) const {
         return (image.data.size() + 2) / 3;
     }
@@ -153,6 +162,7 @@ public:
 
     // 发送请求（异步）
     virtual void sendRequest(const AgentConversation& ctx, const QList<ToolDefinition>& tools) = 0;
+    virtual void cancelRequest() {}
 
     // 中止当前请求并取消待触发的重试（非纯虚：既有 Mock/Scripted 客户端无需改动）
     virtual void abortRequest() {}
@@ -168,8 +178,10 @@ public:
 signals:
     void responseReceived(const AgentResponse& resp);
     void errorOccurred(const QString& error);
+    void requestFailed(const QString& requestId, const QString& error);
     // 分类错误（最终失败时发出；与 errorOccurred 并行保留既有链路）
     void errorOccurredClassified(const LLMErrorInfo& info);
+    void errorOccurredClassifiedForRequest(const QString& requestId, const LLMErrorInfo& info);
     // 已安排一次退避重试：attempt 从 1 开始，delayMs 为本次退避时长
     void retryScheduled(const LLMErrorInfo& info, int attempt, int delayMs);
 
@@ -181,6 +193,15 @@ signals:
     void streamFinished();                      // 聚合成功，responseReceived 即将发出
     void streamFailed();                        // 已收 delta 后失败（随后仍发错误信号）
     void streamFallback(const QString& reason); // 已切非流式
+
+    // Request-correlated variants. Legacy signals remain for scripted/mock clients.
+    void streamStartedForRequest(const QString& requestId);
+    void streamContentDeltaForRequest(const QString& requestId, const QString& text);
+    void streamReasoningDeltaForRequest(const QString& requestId, const QString& text);
+    void streamToolCallsUpdatedForRequest(const QString& requestId, int count);
+    void streamFinishedForRequest(const QString& requestId);
+    void streamFailedForRequest(const QString& requestId);
+    void streamFallbackForRequest(const QString& requestId, const QString& reason);
 
 protected:
     bool m_streamEnabled = true; // 默认开启流式（设计 §4.1）

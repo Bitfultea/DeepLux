@@ -6,8 +6,10 @@
 
 #include <QCoreApplication>
 #include <QEvent>
+#include <QHash>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QLibrary>
 #include <QList>
 #include <QMap>
 #include <QMutex>
@@ -44,8 +46,11 @@ struct PluginInfo {
     QJsonObject ui;              // 可选 UI 描述（parameters/results 元数据）
     QList<PortSpec> inputPorts;  // ABI v2 输入端口声明（metadata.json ports.inputs）
     QList<PortSpec> outputPorts; // ABI v2 输出端口声明（metadata.json ports.outputs）
+    bool portsDeclared = false;  // 两个端口数组均已声明并成功解析；合法空数组仍为 true
     bool threadSafe = false;     // metadata.json execution.threadSafe，并行批次中是否可并发执行
     bool blocking = false;       // metadata.json execution.blocking，是否有阻塞式 I/O
+    QJsonObject requirements;    // metadata.json requirements snapshot captured during scan
+    QStringList requirementMetadataErrors;
     // metadata.json execution.affinity（gui 默认 / worker）；非法值按 gui 处理
     ExecutionAffinity executionAffinity = ExecutionAffinity::Gui;
 };
@@ -76,8 +81,11 @@ public:
     void scanPlugins();
 
     // 加载/卸载
+    // timeoutMs can cancel a queued cross-thread request; once loading starts, wait for its actual result.
     bool loadPlugin(const QString& name, int timeoutMs = 10000);
     void unloadPlugin(const QString& name);
+    bool tryUnloadPlugin(const QString& name, QString* error = nullptr);
+    static QString unloadBlockReason(bool cameraPlugin, int liveModuleInstances, bool lifecycleTracked = true);
     void loadAllPlugins();
     void loadAllPluginsAsync(); // 异步加载所有插件，不阻塞主线程
     void unloadAllPlugins();
@@ -88,11 +96,18 @@ public:
     QList<PluginInfo> moduleInfos() const;
     QList<PluginInfo> cameraInfos() const;
     PluginInfo pluginInfo(const QString& name) const;
+    static QJsonObject availabilityItem(const PluginInfo& info, bool loaded);
+    static QString currentPlatformName();
+    static QJsonObject cameraAvailabilityItem(const PluginInfo& info, bool loaded, const QString& currentPlatform);
     QString moduleDisplayName(const QString& name) const;
     bool isPluginLoaded(const QString& name) const;
+    QString unloadBlockReasonForPlugin(const QString& name) const;
 
     // 创建实例
     IModule* createModule(const QString& name);
+    using ModulePtr = std::unique_ptr<IModule, void (*)(IModule*)>;
+    ModulePtr createManagedModule(const QString& name);
+    bool destroyModule(IModule* module);
     ICamera* createCamera(const QString& name);
 
     // 解析并校验 metadata.json（端口声明合法性门禁，非法声明拒绝进入可加载列表）。
@@ -116,7 +131,7 @@ private:
     ~PluginManager();
 
     bool validateLoadedPlugin(const PluginInfo& candidate, QPluginLoader* loader, QString* error) const;
-    void markPluginLoaded(const QString& name, QPluginLoader* loader);
+    void markPluginLoaded(const QString& name, QPluginLoader* loader, QLibrary* abiLibrary);
     void loadNextPluginAsync();
 
     // 自定义事件，用于线程安全地传递插件加载结果
@@ -126,8 +141,9 @@ private:
         bool success;
         QString error;
         QPluginLoader* loader;
-        PluginLoadEvent(const QString& n, bool s, const QString& e, QPluginLoader* l)
-            : QEvent(QEvent::User), name(n), success(s), error(e), loader(l) {}
+        QLibrary* abiLibrary;
+        PluginLoadEvent(const QString& n, bool s, const QString& e, QPluginLoader* l, QLibrary* a)
+            : QEvent(QEvent::User), name(n), success(s), error(e), loader(l), abiLibrary(a) {}
     };
     bool event(QEvent* event) override;
 
@@ -143,14 +159,26 @@ private:
     };
 
     mutable QRecursiveMutex m_mutex;
+    QMutex m_loadMutex;
     QStringList m_pluginPaths;
     QMap<QString, PluginInfo> m_modules;
     QMap<QString, PluginInfo> m_cameras;
     QMap<QString, PluginInfo> m_bundledPlugins;
     QMap<QString, QObject*> m_loadedPlugins;
     QMap<QString, QPluginLoader*> m_pluginLoaders;
+    QMap<QString, QLibrary*> m_pluginAbiLibraries;
+    QMap<QString, int> m_liveModuleInstances;
+    QSet<QString> m_untrackedModulePlugins;
+    struct ModuleInstanceRecord {
+        QString pluginName;
+        quint64 instanceId = 0;
+        bool destroying = false;
+    };
+    QHash<IModule*, ModuleInstanceRecord> m_moduleInstances;
+    quint64 m_nextModuleInstanceId = 1;
     // 正在加载的插件集合，用于避免重复加载
     QSet<QString> m_loadingPlugins;
+    QHash<QString, QThread*> m_loadingThreads;
     // 等待加载完成的条件变量
     QWaitCondition m_loadingComplete;
     // Template instances for cloning (each plugin provides one template)

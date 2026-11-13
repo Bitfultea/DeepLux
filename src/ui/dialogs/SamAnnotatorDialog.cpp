@@ -19,16 +19,19 @@
 #include <QButtonGroup>
 #include <QColor>
 #include <QComboBox>
+#include <QCryptographicHash>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QEvent>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QInputDialog>
+#include <QItemSelectionModel>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
@@ -40,10 +43,12 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
+#include <QSet>
 #include <QShortcut>
 #include <QSizePolicy>
 #include <QSpinBox>
 #include <QStackedWidget>
+#include <QStandardPaths>
 #include <QTemporaryFile>
 #include <QTimer>
 #include <QToolButton>
@@ -53,11 +58,29 @@
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QWidgetAction>
+#include <atomic>
+#include <cmath>
 #include <functional>
 
 namespace DeepLux {
 
 namespace {
+
+quint64 nextSamAnnotatorDialogInstanceId() {
+    static std::atomic<quint64> nextId{1};
+    return nextId.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool sameCoordinateProvenance(const ImageCoordinateProvenance& lhs, const ImageCoordinateProvenance& rhs) {
+    const bool lhsValid = lhs.isValid();
+    const bool rhsValid = rhs.isValid();
+    if (lhsValid != rhsValid)
+        return false;
+    if (!lhsValid)
+        return true;
+    return lhs.sourceImageId == rhs.sourceImageId && lhs.sourceSize == rhs.sourceSize &&
+           lhs.localToSourceMatrix() == rhs.localToSourceMatrix();
+}
 
 bool annotationContainsImagePoint(const AnnotationObject& obj, const QPointF& imagePoint) {
     if (obj.polygon.size() >= 3) {
@@ -71,6 +94,28 @@ bool annotationContainsImagePoint(const AnnotationObject& obj, const QPointF& im
     }
 
     return obj.bbox.adjusted(-2, -2, 2, 2).contains(imagePoint);
+}
+
+QString configuredPythonExecutable() {
+    const QString configured = QString::fromLocal8Bit(qgetenv("SAM_SERVER_PYTHON")).trimmed();
+    if (configured.isEmpty())
+        return {};
+    const QFileInfo configuredInfo(configured);
+    const QString resolved =
+        configuredInfo.isAbsolute() || configured.contains(QLatin1Char('/')) || configured.contains(QLatin1Char('\\'))
+            ? configuredInfo.absoluteFilePath()
+            : QStandardPaths::findExecutable(configured);
+    const QFileInfo executable(resolved);
+    return executable.isFile() && executable.isExecutable() ? executable.absoluteFilePath() : QString();
+}
+
+bool isUnsupportedSamModelPath(const QString& path) {
+    const QString fileName = QFileInfo(path).fileName().toLower();
+    return fileName.contains(QStringLiteral("sam3")) || fileName.contains(QStringLiteral("sam_3")) ||
+           fileName.contains(QStringLiteral("sam-3")) || fileName.contains(QStringLiteral("sam2")) ||
+           fileName.contains(QStringLiteral("sam_2")) || fileName.contains(QStringLiteral("sam-2")) ||
+           fileName.contains(QStringLiteral("sam_hq")) || fileName.contains(QStringLiteral("sam-hq")) ||
+           fileName.contains(QStringLiteral("hq_sam"));
 }
 
 bool inspectSamModelPackage(const QString& path, QString* summary) {
@@ -134,29 +179,46 @@ private:
     std::function<void()> m_undo;
 };
 
-SamAnnotatorDialog::SamAnnotatorDialog(QWidget* parent)
-    : QDialog(parent), m_session(new AnnotationSession()), m_samClient(new SamBackendClient(this)),
-      m_undoStack(new QUndoStack(this)) {
+SamAnnotatorDialog::SamAnnotatorDialog(QWidget* parent, bool environmentSetupOnly)
+    : QDialog(parent), m_instanceId(nextSamAnnotatorDialogInstanceId()), m_session(new AnnotationSession()),
+      m_samClient(new SamBackendClient(this)), m_undoStack(new QUndoStack(this)) {
     setWindowTitle(tr("SAM 快速标注"));
     setObjectName(QStringLiteral("SamAnnotatorDialog"));
     setMinimumSize(900, 600);
     setupUi();
+    m_samClient->setObjectName(QStringLiteral("SamBackendClient"));
     setupShortcuts();
     applyTheme(false);
     refreshOverlayCoordConverter();
     initializeDefaultCategories();
-    loadSavedModelPath();
+    loadSavedModelPath(environmentSetupOnly);
 
-    connect(m_samClient, &SamBackendClient::predictionReady, this, &SamAnnotatorDialog::onPredictionReady);
+    connect(m_samClient, &SamBackendClient::predictionReadyForRequest, this,
+            &SamAnnotatorDialog::onPredictionReadyForRequest);
+    connect(m_samClient, &SamBackendClient::predictionRequestStarted, this, [this](qint64 requestId) {
+        if (m_positivePoints.isEmpty() && m_negativePoints.isEmpty() && !m_dragBox.isValid())
+            return;
+        m_activePredictionGeneration = m_promptGeneration;
+        m_activePredictionRequestId = requestId;
+    });
+    connect(m_samClient, &SamBackendClient::predictionErrorForRequest, this,
+            &SamAnnotatorDialog::onPredictionErrorForRequest);
     connect(m_samClient, &SamBackendClient::embeddingReady, this, [this](const QString&) {
-        setStatusText(m_samClient->serverUrl() == QLatin1String("native")
-                          ? tr("图像已就绪；ONNX 模型将在首次预测时加载")
-                          : tr("SAM 已就绪"));
-        if (!m_positivePoints.isEmpty() || !m_negativePoints.isEmpty() || m_dragBox.isValid()) {
+        const bool predictionPending = m_samClient->pendingPredictionRequestId() > 0;
+        if (m_samClient->serverUrl() == QLatin1String("native")) {
+            setStatusText(tr("图像已就绪；ONNX 模型将在首次预测时加载"));
+        } else if (predictionPending) {
+            setStatusText(tr("SAM 正在完成预测重试..."));
+        } else {
+            setStatusText(tr("SAM 已就绪"));
+        }
+        if (!predictionPending && (!m_positivePoints.isEmpty() || !m_negativePoints.isEmpty() || m_dragBox.isValid())) {
             requestPrediction();
         }
     });
     connect(m_samClient, &SamBackendClient::errorOccurred, this, [this](const QString& message) {
+        if (m_handlingPredictionError)
+            return;
         m_hasPrediction = false;
         if (m_confirmButton)
             m_confirmButton->setEnabled(false);
@@ -330,9 +392,14 @@ void SamAnnotatorDialog::applyTheme(bool isDark) {
     }
 }
 
-void SamAnnotatorDialog::loadSavedModelPath() {
-    ConfigManager::instance().initialize();
-    auto useModelPath = [this](const QString& path) {
+void SamAnnotatorDialog::loadSavedModelPath(bool setupOnly) {
+    ConfigManager& config = ConfigManager::instance();
+    if (!config.isInitialized()) {
+        if (setupOnly)
+            return;
+        config.initialize();
+    }
+    auto useModelPath = [this, setupOnly](const QString& path) {
         if (path.isEmpty() || !QFileInfo::exists(path))
             return false;
         m_samClient->setModelPath(path);
@@ -340,12 +407,16 @@ void SamAnnotatorDialog::loadSavedModelPath() {
             m_samClient->setModelPath(QString());
             return false;
         }
-        qputenv("DEEPLUX_SAM_MODEL", path.toLocal8Bit());
+        if (!setupOnly)
+            qputenv("DEEPLUX_SAM_MODEL", path.toLocal8Bit());
         return true;
     };
 
-    const QString savedPath = ConfigManager::instance().groupString(QStringLiteral("sam"), QStringLiteral("modelPath"));
+    const QString savedPath = config.groupString(QStringLiteral("sam"), QStringLiteral("modelPath"));
     if (useModelPath(savedPath))
+        return;
+
+    if (setupOnly)
         return;
 
     const QString downloadedPath = QDir::home().filePath(QStringLiteral("Downloads/sam_vit_b_01ec64.pth"));
@@ -362,13 +433,159 @@ void SamAnnotatorDialog::saveModelPath(const QString& path) {
 bool SamAnnotatorDialog::samEnvironmentReadyForUse() const {
     if (m_samClient->serverUrl() == QLatin1String("native"))
         return SamNativeSettings::snapshot().error.isEmpty();
-    return !qgetenv("SAM_SERVER_PYTHON").isEmpty() || m_samClient->managedEnvironmentReady();
+    if (!qgetenv("SAM_SERVER_PYTHON").isEmpty())
+        return !configuredPythonExecutable().isEmpty();
+    return m_samClient->managedEnvironmentReady();
 }
 
 bool SamAnnotatorDialog::samModelReadyForUse() const {
-    if (m_samClient->serverUrl() == QLatin1String("native"))
-        return SamNativeSettings::snapshot().error.isEmpty();
-    return !m_samClient->modelPath().isEmpty() || !qgetenv("DEEPLUX_SAM_MODEL").isEmpty();
+    if (m_samClient->serverUrl() == QLatin1String("native")) {
+        QString summary;
+        const SamNativeConfig config = SamNativeSettings::snapshot();
+        return config.error.isEmpty() && inspectSamModelPackage(config.packageDir, &summary);
+    }
+    const QString path = m_samClient->modelPath().isEmpty() ? QString::fromLocal8Bit(qgetenv("DEEPLUX_SAM_MODEL"))
+                                                            : m_samClient->modelPath();
+    return !path.isEmpty() && QFileInfo(path).isFile() && !isUnsupportedSamModelPath(path);
+}
+
+QJsonObject SamAnnotatorDialog::environmentHandoffStatus() const {
+    const bool native = m_samClient->serverUrl() == QLatin1String("native");
+    const SamNativeConfig nativeConfig = native ? SamNativeSettings::snapshot() : SamNativeConfig{};
+    const QString pythonOverride = QString::fromLocal8Bit(qgetenv("SAM_SERVER_PYTHON")).trimmed();
+    const QString pythonPath = configuredPythonExecutable();
+    const bool externalPython = !native && !pythonOverride.isEmpty();
+    const bool managedPythonExists = QFileInfo(m_samClient->managedPythonPath()).isFile();
+    const bool managedVerified = native ? nativeConfig.error.isEmpty() : m_samClient->managedEnvironmentReady();
+    QString environmentSource = native ? QStringLiteral("native") : QStringLiteral("missing");
+    if (native && !managedVerified)
+        environmentSource = QStringLiteral("native_incomplete");
+    else if (!native && externalPython)
+        environmentSource = pythonPath.isEmpty() ? QStringLiteral("external_invalid") : QStringLiteral("external");
+    else if (!native && managedVerified)
+        environmentSource = QStringLiteral("managed_verified");
+    else if (!native && managedPythonExists)
+        environmentSource = QStringLiteral("managed_incomplete");
+
+    QString modelPath = native ? nativeConfig.packageDir : m_samClient->modelPath();
+    if (!native && modelPath.isEmpty())
+        modelPath = QString::fromLocal8Bit(qgetenv("DEEPLUX_SAM_MODEL"));
+    const bool modelConfigured = !modelPath.isEmpty();
+    const bool modelFileAvailable =
+        modelConfigured && (native ? QFileInfo(modelPath).isDir() : QFileInfo(modelPath).isFile());
+    QString modelSupported = QStringLiteral("unknown");
+    if (native) {
+        QString summary;
+        modelSupported =
+            inspectSamModelPackage(modelPath, &summary) ? QStringLiteral("supported") : QStringLiteral("unsupported");
+    } else if (modelConfigured) {
+        modelSupported =
+            isUnsupportedSamModelPath(modelPath) ? QStringLiteral("unsupported") : QStringLiteral("supported");
+    }
+
+    QString serverState;
+    switch (m_samClient->state()) {
+    case SamBackendClient::State::NotStarted:
+        serverState = QStringLiteral("not_started");
+        break;
+    case SamBackendClient::State::Starting:
+        serverState = QStringLiteral("starting");
+        break;
+    case SamBackendClient::State::LoadingModel:
+        serverState = m_samClient->healthCheckInFlight() ? QStringLiteral("checking") : QStringLiteral("loading");
+        break;
+    case SamBackendClient::State::Ready:
+        serverState = QStringLiteral("ready");
+        break;
+    case SamBackendClient::State::Busy:
+        serverState = QStringLiteral("busy");
+        break;
+    case SamBackendClient::State::Error:
+        serverState = QStringLiteral("error");
+        break;
+    }
+
+    // Native inference loads ONNX lazily on the first prediction; Ready here only means the package
+    // and backend are configured, not that model weights are already resident in memory.
+    const bool modelLoaded =
+        !native && serverState == QLatin1String("ready") && m_samClient->serverMode() == QLatin1String("sam");
+    QString nextAction = QStringLiteral("none");
+    if (m_samClient->isEnvironmentInitializationRunning())
+        nextAction = QStringLiteral("wait_for_initialization");
+    else if (m_samClient->healthCheckInFlight() || serverState == QLatin1String("starting") ||
+             serverState == QLatin1String("loading") || serverState == QLatin1String("busy"))
+        nextAction = QStringLiteral("wait_for_status");
+    else if (native && (!managedVerified || !modelConfigured || !modelFileAvailable ||
+                        modelSupported == QLatin1String("unsupported")))
+        nextAction = QStringLiteral("import_model");
+    else if (native && m_currentImage.isNull())
+        nextAction = QStringLiteral("open_image");
+    else if (native)
+        nextAction = QStringLiteral("none");
+    else if (environmentSource == QLatin1String("external_invalid"))
+        nextAction = QStringLiteral("fix_external_python");
+    else if (environmentSource == QLatin1String("missing") || environmentSource == QLatin1String("managed_incomplete"))
+        nextAction = QStringLiteral("initialize_environment");
+    else if (!modelConfigured || !modelFileAvailable || modelSupported == QLatin1String("unsupported"))
+        nextAction = QStringLiteral("import_model");
+    else if (serverState != QLatin1String("ready"))
+        nextAction = QStringLiteral("restart_sam");
+    else if (!modelLoaded)
+        nextAction = QStringLiteral("verify_model_service");
+    else if (m_currentImage.isNull())
+        nextAction = QStringLiteral("open_image");
+
+    return {{QStringLiteral("status"), QStringLiteral("ok")},
+            {QStringLiteral("dialogOpened"), true},
+            {QStringLiteral("imageAvailable"), !m_currentImage.isNull()},
+            {QStringLiteral("environmentSource"), environmentSource},
+            {QStringLiteral("environmentConfigured"),
+             environmentSource != QLatin1String("missing") && environmentSource != QLatin1String("external_invalid")},
+            {QStringLiteral("environmentVerified"), managedVerified},
+            {QStringLiteral("modelPathConfigured"), modelConfigured},
+            {QStringLiteral("modelFileAvailable"), modelFileAvailable},
+            {QStringLiteral("modelSupported"), modelSupported},
+            {QStringLiteral("serverState"), serverState},
+            {QStringLiteral("healthCheckInFlight"), m_samClient->healthCheckInFlight()},
+            {QStringLiteral("serverMode"), native ? QStringLiteral("native") : m_samClient->serverMode()},
+            {QStringLiteral("modelLoaded"), modelLoaded},
+            {QStringLiteral("userActionRequired"), nextAction != QLatin1String("none")},
+            {QStringLiteral("nextAction"), nextAction}};
+}
+
+void SamAnnotatorDialog::refreshEnvironmentHandoffLabel() {
+    if (!m_environmentHandoffLabel)
+        return;
+    const QJsonObject status = environmentHandoffStatus();
+    const QString action = status.value(QStringLiteral("nextAction")).toString();
+    QString message;
+    if (action == QLatin1String("wait_for_initialization"))
+        message = tr("SAM 环境正在初始化，请等待完成。");
+    else if (action == QLatin1String("fix_external_python"))
+        message = tr("SAM_SERVER_PYTHON 不可用，请修正外部 Python 配置。");
+    else if (action == QLatin1String("initialize_environment"))
+        message = tr("SAM 环境未就绪，请点击“初始化环境”。");
+    else if (action == QLatin1String("import_model"))
+        message = status.value(QStringLiteral("serverMode")).toString() == QLatin1String("native")
+                      ? tr("SAM 原生模型包缺失或无效，请点击“模型设置…”。")
+                      : tr("SAM 权重缺失或不受支持，请点击“导入权重”。");
+    else if (action == QLatin1String("wait_for_status")) {
+        const QString state = status.value(QStringLiteral("serverState")).toString();
+        if (status.value(QStringLiteral("healthCheckInFlight")).toBool())
+            message = tr("正在检查 SAM 服务状态，请稍候。");
+        else if (state == QLatin1String("busy"))
+            message = tr("SAM 正在处理请求，请等待完成。");
+        else
+            message = tr("SAM 服务正在启动或加载，请稍候。");
+    } else if (action == QLatin1String("restart_sam"))
+        message = tr("SAM 服务尚未就绪，请点击“重启 SAM”。");
+    else if (action == QLatin1String("verify_model_service"))
+        message = tr("服务未确认加载真实 SAM 模型，请检查权重并重启服务。");
+    else if (action == QLatin1String("open_image"))
+        message = tr("SAM 已就绪，请打开图像开始标注。");
+    else
+        message = tr("SAM 环境、模型和服务已就绪。");
+    m_environmentHandoffLabel->setText(message);
 }
 
 void SamAnnotatorDialog::refreshSamControlState() {
@@ -391,6 +608,7 @@ void SamAnnotatorDialog::refreshSamControlState() {
     }
     if (m_restartServerButton)
         m_restartServerButton->setEnabled(envReady && samModelReadyForUse());
+    refreshEnvironmentHandoffLabel();
 }
 
 void SamAnnotatorDialog::setupUi() {
@@ -592,23 +810,31 @@ void SamAnnotatorDialog::setupUi() {
     actionCol->addLayout(samActionRow);
 
     m_importModelButton = new QPushButton(tr("导入权重"));
-    m_importModelButton->setObjectName(QStringLiteral("SamModelActionButton"));
+    m_importModelButton->setObjectName(QStringLiteral("SamImportModelButton"));
     configureCompactButton(m_importModelButton);
     m_importModelButton->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     samActionRow->addWidget(m_importModelButton);
     connect(m_importModelButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onImportModel);
 
     m_initEnvironmentButton = new QPushButton(tr("初始化环境"));
+    m_initEnvironmentButton->setObjectName(QStringLiteral("SamInitializeEnvironmentButton"));
     configureCompactButton(m_initEnvironmentButton);
     m_initEnvironmentButton->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     samActionRow->addWidget(m_initEnvironmentButton);
     connect(m_initEnvironmentButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onInitializeEnvironment);
 
     m_restartServerButton = new QPushButton(tr("重启 SAM"));
+    m_restartServerButton->setObjectName(QStringLiteral("SamRestartServerButton"));
     configureCompactButton(m_restartServerButton);
     m_restartServerButton->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     samActionRow->addWidget(m_restartServerButton);
     connect(m_restartServerButton, &QPushButton::clicked, this, &SamAnnotatorDialog::onRestartSam);
+
+    m_environmentHandoffLabel = new QLabel();
+    m_environmentHandoffLabel->setObjectName(QStringLiteral("SamEnvironmentHandoffLabel"));
+    m_environmentHandoffLabel->setWordWrap(true);
+    m_environmentHandoffLabel->setMinimumHeight(20);
+    actionCol->addWidget(m_environmentHandoffLabel);
 
     // 行1：打开标注 + 保存会话
     auto* saveExportRow1 = new QHBoxLayout();
@@ -1007,16 +1233,21 @@ void SamAnnotatorDialog::onOverlayClicked(const QPointF& imagePoint, Qt::MouseBu
     }
 
     const bool negative = button == Qt::RightButton || m_toolMode == ToolMode::NegativePoint;
+    const quint64 commandEpoch = m_promptCommandEpoch;
     m_undoStack->push(new LambdaUndoCommand(
         tr("添加提示点"),
-        [this, imagePoint, negative]() {
+        [this, imagePoint, negative, commandEpoch]() {
+            if (commandEpoch != m_promptCommandEpoch)
+                return;
             if (negative)
                 m_negativePoints.append(imagePoint);
             else
                 m_positivePoints.append(imagePoint);
             refreshPromptAfterEdit(true);
         },
-        [this, negative]() {
+        [this, negative, commandEpoch]() {
+            if (commandEpoch != m_promptCommandEpoch)
+                return;
             if (negative && !m_negativePoints.isEmpty())
                 m_negativePoints.removeLast();
             else if (!negative && !m_positivePoints.isEmpty())
@@ -1028,13 +1259,18 @@ void SamAnnotatorDialog::onOverlayClicked(const QPointF& imagePoint, Qt::MouseBu
 void SamAnnotatorDialog::onOverlayDragEnded(const QPointF& imageStart, const QPointF& imageEnd) {
     const QRectF previousBox = m_dragBox;
     const QRectF nextBox = QRectF(imageStart, imageEnd).normalized();
+    const quint64 commandEpoch = m_promptCommandEpoch;
     m_undoStack->push(new LambdaUndoCommand(
         tr("设置框选"),
-        [this, nextBox]() {
+        [this, nextBox, commandEpoch]() {
+            if (commandEpoch != m_promptCommandEpoch)
+                return;
             m_dragBox = nextBox;
             refreshPromptAfterEdit(true);
         },
-        [this, previousBox]() {
+        [this, previousBox, commandEpoch]() {
+            if (commandEpoch != m_promptCommandEpoch)
+                return;
             m_dragBox = previousBox;
             refreshPromptAfterEdit(true);
         }));
@@ -1576,6 +1812,9 @@ void SamAnnotatorDialog::commitCurrentPromptAsObject() {
 }
 
 void SamAnnotatorDialog::refreshPromptAfterEdit(bool triggerPrediction) {
+    ++m_promptGeneration;
+    m_activePredictionRequestId = 0;
+    m_activePredictionGeneration = 0;
     m_hasPrediction = false;
     if (m_confirmButton)
         m_confirmButton->setEnabled(false);
@@ -1588,11 +1827,21 @@ void SamAnnotatorDialog::refreshPromptAfterEdit(bool triggerPrediction) {
     m_overlay->setPromptPoints(m_positivePoints, m_negativePoints);
     if (m_dragBox.isValid())
         m_overlay->setPreviewBox(m_dragBox);
-    if (triggerPrediction)
-        requestPrediction();
+    if (triggerPrediction) {
+        if (m_positivePoints.isEmpty() && m_negativePoints.isEmpty() && !m_dragBox.isValid()) {
+            if (m_samClient)
+                m_samClient->cancelPendingPrediction();
+        } else {
+            requestPrediction();
+        }
+    }
 }
 
 void SamAnnotatorDialog::clearCurrentPrompt() {
+    ++m_promptGeneration;
+    ++m_promptCommandEpoch;
+    m_activePredictionRequestId = 0;
+    m_activePredictionGeneration = 0;
     m_positivePoints.clear();
     m_negativePoints.clear();
     m_dragBox = QRectF();
@@ -1638,25 +1887,43 @@ void SamAnnotatorDialog::resetAnnotationState() {
 
 void SamAnnotatorDialog::prepareBackendImage() {
     m_samClient->cancelPendingPrediction();
-    m_backendImagePath.clear();
-    if (m_currentImage.isNull())
-        return;
-
-    if (!m_imagePath.isEmpty() && QFileInfo::exists(m_imagePath)) {
-        m_backendImagePath = m_imagePath;
-    } else {
-        m_tempImageFile.reset(new QTemporaryFile(QDir::tempPath() + QStringLiteral("/deeplux_sam_XXXXXX.png")));
-        m_tempImageFile->setAutoRemove(true);
-        if (!m_tempImageFile->open()) {
-            setStatusText(tr("无法创建临时标注图像"));
-            return;
-        }
-        m_backendImagePath = m_tempImageFile->fileName();
-        m_tempImageFile->close();
-        if (!m_currentImage.save(m_backendImagePath, "PNG")) {
-            setStatusText(tr("无法写入临时标注图像"));
+    if (m_agentBackendImageSnapshotPinned) {
+        if (m_agentBackendImageSnapshot.isNull()) {
             m_backendImagePath.clear();
             return;
+        }
+        if (!m_tempImageFile || !QFileInfo::exists(m_tempImageFile->fileName())) {
+            std::unique_ptr<QTemporaryFile> stagedFile;
+            QString stagedPath;
+            QString error;
+            if (!stageBackendImageSnapshot(m_agentBackendImageSnapshot, &stagedFile, &stagedPath, &error)) {
+                m_backendImagePath.clear();
+                setStatusText(error);
+                return;
+            }
+            m_tempImageFile = std::move(stagedFile);
+            m_backendImagePath = stagedPath;
+        } else {
+            m_backendImagePath = m_tempImageFile->fileName();
+        }
+    } else {
+        m_backendImagePath.clear();
+        m_tempImageFile.reset();
+        if (m_currentImage.isNull())
+            return;
+
+        if (!m_imagePath.isEmpty() && QFileInfo::exists(m_imagePath)) {
+            m_backendImagePath = m_imagePath;
+        } else {
+            std::unique_ptr<QTemporaryFile> stagedFile;
+            QString stagedPath;
+            QString error;
+            if (!stageBackendImageSnapshot(m_currentImage, &stagedFile, &stagedPath, &error)) {
+                setStatusText(error);
+                return;
+            }
+            m_tempImageFile = std::move(stagedFile);
+            m_backendImagePath = stagedPath;
         }
     }
 
@@ -1683,13 +1950,44 @@ void SamAnnotatorDialog::prepareBackendImage() {
     }
 
     setStatusText(tr("SAM 加载图像..."));
-    if (m_samClient->state() == SamBackendClient::State::Ready) {
+    SamBackendClient::State clientState = m_samClient->state();
+    if (clientState == SamBackendClient::State::Busy) {
+        m_samClient->cancelPendingPrediction();
+        clientState = m_samClient->state();
+    }
+    if (m_samClient->hasPendingSetImageRequest()) {
+        // A retry can remain in flight after the prompt was cancelled, with state
+        // NotStarted because the invalid embedding was cleared. Always replace a
+        // pending image load before interpreting the broader client state.
+        m_samClient->setImage(m_backendImagePath);
+    } else if (clientState == SamBackendClient::State::Ready) {
         m_samClient->setImage(m_backendImagePath);
     } else {
-        if (m_samClient->state() == SamBackendClient::State::Error)
+        if (clientState == SamBackendClient::State::Error)
             m_samClient->stopServerProcess();
         m_samClient->startServerProcess();
     }
+}
+
+bool SamAnnotatorDialog::stageBackendImageSnapshot(const QImage& image, std::unique_ptr<QTemporaryFile>* stagedFile,
+                                                   QString* stagedPath, QString* error) {
+    if (!stagedFile || !stagedPath || image.isNull()) {
+        if (error)
+            *error = tr("无法准备临时标注图像");
+        return false;
+    }
+    auto candidate = std::make_unique<QTemporaryFile>(QDir::tempPath() + QStringLiteral("/deeplux_sam_XXXXXX.png"));
+    candidate->setAutoRemove(true);
+    if (!candidate->open() || !image.save(candidate.get(), "PNG") || !candidate->flush()) {
+        if (error)
+            *error = tr("无法创建或写入临时标注图像");
+        return false;
+    }
+    const QString path = candidate->fileName();
+    candidate->close();
+    *stagedPath = path;
+    *stagedFile = std::move(candidate);
+    return true;
 }
 
 void SamAnnotatorDialog::requestPrediction() {
@@ -1705,7 +2003,19 @@ void SamAnnotatorDialog::requestPrediction() {
     }
 
     setStatusText(tr("SAM 预测中..."));
-    m_samClient->predict(m_positivePoints, m_negativePoints, m_dragBox);
+    m_activePredictionGeneration = m_promptGeneration;
+    m_activePredictionRequestId = m_samClient->predict(m_positivePoints, m_negativePoints, m_dragBox);
+}
+
+void SamAnnotatorDialog::onPredictionReadyForRequest(qint64 requestId, const QList<QPointF>& polygon,
+                                                     const QRectF& bbox, double score, const QString& maskRle,
+                                                     const QImage& maskImage) {
+    if (requestId <= 0 || requestId != m_activePredictionRequestId ||
+        m_activePredictionGeneration != m_promptGeneration)
+        return;
+    m_activePredictionRequestId = 0;
+    m_activePredictionGeneration = 0;
+    onPredictionReady(polygon, bbox, score, maskRle, maskImage);
 }
 
 void SamAnnotatorDialog::onPredictionReady(const QList<QPointF>& polygon, const QRectF& bbox, double score,
@@ -1738,6 +2048,21 @@ void SamAnnotatorDialog::onPredictionReady(const QList<QPointF>& polygon, const 
                                ? QStringLiteral(" · ONNX · %1").arg(m_samClient->nativeDevice().toUpper())
                                : QString();
     setStatusText(tr("SAM 预测完成%1 score=%2").arg(device).arg(score, 0, 'f', 2));
+}
+
+void SamAnnotatorDialog::onPredictionErrorForRequest(qint64 requestId, const QString& message) {
+    if (requestId <= 0 || requestId != m_activePredictionRequestId ||
+        m_activePredictionGeneration != m_promptGeneration)
+        return;
+    m_activePredictionRequestId = 0;
+    m_activePredictionGeneration = 0;
+    m_handlingPredictionError = true;
+    m_hasPrediction = false;
+    if (m_confirmButton)
+        m_confirmButton->setEnabled(false);
+    setStatusText(tr("SAM 错误：%1").arg(message));
+    refreshSamControlState();
+    QTimer::singleShot(0, this, [this]() { m_handlingPredictionError = false; });
 }
 
 void SamAnnotatorDialog::setPreviewCandidates(const QList<SamCandidate>& candidates) {
@@ -1794,6 +2119,9 @@ void SamAnnotatorDialog::updateSessionFromImage() {
     // 批3 复核三轮（P1-1）：新图绑定路径同步写入像素摘要——保存的会话文件
     // 自始携带摘要，打开/Agent 追加时才能校验图像未被替换
     m_session->imageDigest = AnnotationSession::computeImageDigest(m_currentImage);
+    const HImageWidget* imageWidget = activeImageWidget();
+    m_session->sourceCoordinateProvenance =
+        imageWidget ? imageWidget->coordinateProvenance() : ImageCoordinateProvenance();
     m_session->modelName = m_samClient->modelName().isEmpty() ? QStringLiteral("sam") : m_samClient->modelName();
 }
 
@@ -1841,6 +2169,8 @@ void SamAnnotatorDialog::openImageFromFile(const QString& suggestedPath) {
     // 新标注（静默错图）。同内容重开不清（保护进行中标注）。
     if (img != m_currentImage)
         resetAnnotationState();
+    m_agentBackendImageSnapshotPinned = false;
+    m_agentBackendImageSnapshot = QImage();
     m_currentImage = img;
     m_imagePath = path;
     HImageWidget* target = activeImageWidget();
@@ -1855,35 +2185,89 @@ void SamAnnotatorDialog::openImageFromFile(const QString& suggestedPath) {
 }
 
 void SamAnnotatorDialog::attachToImageWidget(HImageWidget* imageWidget, const QString& imagePath) {
+    attachToImageWidgetImpl(imageWidget, imagePath, true);
+}
+
+void SamAnnotatorDialog::attachToImageWidgetForEnvironmentSetup(HImageWidget* imageWidget) {
+    attachToImageWidgetImpl(imageWidget, QString(), false);
+}
+
+void SamAnnotatorDialog::showImagePickerEntryForUser() {
+    if (m_openImageRowWidget)
+        m_openImageRowWidget->show();
+    if (m_openImageButton) {
+        m_openImageButton->setEnabled(true);
+        m_openImageButton->show();
+    }
+}
+
+void SamAnnotatorDialog::attachToImageWidgetImpl(HImageWidget* imageWidget, const QString& imagePath,
+                                                 bool prepareBackend) {
     if (!imageWidget || !imageWidget->hasImage()) {
         setStatusText(tr("主视图没有可标注图像"));
         return;
     }
 
+    m_prepareBackendOnViewportChange = prepareBackend;
     if (m_externalImageWidget)
         m_externalImageWidget->disconnect(this);
     m_externalImageWidget = imageWidget;
-    connect(imageWidget, &QObject::destroyed, this, [this, imageWidget]() {
+    auto clearExternalImage = [this, imageWidget]() {
+        m_agentBackendImageSnapshotPinned = false;
+        m_agentBackendImageSnapshot = QImage();
+        m_currentImage = QImage();
+        m_imagePath.clear();
+        m_backendImagePath.clear();
+        m_tempImageFile.reset();
+        if (m_session) {
+            m_session->imageWidth = 0;
+            m_session->imageHeight = 0;
+            m_session->imageDigest.clear();
+            m_session->sourceCoordinateProvenance = ImageCoordinateProvenance();
+        }
+        resetAnnotationState();
+        if (m_prepareBackendOnViewportChange && m_samClient)
+            m_samClient->unloadImage();
+        setStatusText(tr("未加载图像"));
+        refreshSamControlState();
+    };
+    connect(imageWidget, &HImageWidget::imageCleared, this, clearExternalImage);
+    connect(imageWidget, &QObject::destroyed, this, [this, imageWidget, clearExternalImage]() {
+        clearExternalImage();
         if (m_externalImageWidget == imageWidget)
             m_externalImageWidget = nullptr;
     });
-    // Fix 2: 监听图像变化，重置标注会话（批2 复核二轮 P1-2：统一走
-    // resetAnnotationState 协议，与 openImageFromFile/setImageSnapshot 一致）
+    // 共享视口像素内容变化时重置标注会话，与 openImageFromFile/setImageSnapshot 一致。
+    // 像素不变而 provenance 变化只更新 lineage；局部提示和标注仍指向相同像素。
     connect(imageWidget, &HImageWidget::imageLoaded, this, [this](const QImage& newImage) {
-        if (m_externalImageWidget && m_externalImageWidget->currentImage() != m_currentImage) {
+        if (m_externalImageWidget) {
+            const ImageCoordinateProvenance newProvenance = m_externalImageWidget->coordinateProvenance();
+            const bool samePixels = m_externalImageWidget->currentImage() == m_currentImage;
+            const bool sameProvenance =
+                m_session && sameCoordinateProvenance(m_session->sourceCoordinateProvenance, newProvenance);
+            if (samePixels) {
+                if (!sameProvenance && m_session)
+                    m_session->sourceCoordinateProvenance = newProvenance;
+                return;
+            }
+
+            m_agentBackendImageSnapshotPinned = false;
+            m_agentBackendImageSnapshot = QImage();
             m_currentImage = newImage;
             m_imagePath.clear();
             resetAnnotationState();
-            if (m_session) {
-                m_session->imageWidth = newImage.width();
-                m_session->imageHeight = newImage.height();
-            }
-            if (m_samClient)
+            if (m_session)
+                updateSessionFromImage();
+            if (m_prepareBackendOnViewportChange && m_samClient)
                 m_samClient->unloadImage();
             refreshOverlayCoordConverter();
-            prepareBackendImage();
+            if (m_prepareBackendOnViewportChange)
+                prepareBackendImage();
+            refreshSamControlState();
         }
     });
+    m_agentBackendImageSnapshotPinned = false;
+    m_agentBackendImageSnapshot = QImage();
     m_currentImage = imageWidget->currentImage();
     m_imagePath = imagePath;
     if (m_centerContainer) {
@@ -1902,7 +2286,8 @@ void SamAnnotatorDialog::attachToImageWidget(HImageWidget* imageWidget, const QS
     resize(300, 530);
     moveOverlayToImageWidget(imageWidget);
     updateSessionFromImage();
-    prepareBackendImage();
+    if (prepareBackend)
+        prepareBackendImage();
     emit imageLoaded(imagePath);
 }
 
@@ -1915,6 +2300,8 @@ void SamAnnotatorDialog::setImageSnapshot(const QImage& image, const QString& im
     // 同内容快照（如对话框重开）不清，保护进行中标注
     if (!image.isNull() && image != m_currentImage)
         resetAnnotationState();
+    m_agentBackendImageSnapshotPinned = false;
+    m_agentBackendImageSnapshot = QImage();
     m_currentImage = image;
     m_imagePath = imagePath;
     if (!image.isNull()) {
@@ -2138,6 +2525,514 @@ AnnotationSession SamAnnotatorDialog::session() const {
     return *m_session;
 }
 
+int SamAnnotatorDialog::undoStackIndex() const {
+    return m_undoStack ? m_undoStack->index() : -1;
+}
+
+int SamAnnotatorDialog::undoStackCount() const {
+    return m_undoStack ? m_undoStack->count() : -1;
+}
+
+QJsonObject SamAnnotatorDialog::listAgentAnnotationObjects(int offset, int limit) const {
+    auto error = [](const QString& message, const QString& code) {
+        return QJsonObject{{QStringLiteral("error"), message},
+                           {QStringLiteral("errorCode"), code},
+                           {QStringLiteral("retryable"), false}};
+    };
+    if (offset < 0 || limit < 1 || limit > 50)
+        return error(QStringLiteral("offset or limit is outside the allowed range"), QStringLiteral("INVALID_PARAM"));
+    if (!m_session)
+        return error(QStringLiteral("No active annotation session exists"), QStringLiteral("SAM_DIALOG_NOT_OPEN"));
+    if (m_currentImage.isNull())
+        return error(QStringLiteral("The active SAM dialog has no image"), QStringLiteral("NO_IMAGE"));
+    const HImageWidget* imageWidget = m_externalImageWidget ? m_externalImageWidget.data() : m_imageWidget;
+    const ImageCoordinateProvenance provenance =
+        imageWidget ? imageWidget->coordinateProvenance() : ImageCoordinateProvenance();
+    const int total = m_session->annotations.size();
+    QJsonArray objects;
+    const int start = qMin(offset, total);
+    const int end = start + qMin(limit, total - start);
+    for (int i = start; i < end; ++i) {
+        const AnnotationObject& object = m_session->annotations.at(i);
+        const QJsonObject localBbox{{QStringLiteral("x"), object.bbox.x()},
+                                    {QStringLiteral("y"), object.bbox.y()},
+                                    {QStringLiteral("width"), object.bbox.width()},
+                                    {QStringLiteral("height"), object.bbox.height()}};
+        QJsonObject item{{QStringLiteral("objectId"), object.id},
+                         {QStringLiteral("label"), object.label},
+                         {QStringLiteral("bbox"), localBbox}};
+        if (const auto sourceBbox = provenance.mapRectToSourceBounds(object.bbox)) {
+            item.insert(QStringLiteral("sourceBbox"), QJsonObject{{QStringLiteral("x"), sourceBbox->x()},
+                                                                  {QStringLiteral("y"), sourceBbox->y()},
+                                                                  {QStringLiteral("width"), sourceBbox->width()},
+                                                                  {QStringLiteral("height"), sourceBbox->height()}});
+            item.insert(QStringLiteral("sourceImageId"), provenance.sourceImageId);
+            item.insert(QStringLiteral("sourceImageSize"),
+                        QJsonObject{{QStringLiteral("width"), provenance.sourceSize.width()},
+                                    {QStringLiteral("height"), provenance.sourceSize.height()}});
+        }
+        objects.append(item);
+    }
+    QJsonObject result{{QStringLiteral("status"), QStringLiteral("ok")},
+                       {QStringLiteral("objects"), objects},
+                       {QStringLiteral("total"), total},
+                       {QStringLiteral("offset"), offset},
+                       {QStringLiteral("limit"), limit},
+                       {QStringLiteral("hasMore"), end < total},
+                       {QStringLiteral("coordinateFrame"), QStringLiteral("ImageLocalPixel")},
+                       {QStringLiteral("sourceCoordinateAvailable"), provenance.isValid()}};
+    if (end < total)
+        result.insert(QStringLiteral("nextOffset"), end);
+    if (QJsonDocument(result).toJson(QJsonDocument::Compact).size() > 65536)
+        return error(QStringLiteral("The requested object page exceeds the response size limit"),
+                     QStringLiteral("RESPONSE_LIMIT_EXCEEDED"));
+    return result;
+}
+
+QJsonObject SamAnnotatorDialog::listAgentAnnotationCategories(int offset, int limit) const {
+    auto error = [](const QString& message, const QString& code) {
+        return QJsonObject{{QStringLiteral("error"), message},
+                           {QStringLiteral("errorCode"), code},
+                           {QStringLiteral("retryable"), false}};
+    };
+    if (offset < 0 || limit < 1 || limit > 50)
+        return error(QStringLiteral("offset or limit is outside the allowed range"), QStringLiteral("INVALID_PARAM"));
+    if (!m_session)
+        return error(QStringLiteral("No active annotation session exists"), QStringLiteral("SAM_DIALOG_NOT_OPEN"));
+    const int total = m_session->annotations.size();
+    const int start = qMin(offset, total);
+    const int end = start + qMin(limit, total - start);
+    QJsonArray categories;
+    for (const QString& category : m_categories)
+        categories.append(category);
+    QJsonArray objects;
+    for (int index = start; index < end; ++index) {
+        const AnnotationObject& object = m_session->annotations.at(index);
+        objects.append(QJsonObject{{QStringLiteral("objectId"), object.id}, {QStringLiteral("label"), object.label}});
+    }
+    QJsonObject result{{QStringLiteral("status"), QStringLiteral("ok")},
+                       {QStringLiteral("categories"), categories},
+                       {QStringLiteral("objects"), objects},
+                       {QStringLiteral("total"), total},
+                       {QStringLiteral("offset"), offset},
+                       {QStringLiteral("limit"), limit},
+                       {QStringLiteral("hasMore"), end < total}};
+    if (end < total)
+        result.insert(QStringLiteral("nextOffset"), end);
+    if (QJsonDocument(result).toJson(QJsonDocument::Compact).size() > 65536)
+        return error(QStringLiteral("The requested category and object page exceeds the response size limit"),
+                     QStringLiteral("RESPONSE_LIMIT_EXCEEDED"));
+    return result;
+}
+
+QJsonObject SamAnnotatorDialog::applyAgentCategoryEdit(const QJsonObject& params, bool dryRun) {
+    auto error = [](const QString& message, const QString& code) {
+        return QJsonObject{{QStringLiteral("error"), message},
+                           {QStringLiteral("errorCode"), code},
+                           {QStringLiteral("retryable"), false}};
+    };
+    const QString operation = params.value(QStringLiteral("operation")).toString();
+    const QSet<QString> allowedKeys =
+        operation == QLatin1String("set_object_label")
+            ? QSet<QString>{QStringLiteral("operation"), QStringLiteral("objectIds"), QStringLiteral("label")}
+            : QSet<QString>{QStringLiteral("operation"), QStringLiteral("category")};
+    for (const QString& key : params.keys()) {
+        if (!allowedKeys.contains(key))
+            return error(QStringLiteral("Unknown parameter: %1").arg(key), QStringLiteral("INVALID_PARAM"));
+    }
+    if (operation != QLatin1String("add_category") && operation != QLatin1String("remove_category") &&
+        operation != QLatin1String("set_object_label"))
+        return error(QStringLiteral("Unsupported category operation"), QStringLiteral("INVALID_PARAM"));
+
+    if (operation == QLatin1String("add_category") || operation == QLatin1String("remove_category")) {
+        const QJsonValue categoryValue = params.value(QStringLiteral("category"));
+        if (!categoryValue.isString())
+            return error(QStringLiteral("category must be a string"), QStringLiteral("INVALID_PARAM"));
+        const QString category = categoryValue.toString().trimmed();
+        const int utf8Length = category.toUtf8().size();
+        if (category.isEmpty() || utf8Length > 128)
+            return error(QStringLiteral("category must contain 1 to 128 UTF-8 bytes after trimming"),
+                         QStringLiteral("INVALID_PARAM"));
+        if (operation == QLatin1String("add_category")) {
+            if (m_categories.contains(category))
+                return error(QStringLiteral("Category already exists"), QStringLiteral("CATEGORY_ALREADY_EXISTS"));
+            if (m_categories.size() >= 256)
+                return error(QStringLiteral("The category limit has been reached"),
+                             QStringLiteral("CATEGORY_LIMIT_EXCEEDED"));
+            if (dryRun)
+                return {{QStringLiteral("status"), QStringLiteral("ready")}};
+            addCategory(category);
+        } else {
+            if (!m_categories.contains(category))
+                return error(QStringLiteral("Category was not found"), QStringLiteral("CATEGORY_NOT_FOUND"));
+            if (dryRun)
+                return {{QStringLiteral("status"), QStringLiteral("ready")}};
+            removeCategory(category);
+        }
+        return {{QStringLiteral("status"), QStringLiteral("updated")},
+                {QStringLiteral("operation"), operation},
+                {QStringLiteral("category"), category}};
+    }
+
+    const QJsonValue idsValue = params.value(QStringLiteral("objectIds"));
+    const QJsonValue labelValue = params.value(QStringLiteral("label"));
+    if (!idsValue.isArray() || !labelValue.isString())
+        return error(QStringLiteral("objectIds and label are required"), QStringLiteral("INVALID_PARAM"));
+    const QString label = labelValue.toString().trimmed();
+    if (label.toUtf8().isEmpty() || !m_categories.contains(label))
+        return error(QStringLiteral("label must match an active category"), QStringLiteral("CATEGORY_NOT_FOUND"));
+    const QJsonArray idValues = idsValue.toArray();
+    if (idValues.isEmpty() || idValues.size() > 64)
+        return error(QStringLiteral("objectIds must contain 1 to 64 IDs"), QStringLiteral("INVALID_PARAM"));
+    QStringList ids;
+    QSet<QString> uniqueIds;
+    for (const QJsonValue& value : idValues) {
+        if (!value.isString() || value.toString().isEmpty() || uniqueIds.contains(value.toString()))
+            return error(QStringLiteral("objectIds must contain unique non-empty strings"),
+                         QStringLiteral("INVALID_PARAM"));
+        ids.append(value.toString());
+        uniqueIds.insert(value.toString());
+    }
+    if (!m_session)
+        return error(QStringLiteral("No active annotation session exists"), QStringLiteral("SAM_DIALOG_NOT_OPEN"));
+    QList<int> indices;
+    for (const QString& id : ids) {
+        int found = -1;
+        for (int index = 0; index < m_session->annotations.size(); ++index) {
+            if (m_session->annotations.at(index).id == id) {
+                found = index;
+                break;
+            }
+        }
+        if (found < 0)
+            return error(QStringLiteral("Annotation object was not found"),
+                         QStringLiteral("ANNOTATION_OBJECT_NOT_FOUND"));
+        indices.append(found);
+    }
+    QList<int> changedIndices;
+    for (int index : indices) {
+        if (m_session->annotations.at(index).label != label)
+            changedIndices.append(index);
+    }
+    if (changedIndices.isEmpty()) {
+        if (dryRun)
+            return {{QStringLiteral("status"), QStringLiteral("unchanged")}};
+        return {{QStringLiteral("status"), QStringLiteral("unchanged")},
+                {QStringLiteral("operation"), operation},
+                {QStringLiteral("affectedObjectIds"), QJsonArray{}}};
+    }
+    if (dryRun)
+        return {{QStringLiteral("status"), QStringLiteral("ready")}};
+
+    QListWidget* objectList = m_objectList;
+    QStringList selectedIds;
+    for (QListWidgetItem* item : objectList->selectedItems())
+        selectedIds.append(item->data(Qt::UserRole).toString());
+    const QString currentId =
+        objectList->currentItem() ? objectList->currentItem()->data(Qt::UserRole).toString() : QString();
+    const QList<AnnotationObject> before = m_session->annotations;
+    QList<AnnotationObject> after = before;
+    QJsonArray affectedIds;
+    for (int index : changedIndices) {
+        after[index].label = label;
+        affectedIds.append(after.at(index).id);
+    }
+    auto apply = [this, selectedIds, currentId](const QList<AnnotationObject>& annotations) {
+        m_session->annotations = annotations;
+        if (m_overlay)
+            m_overlay->setAnnotations(m_session->annotations);
+        refreshObjectList();
+        m_objectList->clearSelection();
+        for (int row = 0; row < m_objectList->count(); ++row) {
+            QListWidgetItem* item = m_objectList->item(row);
+            const QString id = item->data(Qt::UserRole).toString();
+            item->setSelected(selectedIds.contains(id));
+            if (id == currentId)
+                m_objectList->setCurrentItem(item, QItemSelectionModel::NoUpdate);
+        }
+        if (currentId.isEmpty())
+            m_objectList->setCurrentItem(nullptr, QItemSelectionModel::NoUpdate);
+        if (m_overlay)
+            m_overlay->setSelectedId(currentId);
+        updateMaskEditButtonStates();
+    };
+    m_undoStack->push(new LambdaUndoCommand(
+        tr("修改标注对象类别"), [apply, after]() { apply(after); }, [apply, before]() { apply(before); }));
+    return {{QStringLiteral("status"), QStringLiteral("updated")},
+            {QStringLiteral("operation"), operation},
+            {QStringLiteral("affectedObjectIds"), affectedIds}};
+}
+
+QJsonObject SamAnnotatorDialog::agentPromptStatus() const {
+    const bool hasPrompt = !m_positivePoints.isEmpty() || !m_negativePoints.isEmpty() || m_dragBox.isValid();
+    const bool predictionInFlight = m_activePredictionRequestId > 0 && m_samClient &&
+                                    m_samClient->pendingPredictionRequestId() == m_activePredictionRequestId;
+    return {{QStringLiteral("status"), QStringLiteral("ok")},
+            {QStringLiteral("hasPrompt"), hasPrompt},
+            {QStringLiteral("predictionInFlight"), predictionInFlight},
+            {QStringLiteral("candidateCount"), m_previewCandidates.size()}};
+}
+
+QJsonObject SamAnnotatorDialog::agentPromptStateSnapshot() const {
+    QJsonArray positive;
+    for (const QPointF& point : m_positivePoints)
+        positive.append(QJsonArray{point.x(), point.y()});
+    QJsonArray negative;
+    for (const QPointF& point : m_negativePoints)
+        negative.append(QJsonArray{point.x(), point.y()});
+    QJsonObject box;
+    if (m_dragBox.isValid()) {
+        box = {{QStringLiteral("x"), m_dragBox.x()},
+               {QStringLiteral("y"), m_dragBox.y()},
+               {QStringLiteral("width"), m_dragBox.width()},
+               {QStringLiteral("height"), m_dragBox.height()}};
+    }
+    const qint64 pendingRequestId = m_samClient ? m_samClient->pendingPredictionRequestId() : 0;
+    const qint64 currentRequestId = pendingRequestId == m_activePredictionRequestId ? pendingRequestId : 0;
+    const QJsonObject internalState{{QStringLiteral("positive"), positive},
+                                    {QStringLiteral("negative"), negative},
+                                    {QStringLiteral("box"), box},
+                                    {QStringLiteral("hasPrediction"), m_hasPrediction},
+                                    {QStringLiteral("candidateCount"), m_previewCandidates.size()},
+                                    {QStringLiteral("candidateIndex"), m_previewCandidateIndex},
+                                    {QStringLiteral("requestId"), QString::number(currentRequestId)}};
+    const QByteArray stateBytes = QJsonDocument(internalState).toJson(QJsonDocument::Compact);
+    const QString stateDigest =
+        QString::fromLatin1(QCryptographicHash::hash(stateBytes, QCryptographicHash::Sha256).toHex());
+    return {{QStringLiteral("promptGeneration"), QString::number(m_promptGeneration)},
+            {QStringLiteral("requestId"), QString::number(currentRequestId)},
+            {QStringLiteral("predictionInFlight"), currentRequestId > 0},
+            {QStringLiteral("stateDigest"), stateDigest}};
+}
+
+QJsonObject SamAnnotatorDialog::cancelAgentPrompt() {
+    const QJsonObject status = agentPromptStatus();
+    const bool hasTransientState = status.value(QStringLiteral("hasPrompt")).toBool() ||
+                                   status.value(QStringLiteral("predictionInFlight")).toBool() ||
+                                   status.value(QStringLiteral("candidateCount")).toInt() > 0 || m_hasPrediction;
+    if (!hasTransientState)
+        return {{QStringLiteral("status"), QStringLiteral("unchanged")}};
+    if (m_samClient)
+        m_samClient->cancelPendingPrediction();
+    clearCurrentPrompt();
+    setStatusText(tr("已取消当前提示"));
+    return {{QStringLiteral("status"), QStringLiteral("cancelled")}};
+}
+
+QJsonObject SamAnnotatorDialog::applyAgentMaskEdit(const QJsonObject& params, bool dryRun) {
+    auto error = [](const QString& message, const QString& code) {
+        return QJsonObject{{QStringLiteral("error"), message},
+                           {QStringLiteral("errorCode"), code},
+                           {QStringLiteral("retryable"), false}};
+    };
+    const QString operation = params.value(QStringLiteral("operation")).toString();
+    const QSet<QString> allowedKeys{QStringLiteral("operation"), QStringLiteral("objectIds"),
+                                    QStringLiteral("radiusPx"), QStringLiteral("strokePoints")};
+    for (const QString& key : params.keys()) {
+        if (!allowedKeys.contains(key))
+            return error(QStringLiteral("Unknown parameter: %1").arg(key), QStringLiteral("INVALID_PARAM"));
+    }
+    const QJsonArray idValues = params.value(QStringLiteral("objectIds")).toArray();
+    QStringList ids;
+    QSet<QString> uniqueIds;
+    for (const QJsonValue& value : idValues) {
+        if (!value.isString() || value.toString().trimmed().isEmpty() || uniqueIds.contains(value.toString()))
+            return error(QStringLiteral("objectIds must contain unique non-empty strings"),
+                         QStringLiteral("INVALID_PARAM"));
+        ids.append(value.toString());
+        uniqueIds.insert(value.toString());
+    }
+    const bool usesRadius = operation == QLatin1String("dilate") || operation == QLatin1String("erode") ||
+                            operation == QLatin1String("erase_stroke");
+    const bool usesStroke = operation == QLatin1String("erase_stroke");
+    const QStringList supported{QStringLiteral("dilate"), QStringLiteral("erode"), QStringLiteral("erase_stroke"),
+                                QStringLiteral("merge"), QStringLiteral("split")};
+    if (!supported.contains(operation))
+        return error(QStringLiteral("Unsupported mask operation"), QStringLiteral("INVALID_PARAM"));
+    const int requiredIds = operation == QLatin1String("merge") ? 2 : 1;
+    if (ids.size() != requiredIds)
+        return error(QStringLiteral("objectIds count does not match the operation"), QStringLiteral("INVALID_PARAM"));
+    if (params.contains(QStringLiteral("radiusPx")) != usesRadius ||
+        params.contains(QStringLiteral("strokePoints")) != usesStroke)
+        return error(QStringLiteral("Optional parameters do not match the operation"), QStringLiteral("INVALID_PARAM"));
+    const QJsonValue radiusValue = params.value(QStringLiteral("radiusPx"));
+    const int radius = radiusValue.toInt(-1);
+    if (usesRadius && (!radiusValue.isDouble() || radius < 1 || radius > 32 || radiusValue.toDouble() != radius))
+        return error(QStringLiteral("radiusPx must be an integer from 1 to 32"), QStringLiteral("INVALID_PARAM"));
+    if (!m_session || m_currentImage.isNull())
+        return error(QStringLiteral("An active image and annotation session are required"), QStringLiteral("NO_IMAGE"));
+
+    QList<QPointF> strokePoints;
+    if (usesStroke) {
+        const QJsonArray points = params.value(QStringLiteral("strokePoints")).toArray();
+        if (points.isEmpty() || points.size() > 4096)
+            return error(QStringLiteral("strokePoints must contain 1 to 4096 points"), QStringLiteral("INVALID_PARAM"));
+        strokePoints.reserve(points.size());
+        for (const QJsonValue& value : points) {
+            if (!value.isArray() || value.toArray().size() != 2 || !value.toArray().at(0).isDouble() ||
+                !value.toArray().at(1).isDouble())
+                return error(QStringLiteral("Each stroke point must be [x,y]"), QStringLiteral("INVALID_PARAM"));
+            const double x = value.toArray().at(0).toDouble();
+            const double y = value.toArray().at(1).toDouble();
+            if (!std::isfinite(x) || !std::isfinite(y) || x < 0.0 || y < 0.0 || x >= m_currentImage.width() ||
+                y >= m_currentImage.height())
+                return error(QStringLiteral("strokePoints must be finite image pixel coordinates inside the image"),
+                             QStringLiteral("INVALID_PARAM"));
+            strokePoints.append(QPointF(x, y));
+        }
+    }
+
+    QList<int> indices;
+    QList<AnnotationObject> objects;
+    for (const QString& id : ids) {
+        int index = -1;
+        for (int i = 0; i < m_session->annotations.size(); ++i) {
+            if (m_session->annotations.at(i).id == id) {
+                index = i;
+                break;
+            }
+        }
+        if (index < 0)
+            return error(QStringLiteral("An annotation object ID was not found"),
+                         QStringLiteral("ANNOTATION_OBJECT_NOT_FOUND"));
+        indices.append(index);
+        objects.append(m_session->annotations.at(index));
+    }
+
+    QList<QImage> masks;
+    for (const AnnotationObject& object : objects) {
+        QImage mask;
+        QString maskError;
+        if (!binaryMaskForObject(object, mask, maskError))
+            return error(QStringLiteral("The object has no usable mask representation"),
+                         QStringLiteral("ANNOTATION_MASK_UNAVAILABLE"));
+        masks.append(mask);
+    }
+
+    QStringList newObjectIds;
+    if (operation == QLatin1String("dilate") || operation == QLatin1String("erode") || usesStroke) {
+        QImage edited;
+        if (operation == QLatin1String("dilate"))
+            edited = MaskOps::dilate(masks.first(), radius);
+        else if (operation == QLatin1String("erode"))
+            edited = MaskOps::erode(masks.first(), radius);
+        else
+            edited = MaskOps::eraseStroke(masks.first(), strokePoints, radius);
+        if (edited == masks.first())
+            return {{QStringLiteral("status"), QStringLiteral("unchanged")},
+                    {QStringLiteral("operation"), operation},
+                    {QStringLiteral("affectedObjectIds"), QJsonArray{ids.first()}},
+                    {QStringLiteral("newObjectIds"), QJsonArray()}};
+        if (MaskOps::foregroundCount(edited) <= 0 || MaskOps::connectedComponentCount(edited, 1) > 1)
+            return error(QStringLiteral("The edited mask is empty or cannot be represented as one polygon"),
+                         QStringLiteral("MASK_OPERATION_REJECTED"));
+        if (dryRun)
+            return {{QStringLiteral("status"), QStringLiteral("ready")}};
+        commitSingleObjectMaskEdit(ids.first(), edited,
+                                   operation == QLatin1String("dilate")  ? tr("膨胀掩膜")
+                                   : operation == QLatin1String("erode") ? tr("腐蚀掩膜")
+                                                                         : tr("橡皮擦掩膜"));
+    } else if (operation == QLatin1String("merge")) {
+        if (MaskOps::foregroundCount(masks.at(0)) <= 0 || MaskOps::foregroundCount(masks.at(1)) <= 0)
+            return error(QStringLiteral("Cannot merge an empty mask"), QStringLiteral("MASK_OPERATION_REJECTED"));
+        QImage mergedMask = masks.at(0);
+        for (int y = 0; y < mergedMask.height(); ++y) {
+            const uchar* source = masks.at(1).constScanLine(y);
+            uchar* destination = mergedMask.scanLine(y);
+            for (int x = 0; x < mergedMask.width(); ++x) {
+                if (source[x])
+                    destination[x] = 255;
+            }
+        }
+        if (MaskOps::connectedComponentCount(mergedMask, 1) != 1)
+            return error(QStringLiteral("The merged mask is not one connected component"),
+                         QStringLiteral("MASK_OPERATION_REJECTED"));
+        AnnotationObject merged = objects.at(0);
+        merged.prompts.pointsPos += objects.at(1).prompts.pointsPos;
+        merged.prompts.pointsNeg += objects.at(1).prompts.pointsNeg;
+        merged.prompts.box = std::nullopt;
+        merged.polygon = MaskOps::traceContour(mergedMask);
+        merged.bbox = MaskOps::foregroundBoundingBox(mergedMask);
+        merged.maskRle = MaskOps::encodeRle(mergedMask);
+        MaskEditSnapshot before = currentSnapshot();
+        MaskEditSnapshot after = before;
+        for (AnnotationObject& object : after.annotations) {
+            if (object.id == ids.at(0))
+                object = merged;
+        }
+        after.annotations.removeAt(indices.at(1));
+        after.displayMasks.remove(ids.at(1));
+        after.displayMasks.insert(ids.at(0), MaskOps::toDisplayMask(mergedMask));
+        if (dryRun)
+            return {{QStringLiteral("status"), QStringLiteral("ready")}};
+        pushMaskEditCommand(tr("合并标注对象"), before, after, ids.at(0));
+    } else {
+        const QImage& mask = masks.first();
+        const int componentCount = MaskOps::connectedComponentCount(mask, 65);
+        if (componentCount < 2)
+            return error(QStringLiteral("The mask has no multiple component to split"),
+                         QStringLiteral("MASK_OPERATION_REJECTED"));
+        if (componentCount > 64)
+            return error(QStringLiteral("The mask exceeds the 64 component split limit"),
+                         QStringLiteral("MASK_RESOURCE_LIMIT_EXCEEDED"));
+        constexpr qint64 maxMaterializedBytes = 256LL * 1024 * 1024;
+        const qint64 estimatedBytes = qint64(componentCount) * mask.width() * mask.height() * 5;
+        if (estimatedBytes > maxMaterializedBytes)
+            return error(QStringLiteral("The estimated split memory exceeds 256 MiB"),
+                         QStringLiteral("MASK_RESOURCE_LIMIT_EXCEEDED"));
+        const QList<QImage> components = MaskOps::connectedComponents(mask);
+        int largest = 0;
+        qint64 largestCount = -1;
+        for (int i = 0; i < components.size(); ++i) {
+            const qint64 count = MaskOps::foregroundCount(components.at(i));
+            if (count > largestCount) {
+                largest = i;
+                largestCount = count;
+            }
+        }
+        QList<AnnotationObject> parts;
+        QList<QImage> displays;
+        for (int i = 0; i < components.size(); ++i) {
+            AnnotationObject part;
+            if (i == largest) {
+                part = objects.first();
+            } else {
+                part.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                part.label = objects.first().label;
+                part.modelName = objects.first().modelName;
+                part.score = 0.0;
+                newObjectIds.append(part.id);
+            }
+            part.polygon = MaskOps::traceContour(components.at(i));
+            part.bbox = MaskOps::foregroundBoundingBox(components.at(i));
+            part.maskRle = MaskOps::encodeRle(components.at(i));
+            parts.append(part);
+            displays.append(MaskOps::toDisplayMask(components.at(i)));
+        }
+        MaskEditSnapshot before = currentSnapshot();
+        MaskEditSnapshot after = before;
+        after.annotations.removeAt(indices.first());
+        for (int i = parts.size() - 1; i >= 0; --i)
+            after.annotations.insert(indices.first(), parts.at(i));
+        for (int i = 0; i < parts.size(); ++i)
+            after.displayMasks.insert(parts.at(i).id, displays.at(i));
+        if (dryRun)
+            return {{QStringLiteral("status"), QStringLiteral("ready")}};
+        pushMaskEditCommand(tr("拆分标注对象"), before, after, objects.first().id);
+    }
+
+    QJsonArray affected;
+    for (const QString& id : ids)
+        affected.append(id);
+    QJsonArray newIds;
+    for (const QString& id : newObjectIds)
+        newIds.append(id);
+    return {{QStringLiteral("status"), QStringLiteral("updated")},
+            {QStringLiteral("operation"), operation},
+            {QStringLiteral("affectedObjectIds"), affected},
+            {QStringLiteral("newObjectIds"), newIds}};
+}
+
 // === 类别管理 ===
 
 void SamAnnotatorDialog::initializeDefaultCategories() {
@@ -2196,6 +3091,8 @@ void SamAnnotatorDialog::addCategory(const QString& label) {
         const int index = m_categoryCombo->count() - 1;
         m_categoryCombo->setItemData(index, m_categoryColors.value(trimmed), Qt::DecorationRole);
         m_categoryCombo->setCurrentIndex(index);
+        if (m_removeCategoryButton)
+            m_removeCategoryButton->setEnabled(true);
     }
 }
 
@@ -2205,8 +3102,13 @@ void SamAnnotatorDialog::removeCategory(const QString& label) {
         return;
     m_categories.removeAt(idx);
     m_categoryColors.remove(label);
-    if (m_categoryCombo)
-        m_categoryCombo->removeItem(m_categoryCombo->findData(label));
+    if (m_categoryCombo) {
+        int comboIndex = m_categoryCombo->findData(label);
+        if (comboIndex < 0)
+            comboIndex = m_categoryCombo->findText(label, Qt::MatchFixedString);
+        if (comboIndex >= 0)
+            m_categoryCombo->removeItem(comboIndex);
+    }
 }
 
 void SamAnnotatorDialog::onAddCategory() {
@@ -2296,12 +3198,48 @@ bool SamAnnotatorDialog::openAnnotationFile(const QString& filePath, QString* er
         }
     }
 
-    // 批2 复核二轮（P1-1）：会话重开必须清旧撤销命令——批2 快照命令为整表
-    // 覆盖，残留命令会在 Ctrl+Z 时用旧会话数据整体替换新会话（数据损坏）
+    return replaceAnnotationSession(loaded, sessionImage, !sessionImage.isNull(), legacyUnverified, filePath, false,
+                                    error);
+}
+
+bool SamAnnotatorDialog::openAgentAnnotationSessionSnapshot(const AnnotationSession& loaded,
+                                                            const QImage& imageCandidate, bool imageBound,
+                                                            bool legacyImageBindingUnverified,
+                                                            const QString& sourcePath, QString* error) {
+    if (imageBound != !loaded.imagePath.isEmpty() || (imageBound && imageCandidate.isNull()) ||
+        (!imageBound && (!loaded.annotations.isEmpty() || !loaded.imagePath.isEmpty()))) {
+        if (error)
+            *error = tr("Agent 会话候选与绑定状态不一致");
+        return false;
+    }
+    return replaceAnnotationSession(loaded, imageCandidate, imageBound, legacyImageBindingUnverified, sourcePath, true,
+                                    error);
+}
+
+bool SamAnnotatorDialog::replaceAnnotationSession(const AnnotationSession& loaded, const QImage& sessionImage,
+                                                  bool imageBound, bool legacyUnverified, const QString& sourcePath,
+                                                  bool pinBackendSnapshot, QString* error) {
+    const QImage backendCandidate = imageBound ? sessionImage : m_currentImage;
+    auto replacementSession = std::make_unique<AnnotationSession>(loaded);
+    ImageCoordinateProvenance restoredProvenance;
+    if (imageBound && !loaded.imageDigest.isEmpty() &&
+        AnnotationSession::computeImageDigest(sessionImage) == loaded.imageDigest &&
+        loaded.sourceCoordinateProvenance.isValid()) {
+        restoredProvenance = loaded.sourceCoordinateProvenance;
+    }
+    replacementSession->sourceCoordinateProvenance = restoredProvenance;
+    std::unique_ptr<QTemporaryFile> stagedBackendFile;
+    QString stagedBackendPath;
+    if (pinBackendSnapshot && !backendCandidate.isNull() &&
+        !stageBackendImageSnapshot(backendCandidate, &stagedBackendFile, &stagedBackendPath, error))
+        return false;
+
+    // Prepare every fallible resource before changing the active session or undo history.
+    if (m_samClient)
+        m_samClient->cancelPendingPrediction();
     if (m_undoStack)
         m_undoStack->clear();
     clearCurrentPrompt();
-    // 清理旧会话 id 的 overlay 对象掩膜缓存与预览
     if (m_overlay) {
         if (m_session) {
             for (const AnnotationObject& obj : m_session->annotations)
@@ -2311,36 +3249,46 @@ bool SamAnnotatorDialog::openAnnotationFile(const QString& filePath, QString* er
         m_overlay->setSelectedId(QString());
     }
     m_objectMasks.clear();
-
-    // 替换当前会话
     delete m_session;
-    m_session = new AnnotationSession(loaded);
+    m_session = replacementSession.release();
 
-    if (!sessionImage.isNull()) {
+    if (imageBound) {
         m_currentImage = sessionImage;
         m_imagePath = loaded.imagePath;
         HImageWidget* target = activeImageWidget();
         if (target) {
-            target->setImage(sessionImage);
+            target->setImage(sessionImage, restoredProvenance);
             target->fitToWindow();
         }
         refreshOverlayCoordConverter();
     }
-    // 批3 复核三轮（P1-1）：不再调用 updateSessionFromImage()——已加载会话的
-    // imagePath/尺寸/modelName/摘要以文件为准；图像缺失时严禁用陈旧的内存
-    // 图像覆盖会话绑定字段（那会把会话静默重绑到无关图像）
+
+    if (pinBackendSnapshot) {
+        m_agentBackendImageSnapshotPinned = true;
+        m_agentBackendImageSnapshot = backendCandidate;
+        m_tempImageFile = std::move(stagedBackendFile);
+        m_backendImagePath = stagedBackendPath;
+    } else {
+        m_agentBackendImageSnapshotPinned = false;
+        m_agentBackendImageSnapshot = QImage();
+    }
 
     refreshObjectList();
     if (m_overlay)
         m_overlay->setAnnotations(m_session->annotations);
-    prepareBackendImage();
+    if (pinBackendSnapshot) {
+        if (!backendCandidate.isNull())
+            prepareBackendImage();
+    } else {
+        prepareBackendImage();
+    }
     if (legacyUnverified)
         setStatusText(tr("已打开标注会话（%1 个对象）——警告：旧版会话无图像摘要，无法校验图像是否被替换，"
                          "请核对标注对齐后再保存")
                           .arg(m_session->annotations.size()));
     else
         setStatusText(tr("已打开标注会话（%1 个对象）").arg(m_session->annotations.size()));
-    Logger::instance().info(tr("已打开标注会话 %1").arg(filePath), "Annotation");
+    Logger::instance().info(tr("已打开标注会话 %1").arg(sourcePath), "Annotation");
     return true;
 }
 

@@ -48,7 +48,11 @@ bool ConfigManager::save() {
     if (!PathUtils::ensureDirExists(configInfo.absolutePath()))
         return false;
 
-    QSaveFile file(m_configPath);
+    const QString savePath = PathUtils::resolveFileTargetPath(m_configPath);
+    if (savePath.isEmpty())
+        return false;
+
+    QSaveFile file(savePath);
     if (!file.open(QIODevice::WriteOnly))
         return false;
 

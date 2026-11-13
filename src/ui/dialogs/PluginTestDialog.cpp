@@ -39,7 +39,7 @@ PluginTestDialog::PluginTestDialog(QWidget* parent) : QDialog(parent), m_current
 PluginTestDialog::~PluginTestDialog() {
     if (m_currentModule) {
         m_currentModule->shutdown();
-        delete m_currentModule;
+        PluginManager::instance().destroyModule(m_currentModule);
         m_currentModule = nullptr;
     }
 }
@@ -193,7 +193,7 @@ void PluginTestDialog::onPluginSelected(int index) {
 
     if (m_currentModule) {
         m_currentModule->shutdown();
-        delete m_currentModule;
+        PluginManager::instance().destroyModule(m_currentModule);
         m_currentModule = nullptr;
     }
 
@@ -217,7 +217,7 @@ void PluginTestDialog::onPluginSelected(int index) {
         m_resultEdit->setTextColor(Qt::red);
         m_resultEdit->append(
             QString("[%1] 插件初始化失败: %2\n").arg(QDateTime::currentDateTime().toString("hh:mm:ss"), pluginName));
-        delete m_currentModule;
+        pm.destroyModule(m_currentModule);
         m_currentModule = nullptr;
         return;
     }

@@ -1,0 +1,1148 @@
+{
+  "schemaVersion": 1,
+  "description": "Independently reviewed per-plugin G8 software fixture audits. Field acceptance is recorded separately.",
+  "audits": [
+    {
+      "dirName": "VarDefinePlugin",
+      "pluginId": "com.deeplux.plugin.vardefine",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent plugin loading, parameter configuration, run/output assertions, critical failure assertions, CMake registration, and cleanup safety.",
+      "testId": "test_agent_variable_plugins_g8::testLocalizedPluginNamesConfigureRunAndReportBusinessResults",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent loads the real plugin binary and adds it by stable plugin ID; with VarSet disabled, a completed Agent run and get_global_variable readback confirm the configured 2.5 initial value."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "An empty variableName fails the run and reports the define_value instance with a nonempty diagnostic."
+      }
+    },
+    {
+      "dirName": "VarSetPlugin",
+      "pluginId": "com.deeplux.plugin.varset",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent plugin loading, parameter configuration, run/output assertions, critical failure assertions, CMake registration, and cleanup safety.",
+      "testId": "test_agent_variable_plugins_g8::testLocalizedPluginNamesConfigureRunAndReportBusinessResults",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent adds the plugin by localized registration name, configures the expression 2 + 5.25, runs the enabled flow after VarDefine creates the variable, and Agent readback observes 7.25."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Setting a nonexistent variable fails the run and reports the set_value instance with a nonempty diagnostic."
+      }
+    },
+    {
+      "dirName": "QRCode",
+      "pluginId": "com.deeplux.plugin.qrcode",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of the Agent GrabImage-to-QRCode-to-ShowImage flow, exact decoded payload, critical failure attribution, CMake registration, and cleanup safety.",
+      "testId": "test_agent_visual_plugins_g8::testAgentLoadsDecodesAndDisplaysRealImageOutput",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures the real QRCode plugin, runs it on a generated QR image, and get_module_output returns the exact payload DEEPLUX-G8-QR-2026."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "A blank image fails the run at the QRCode instance and returns a nonempty diagnostic."
+      }
+    },
+    {
+      "dirName": "ShowImage",
+      "pluginId": "com.deeplux.plugin.showimage",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of the Agent GrabImage-to-QRCode-to-ShowImage flow, image output assertion, critical failure attribution, CMake registration, and cleanup safety.",
+      "testId": "test_agent_visual_plugins_g8::testAgentLoadsDecodesAndDisplaysRealImageOutput",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures ShowImage, receives the upstream image, and get_module_output for the same run reports image_info containing 296x296."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "With GrabImage and QRCode disabled, the empty input fails the run at the ShowImage instance and returns a nonempty diagnostic."
+      }
+    },
+    {
+      "dirName": "PLCReadPlugin",
+      "pluginId": "com.deeplux.plugin.plcread",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent plugin loading, module creation and parameter configuration, exact Modbus request and register output, controlled Modbus exception failure attribution, and peer lifecycle.",
+      "testId": "test_agent_core_plugins_g8::testAgentConfigurationReadsModbusAndReportsProtocolFailure",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent loads PLCRead, adds and configures its module, executes against an isolated loopback peer, and reads registers [0x1234, 0xABCD]; the request asserts slave 7, FC03, address 0x1234, and count 2."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "The peer returns a Modbus exception frame (FC 0x83, code 2); the run fails at the PLCRead instance and reports the exact response-parse diagnostic."
+      }
+    },
+    {
+      "dirName": "MathPlugin",
+      "pluginId": "com.deeplux.plugin.math",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent plugin loading, module creation and parameter configuration for all eight Math operations, same-run numeric outputs, exact Divide/Modulo by-zero failure attribution with failed-run output invalidation, and shared temporary plugin lifecycle.",
+      "testId": "test_agent_core_plugins_g8::testAgentConfigurationCalculatesAndRejectsDivisionByZero",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures and runs all eight Math operations, retrieving each result by the same runId: Add(12,3)=15; Subtract(12,3)=9; Multiply(12,3)=36; Divide(12,3)=4; Modulo(14,5)=4; Power(12,3)=1728; Min(12,3)=3; Max(12,3)=12."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Agent reconfigures the same module to Divide by zero and Modulo by zero in separate runs; each run fails at that instance with exact message 除数不能为0, and its output variable is unavailable with reason run_failed for that failed runId."
+      }
+    },
+    {
+      "dirName": "CreateString",
+      "pluginId": "com.deeplux.plugin.createstring",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent plugin loading, module creation and configuration, same-run string and length output, output-name validation failure, and shared temporary plugin lifecycle.",
+      "testId": "test_agent_core_plugins_g8::testAgentConfigurationCreatesStringAndRejectsEmptyOutputName",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures the real CreateString plugin and reads back Lot-42-检测 and UTF-16 string length 9 from the same run."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "An Agent set_module_params request with a blank outputVarName is rejected as VALIDATION_FAILED."
+      }
+    },
+    {
+      "dirName": "SplitString",
+      "pluginId": "com.deeplux.plugin.splitstring",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent plugin loading, module creation and configuration, joined and indexed split outputs, empty-input failure attribution, and shared temporary plugin lifecycle.",
+      "testId": "test_agent_core_plugins_g8::testAgentConfigurationSplitsStringAndReportsEmptyInput",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures SplitString, runs on A-17,B-29,C-41, and reads back A-17|B-29|C-41 and indexed part B-29 from the same run."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Empty input fails the run at the SplitString instance with the exact diagnostic 输入字符串为空."
+      }
+    },
+    {
+      "dirName": "StrFormatPlugin",
+      "pluginId": "com.deeplux.plugin.strformat",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent plugin loading, module creation and array parameter configuration, formatted output observation, invalid output-name failure, and isolated global state cleanup.",
+      "testId": "test_agent_core_plugins_g8::testAgentConfigurationFormatsStringAndRejectsEmptyOutputName",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures StrFormat with format placeholders and a string array; after a completed run, get_global_variable returns lot=Lot-42|qty=3|ratio=0.5."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "An empty outputVariable configuration is rejected with exact VALIDATION_FAILED error Output variable name cannot be empty."
+      }
+    },
+    {
+      "dirName": "SystemTime",
+      "pluginId": "com.deeplux.plugin.systemtime",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent plugin loading, module creation and format configuration, same-run timestamp output bounds, empty-format validation failure, and test isolation.",
+      "testId": "test_agent_core_plugins_g8::testAgentConfigurationReadsSystemTimeAndRejectsEmptyFormat",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures yyyyMMdd HHmmss, then same-run output matches that format and epoch milliseconds lie between pre-run and post-run samples."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "An empty timeFormat is rejected with exact VALIDATION_FAILED and 时间格式不能为空."
+      }
+    },
+    {
+      "dirName": "WriteText",
+      "pluginId": "com.deeplux.plugin.writetext",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent plugin loading, module configuration, file-write confirmation rejection/approval, exact file contents, invalid target failure attribution, and temporary-root isolation.",
+      "testId": "test_agent_core_plugins_g8::testAgentConfiguresWriteTextAndPropagatesOpenFailure",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures WriteText with a unique temporary path and content; rejecting the file-write confirmation leaves no file, while approval writes the exact content and trailing newline."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "After approval, an output under a nonexistent parent fails at the WriteText instance with the target path in the diagnostic and creates neither parent nor file."
+      }
+    },
+    {
+      "dirName": "TimeSlice",
+      "pluginId": "com.deeplux.plugin.timeslice",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent Start/Stop configuration and port connection, same-run timestamp and elapsed outputs, Stop-without-upstream failure attribution, real plugin loading, and test cleanup.",
+      "testId": "test_agent_core_plugins_g8::testAgentRunsTimeSliceAndRejectsStopWithoutStartInput",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures and connects TimeSlice Start to Stop; one completed run exposes a positive start timestamp and nonnegative elapsed milliseconds from the corresponding module instances."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Agent runs a Stop-only flow without timeslice_start_time; execution fails at that Stop instance with the exact missing-upstream diagnostic."
+      }
+    },
+    {
+      "dirName": "Condition",
+      "pluginId": "com.deeplux.plugin.condition",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent configuration and execution for all nine Condition comparator operators through a real CreateString data-port connection, same-run outputs, Equal false behavior, missing-variable failure attribution, and isolated cleanup.",
+      "testId": "test_agent_core_plugins_g8::testAgentEvaluatesConditionFromUpstreamAndReportsMissingVariable",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures CreateString and Condition through an explicit image connection and exercises NotEmpty, Empty, Equal, NotEqual, Contains, numeric GreaterThan/LessThan, StartsWith, and EndsWith; each completed run returns condition_result from that same runId, and Equal mismatch remains false."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "An empty variableName is accepted by configuration but the run fails at the Condition instance with the exact diagnostic 变量名不能为空."
+      }
+    },
+    {
+      "dirName": "Delay",
+      "pluginId": "com.deeplux.plugin.delay",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent Delay configuration in a TimeSlice Start/Delay/Stop flow, same-run elapsed lower bound, invalid zero-duration parameter rejection, real plugin isolation, and cleanup.",
+      "testId": "test_agent_core_plugins_g8::testAgentRunsConfiguredDelayAndRejectsZeroDuration",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent connects TimeSlice Start→Delay(40 ms)→Stop; the completed same-run Stop output reports elapsed milliseconds at least 40 and below 5000."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Agent setting delayMs to zero is rejected with exact VALIDATION_FAILED and Delay time must be greater than 0."
+      }
+    },
+    {
+      "dirName": "DataCheck",
+      "pluginId": "com.deeplux.plugin.datacheck",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent configuration, CreateString data-port input, range pass/fail output readback, missing-check-data runtime failure, real plugin isolation, and cleanup.",
+      "testId": "test_agent_core_plugins_g8::testAgentChecksUpstreamValueAndReportsMissingCheckData",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent connects CreateString output check_data to Range DataCheck [40,45]; same-run output is true for 42 and false with exact range diagnostic for 99."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Changing the upstream key so check_data is absent makes the run fail at DataCheck with the exact diagnostic 未提供校验数据."
+      }
+    },
+    {
+      "dirName": "TableOutPut",
+      "pluginId": "com.deeplux.plugin.tableoutput",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent row/column configuration, same-run table output and dimensions, invalid row-count validation, real plugin isolation, and test cleanup.",
+      "testId": "test_agent_core_plugins_g8::testAgentConfiguresTableOutputAndRejectsInvalidDimensions",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures a 2x3 TableOutPut; same-run output reports two rows, three columns, and the exact empty table string with tab separators and row newlines."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Agent setting rowCount to zero is rejected with exact VALIDATION_FAILED and 行数必须在1到100之间."
+      }
+    },
+    {
+      "dirName": "SaveData",
+      "pluginId": "com.deeplux.plugin.savedata",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent producer-to-SaveData wiring, confirmation gating, exact JSON field serialization, failed-target attribution, no-directory side effects, plugin isolation, and CMake dependencies.",
+      "testId": "test_agent_core_plugins_g8::testAgentConfiguresSaveDataAndReportsWriteFailure",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent connects CreateString to SaveData, confirms the write, and parses the resulting JSON with exact g8_payload=payload-42 and string_length=10 fields."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "An approved target under a nonexistent parent fails at the SaveData instance with a save diagnostic and creates neither target nor parent directory."
+      }
+    },
+    {
+      "dirName": "SaveImage",
+      "pluginId": "com.deeplux.plugin.saveimage",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent GrabImage-to-SaveImage wiring, confirmation gating, exact PNG image verification, encoder failure attribution, no-directory side effects, and test lifecycle cleanup.",
+      "testId": "test_agent_visual_plugins_g8::testAgentConfirmsSaveImageAndReportsEncoderFailure",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent connects GrabImage Path input to SaveImage, confirms the write, reloads the PNG, and verifies exact 64x48 dimensions and pixel equality against the source fixture."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "An approved unsupported image extension fails at the SaveImage instance during encoding and does not create the nonexistent parent directory."
+      }
+    },
+    {
+      "dirName": "DisplayData",
+      "pluginId": "com.deeplux.plugin.displaydata",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent GrabImage-to-DisplayData wiring, same-run text and line-count readback, missing-image failure attribution, plugin isolation, and lifecycle cleanup.",
+      "testId": "test_agent_visual_plugins_g8::testAgentOverlaysDisplayDataAndAttributesMissingImageFailure",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent connects GrabImage Path input to DisplayData and reads exact displayed_text lot=42 followed by OK and display_line_count=2 from the same completed run."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Disabling GrabImage leaves DisplayData without an image; the run fails at its instance with the exact diagnostic 输入图像无效."
+      }
+    },
+    {
+      "dirName": "ColorRecognition",
+      "pluginId": "com.deeplux.plugin.colorrecognition",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent GrabImage-to-ColorRecognition wiring for all six target colors, both red hue intervals, same-run source/result fields, absent-target failure attribution, plugin isolation, and lifecycle cleanup.",
+      "testId": "test_agent_visual_plugins_g8::testAgentRecognizesConfiguredColorAndReportsAbsentTarget",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures generated, color-exclusive images for 红色/绿色/蓝色/黄色/橙色/紫色 through GrabImage Path, including red hues 0 and 175. Each same-run source_path matches the selected fixture; recognition returns the configured color, one contour, area >500, and center (34±1,34±1)."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "A white image without red pixels fails at the ColorRecognition instance with the exact diagnostic 未检测到目标颜色."
+      }
+    },
+    {
+      "dirName": "GrabImage",
+      "pluginId": "com.deeplux.plugin.grabimage",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent GrabImage Path, deterministic Demo, sequential Folder modes, and approved fake-camera capture; same-run metadata and exact image pixels; missing-file, folder-exhaustion, and stale-frame failure attribution; preserved step runtime, temporary filesystem scope, plugin isolation, and cleanup.",
+      "testId": "test_agent_visual_plugins_g8::testAgentLoadsGrabImagePathDemoAndFolderModes",
+      "supportingTestIds": [
+        "test_agent_camera_lifecycle_g5::testAgentAsyncSessionFeedsGrabImage"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "The primary G8 fixture loads a temporary PNG through Path mode, verifies exact same-run 640x480 Demo checkerboard pixels, then uses sequential step_once runs to read a.png and b.png from Folder mode in name order with same-run metadata and exact pixels. The supporting Agent fake-camera fixture confirms the approved run's 4x3 same-run snapshot contains all 12 triggered-frame pixels and excludes the delayed prior frame."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "A nonexistent image path fails at the GrabImage instance with the exact file-not-found diagnostic; after two sequential Folder reads with folderLoop=false, the third same-runtime step fails at GrabImage with exact diagnostic 文件夹图像已读取完毕."
+      }
+    },
+    {
+      "dirName": "Blob",
+      "pluginId": "com.deeplux.plugin.blob",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent GrabImage-to-Blob wiring for Otsu, Fixed, and Adaptive threshold modes, discriminating synthetic images, same-run source/detection outputs, no-detection failure attribution, plugin isolation, and lifecycle cleanup.",
+      "testId": "test_agent_visual_plugins_g8::testAgentDetectsConfiguredBlobAndReportsEmptyDetection",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent runs discriminating generated images through Otsu (low-contrast circle), Fixed (threshold 60), and Adaptive (block 11, C=-10, fixedThreshold 90 fallback guard); each same-run source_path matches its fixture and reports one qualifying blob with expected area and center."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "A uniform dark image yields no qualifying blobs and fails at the Blob instance with the exact diagnostic 未检测到Blob."
+      }
+    },
+    {
+      "dirName": "FindCircle",
+      "pluginId": "com.deeplux.plugin.findcircle",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent GrabImage-to-FindCircle wiring, Hough configuration, same-run circle outputs, no-circle failure attribution, isolated plugin loading, and cleanup safety.",
+      "testId": "test_agent_visual_plugins_g8::testAgentFindsConfiguredCircleAndReportsNoCircle",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures Hough radius and thresholds on a generated circle, reads same-run center and radius within 20 pixels, and gets an available Circle2D output."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "A black image fails at the FindCircle instance with the exact diagnostic 未检测到圆."
+      }
+    },
+    {
+      "dirName": "MeasureCircle",
+      "pluginId": "com.deeplux.plugin.measurecircle",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent GrabImage-to-MeasureCircle wiring, circle parameter configuration, same-run fit outputs, insufficient-edge failure attribution, isolated plugin loading, and cleanup safety.",
+      "testId": "test_agent_visual_plugins_g8::testAgentMeasuresConfiguredCircleAndReportsInsufficientEdges",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures 36 radial calipers around a generated radius-50 circle; same-run output reports 36 edge points, center within 2 pixels of (100,100), and radius within 2 pixels of 50."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "A black image fails at the MeasureCircle instance with the exact diagnostic 卡钳提取边缘点不足，无法拟合圆."
+      }
+    },
+    {
+      "dirName": "MeasurementInput",
+      "pluginId": "com.deeplux.plugin.measurementinput",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent plugin loading, point-pair parameter configuration, same-run exact outputs, coordinate-dimension mismatch failure attribution, isolated plugin loading, and cleanup safety.",
+      "testId": "test_agent_visual_plugins_g8::testAgentSuppliesPointPairAndReportsDimensionMismatch",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures point_pair with two exact 2D coordinates and reads back mode, point1, and point2 from the same completed run."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "A 2D point paired with a 3D point fails at the MeasurementInput instance with the exact diagnostic 两点坐标维数必须一致."
+      }
+    },
+    {
+      "dirName": "DistancePP",
+      "pluginId": "com.deeplux.plugin.distancepp",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent loading and wiring of real MeasurementInput and DistancePP binaries, exact same-run distance and delta outputs, required-port validation after disconnect, isolated plugin loading, CMake dependencies, and cleanup safety.",
+      "testId": "test_agent_visual_plugins_g8::testAgentMeasuresPointPairAndValidatesRequiredDistanceInput",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures points (12.5,20.0) and (3.25,4.0), then reads same-run distance sqrt(341.5625), delta_x -9.25, and delta_y -16.0 from the real DistancePP plugin."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "After Agent disconnects the source point2 edge, validate_flow returns invalid, locates the missing required point2 on DistancePP, and has no runId because execution did not start."
+      }
+    },
+    {
+      "dirName": "DistancePL",
+      "pluginId": "com.deeplux.plugin.distancepl",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent loading and wiring of real MeasurementInput and DistancePL binaries, exact same-run point-to-segment distance and foot outputs, required-line validation after disconnect, isolated plugin loading, CMake dependencies, and cleanup safety.",
+      "testId": "test_agent_visual_plugins_g8::testAgentMeasuresPointToLineAndValidatesRequiredLineInput",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures point (5,12) and line segment [(0,0),(10,0)], then reads same-run distance 12 and foot point (5,0) from the real DistancePL plugin."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "After Agent disconnects the source line edge, validate_flow returns invalid, locates the missing required line on DistancePL, and has no runId because execution did not start."
+      }
+    },
+    {
+      "dirName": "FitCircle",
+      "pluginId": "com.deeplux.plugin.fitcircle",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent loading and wiring of real MeasurementInput and FitCircle binaries, exact same-run RANSAC circle output, radius-bound failure attribution, isolated plugin loading, CMake dependencies, and cleanup safety.",
+      "testId": "test_agent_visual_plugins_g8::testAgentFitsPointSetAndReportsRadiusConstraintFailure",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures four exact circle points around (30,40), radius 12; FitCircle returns center (30,40), radius 12, and error 0 within 1e-8."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Excluding the true radius with minRadius 13 and maxRadius 20 fails at the FitCircle instance with exact diagnostic 圆拟合失败."
+      }
+    },
+    {
+      "dirName": "CropImage",
+      "pluginId": "com.deeplux.plugin.cropimage",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent GrabImage-to-CropImage wiring, multi-rectangle parameters, crop count, output dimensions and source mapping, preview pixel content, no-intersection failure attribution, isolation, and cleanup safety.",
+      "testId": "test_agent_visual_plugins_g8::testAgentCropsMultipleRectanglesAndReportsNoIntersection",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Two of three configured rectangles intersect the image; Agent reads crop_count=2, first output size 20x30, source translation (50,35), and the expected gradient pixel at preview coordinate (0,0)."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "A rectangle fully outside the image fails at the CropImage instance with the exact no-intersection diagnostic."
+      }
+    },
+    {
+      "dirName": "FitLine",
+      "pluginId": "com.deeplux.plugin.fitline",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent loading and wiring of real MeasurementInput and FitLine binaries, same-run RANSAC outputs, repeated-point degeneracy failure attribution, isolated plugin loading, CMake dependencies, and cleanup safety.",
+      "testId": "test_agent_visual_plugins_g8::testAgentFitsPointSetAndRejectsDegenerateLine",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures four points on y=10; FitLine returns same-run rho 10, phi 90 degrees, and error 0 within 1e-6."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Four repeated points produce no non-degenerate RANSAC sample; run fails at FitLine with exact diagnostic 直线拟合失败."
+      }
+    },
+    {
+      "dirName": "FitEllipse",
+      "pluginId": "com.deeplux.plugin.fitellipse",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent loading and wiring of real MeasurementInput and FitEllipse binaries, same-run robust ellipse outputs, half-axis range failure attribution, isolated plugin loading, CMake dependencies, and cleanup safety.",
+      "testId": "test_agent_visual_plugins_g8::testAgentFitsEllipseAndReportsAxisRangeFailure",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent supplies eight points on an ellipse centered at (50,40) with semiaxes 20 and 10; center, axes, ellipticity 0.5, and error match within frozen tolerances."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "A valid minAxis 25/maxAxis 30 range excludes the fitted ellipse and fails at FitEllipse with exact diagnostic 拟合半轴超出参数范围."
+      }
+    },
+    {
+      "dirName": "CalculateOffset",
+      "pluginId": "com.deeplux.plugin.calculateoffset",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent loading and wiring of real MeasurementInput and CalculateOffset binaries, Point3D port override and exact same-run offsets, ModuleBase dimension-gate failure attribution, isolated plugin loading, CMake dependencies, and cleanup safety.",
+      "testId": "test_agent_visual_plugins_g8::testAgentCalculatesOffsetFromPointPortAndRejectsInvalidPoint3D",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent connects point [10,20,0] to current_point, overriding configured current coordinates (999,999); same-run outputs are offset_x=-25, offset_y=-35, and offset_a=-10."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "A 2D point reaches the runtime Point3D input gate, fails at CalculateOffset with exact diagnostic 输入类型不匹配：当前坐标点, and is attributed to that instance."
+      }
+    },
+    {
+      "dirName": "FitPlane",
+      "pluginId": "com.deeplux.plugin.fitplane",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent GrabImage-to-FitPlane flow with real binaries, generated float PFM input, seven same-run plane outputs, zero-valid-pixel failure, isolated plugin loading, CMake dependencies, and cleanup safety.",
+      "testId": "test_agent_visual_plugins_g8::testAgentFitsHeightMapAndReportsNoValidPixels",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "A 20x30 PFM height map z=5+2x yields normal (-2,0,1)/sqrt(5), plane distance -5/sqrt(5), near-zero flatness/RMS, and 600 valid pixels."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "An all-zero PFM with invalidValue=0 and autoNoData=false fails at FitPlane with exact diagnostic ROI 内有效像素不足（0<3），无法拟合平面."
+      }
+    },
+    {
+      "dirName": "MeasureLine",
+      "pluginId": "com.deeplux.plugin.measureline",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of real Agent GrabImage-to-MeasureLine loading, configuration, image wiring, Hough result and typed Line2D serialization, no-line failure attribution, CMake isolation, and cleanup safety.",
+      "testId": "test_agent_visual_plugins_g8::testAgentMeasuresConfiguredLineAndReportsNoLine",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent loads a generated white horizontal segment through GrabImage; same-run MeasureLine output has length 150-180 px, angle within 1 degree of horizontal, and a typed Line2D object with finite start/end coordinates in image_pixels."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "An all-black image fails at the MeasureLine instance with exact diagnostic 未检测到线条."
+      }
+    },
+    {
+      "dirName": "MeasureRect",
+      "pluginId": "com.deeplux.plugin.measurerect",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of real Agent GrabImage-to-MeasureRect flow, long/short side fix, axis-aligned image fixture, rotated CropImage polygon and source-coordinate regression expectations, blank-image failure, CMake plugin build dependency, isolated plugin loading, and cleanup.",
+      "testId": "test_agent_visual_plugins_g8::testAgentMeasuresRectangleAndReportsNoContour",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent measures a filled 100x80 image rectangle; same-run rect_width is 95-105 px, rect_height is 75-85 px, and rect_area is 7000-8500 px^2. Existing rotated/cropped Agent acceptance verifies long/short edges from geometric truth and Region2D provenance."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "An all-black image fails at the MeasureRect instance with exact diagnostic 未检测到轮廓."
+      }
+    },
+    {
+      "dirName": "LinesDistance",
+      "pluginId": "com.deeplux.plugin.linesdistance",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent loading/configuration and dual Line2D wiring from MeasurementInput line_pair, finite-segment distance and nearest-point outputs, required line2 validation, real isolated binaries/metadata, CMake dependencies, and cleanup.",
+      "testId": "test_agent_visual_plugins_g8::testAgentMeasuresFiniteLineSegmentsAndRequiresBothInputs",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent connects [(0,0)-(1,0)] and [(3,-1)-(3,1)]; same-run distance is 2, nearest endpoints are (1,0) and (3,0), and nearest_segment is [1,0,3,0]."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Disconnecting line2 makes validate_flow invalid with no runId and one required-input error attributed to the LinesDistance instance and port line2."
+      }
+    },
+    {
+      "dirName": "MeasureGap",
+      "pluginId": "com.deeplux.plugin.measuregap",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of real Agent MeasurementInput point_pair-to-MeasureGap loading/configuration/connection, same-run gap and delta values with 2D px units, required point2 validation, isolated binary and metadata, CMake dependency, and cleanup.",
+      "testId": "test_agent_visual_plugins_g8::testAgentMeasures2DGapAndRequiresSecondPoint",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent connects 2D points [0,0] and [3,4]; same-run gap/gap_distance are 5 px, delta_x=3 px, delta_y=4 px, delta_z=0, and measurement_dimension is 2d."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Disconnecting point2 makes validate_flow invalid with no runId and one required-input error attributed to the MeasureGap instance and port point2."
+      }
+    },
+    {
+      "dirName": "PointSurfaceDistance",
+      "pluginId": "com.deeplux.plugin.pointsurfacedistance",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent MeasurementInput point_plane ImageData metadata transport plus typed point/plane wiring, exact same-run World3D foot point serialization, required plane validation, isolated plugin loading, CMake dependencies, and cleanup safety.",
+      "testId": "test_agent_visual_plugins_g8::testAgentMeasuresWorldPointToPlaneAndRequiresPlane",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures MeasurementInput point_plane at [1,2,10] on z=3, connects image metadata and typed point/plane outputs, then reads same-run distance 7 and Point3D World3D foot_point [1,2,3]."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Disconnecting required plane makes validate_flow invalid with no runId and one missing-input error attributed to the PointSurfaceDistance instance and port plane."
+      }
+    },
+    {
+      "dirName": "NPointCalibration",
+      "pluginId": "com.deeplux.plugin.npointcalibration",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of the isolated real Agent GrabImage-to-NPointCalibration flow, perspective point-pair configuration, same-run key/typed-port outputs and caller-defined units, failed-run attribution and stale-output clearing, and cleanup safety.",
+      "testId": "test_agentphase0_repro::testG3NPointCalibrationOutputPortsByRunId",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent connects a generated 32x32 image to NPointCalibration and maps four corners by (+5,+7); the same run reports calibration_valid=true, point_count=4, and reprojection_error <0.001 in caller-defined world units through metadata keys and typed scalar ports."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Clearing calibrationPoints makes the next Agent run fail with lastError.moduleId=cal and nonempty diagnostics; calibration_valid, reprojection_error, and point_count keys plus both business scalar ports are unavailable with no stale values from the previous successful run."
+      }
+    },
+    {
+      "dirName": "PLCCommunicatePlugin",
+      "pluginId": "com.deeplux.plugin.plccommunicate",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of isolated real PLCCommunicate binary and repository metadata, Agent stale-confirmation expiration and explicit rejection with zero peer I/O/module/tool effects, approved single FC03 loopback exchange and same-run output readback, response-counter synchronization, and cleanup.",
+      "testId": "test_agent_plccommunicate_execution_g5::testStepOnceExpiresDriftRejectsAndConfirmsSingleFC03",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "After a fresh confirmation is approved, Agent step_once completes a real PLCCommunicate binary run; only the new loopback peer receives exactly one valid Modbus TCP FC03 request (unit 1, address 0, count 1), returns register 0x002A, and same-run outputs report plc_connected=true and nonnegative plc_response_time_ms."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Approving a confirmation after target port drift expires it; explicitly rejecting the current confirmation is rejected. Both paths make zero connections/requests/responses and zero module start/finish, run-finished, or tool-executed signals; stale confirmation is audited expired and explicit rejection audited rejected."
+      }
+    },
+    {
+      "dirName": "PLCWritePlugin",
+      "pluginId": "com.deeplux.plugin.plcwrite",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of isolated real PLCWrite binary and repository metadata, Agent run_flow/step_once confirmations, rejection with zero additional writes, exact approved FC16 requests, same-run write outputs, and cleanup.",
+      "testId": "test_agent_plcwrite_execution_g5::testPLCWriteRequiresConfirmationForRunFlowAndStepOnce",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "After Agent approval, run_flow writes slave 7/address 4660/value 0x1234 and step_once writes slave 7/address 22136/value 0x4321 using exact Modbus FC16 frames; same-run outputs report plc_write_success=true and plc_write_count=1, including typed port readback."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Rejecting run_flow confirmation causes zero requests and no module execution. After one approved write, rejecting a newly previewed step_once causes no second request and no module start/finish increment."
+      }
+    },
+    {
+      "dirName": "TCPClient",
+      "pluginId": "com.deeplux.plugin.tcpclient",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of isolated real TCPClient binary and repository metadata, complete confirmation payload secrecy, endpoint-drift expiration with zero peer I/O, approved loopback WriteRead, non-main-thread execution, same-run response readback, and cleanup.",
+      "testId": "test_agent_tcpclient_execution_g5::testRunFlowBindsEndpointExpiresOnPortChangeAndReadsResponse",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "After the stale endpoint confirmation expires, Agent approves the new WriteRead target; the new loopback peer receives exactly `slice48-request`, responds `slice48-response`, and same-run Agent outputs return the response and its UTF-8 byte count. Module execution occurs off the main thread."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Changing the configured port after preview expires the old confirmation. Both stale and new peers have zero connection/request data before a new confirmation is approved; the stale attempt is audited expired and presents an invalidation message. Full serialized pending confirmation payloads omit the request bytes."
+      }
+    },
+    {
+      "dirName": "TCPServer",
+      "pluginId": "com.deeplux.plugin.tcpserver",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of isolated real TCPServer binary and repository metadata, loopback-only bind, stale endpoint confirmation expiration with both ports unreachable, approved UTF-8 WriteRead, exact 127.0.0.1/non-0.0.0.0 bind evidence, worker-thread execution, same-run data, and cleanup.",
+      "testId": "test_agent_tcpserver_execution_g5::testRunFlowBindsLocalEndpointExpiresOnPortChangeAndReadsRequest",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "After approving the current endpoint confirmation, a local client sends UTF-8 `请求-α-49` and receives exact `响应-β-49`; the listener logs only 127.0.0.1:<approvedPort>, executes off the main thread, and Agent reads back the request text and byte count by runId."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Changing the configured port after preview expires the old confirmation. Neither old nor new local port is reachable and no module start/finish occurs; the invalidation is audited and shown to the user. Visible side effects omit the request body."
+      }
+    },
+    {
+      "dirName": "SerialPort",
+      "pluginId": "com.deeplux.plugin.serialport",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of POSIX PTY fixture with isolated real SerialPort binary and repository metadata, endpoint side-effect disclosure, rejection and stale-confirmation expiration with no peer data, approved single UTF-8 exchange, same-run reply readback, thread behavior, and cleanup.",
+      "testId": "test_agent_serialport_execution_g5::testRunFlowRejectsAndExpiresSerialTargetThenReadsPTYReply",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "After approving a fresh SerialPort endpoint confirmation, only the new PTY peer receives `CMD-7` and replies once with UTF-8 `OK-✓`; the same run returns the reply and its UTF-8 byte count."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Explicit confirmation rejection and approval of a stale confirmation after portName drift both produce zero PTY data and do not start the module; the actions are audited rejected/expired. Side effects disclose serial settings but omit request data."
+      }
+    },
+    {
+      "dirName": "Folder",
+      "pluginId": "com.deeplux.plugin.folder",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of the isolated real Folder binary and metadata, temporary-root-only Agent Delete through run_flow and step_once, explicit rejection and stale confirmation expiration with no deletion, approved deletion/output/audit assertions, repeated test evidence, and cleanup safety.",
+      "testId": "test_agent_folder_execution_g5::testFolderDeleteRequiresConfirmationForRunFlowAndStepOnce",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "After approval, Agent run_flow deletes only the configured temporary target and reports operation_result=true and the deleted folder_path for the same run; approved step_once deletes its own temporary target and audits success."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Rejecting run_flow or step_once preserves the probe files and prevents module execution. Changing folderPath after preview expires the old confirmation, preserves both temporary targets, and emits no module, run-finished, or tool-executed signals."
+      }
+    },
+    {
+      "dirName": "If",
+      "pluginId": "com.deeplux.plugin.if",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent true/false branch selection and exact same-run values, skipped-branch output unavailability, temporary plugin-root setup, metadata-name loading, and cleanup.",
+      "testId": "test_acceptance_flows::testAgentRunFlowPreservesIfBranchSemantics",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent run_flow with true and false If expressions executes exactly the selected Math branch; its same-run output is 42 for true and 5 for false, while the other branch is skipped."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "For the default true condition, Agent get_module_output reports unavailable for the skipped falsebranch instance and its result key; no skipped output is presented as produced data."
+      }
+    },
+    {
+      "dirName": "Loop",
+      "pluginId": "com.deeplux.plugin.loop",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent fixed-count Loop execution order and same-run result observation, negative-count set_module_params validation rejection with no mutation, temporary plugin setup and per-test cleanup.",
+      "testId": "test_acceptance_flows::testAgentRunFlowPreservesLoopCount",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent run_flow executes the Loop body exactly three times and the after node once, with the exact frozen loop/body completion sequence and a completed run result."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Agent set_module_params rejects loopCount=-1 with VALIDATION_FAILED and the exact plugin validation diagnostic; the project remains at loopCount=3, the engine stays idle, and the prior completed run and execution counts remain unchanged."
+      }
+    },
+    {
+      "dirName": "ShowPoint",
+      "pluginId": "com.deeplux.plugin.showpoint",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of the isolated real ShowPoint binary, exact point and provenance outputs, Agent pixel-unit readback, missing-point failure attribution, failed-run unavailable outputs, and cleanup.",
+      "testId": "test_acceptance_flows::testAgentShowPointOutputsDeclareCurrentImagePixelUnits",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "The real ShowPoint plugin preserves the fixture point and image provenance; Agent get_module_output returns exact point_x=13.25 and point_y=22.5 with px units and no false coordinate-frame/source-image mapping, plus point_displayed=true."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "With a valid image but no point key, the run fails at ShowPoint instance show with `未提供点坐标`; Agent reports the new run failed and returns unavailable for point_x and point_y rather than leaking successful-run coordinates."
+      }
+    },
+    {
+      "dirName": "RegionStats",
+      "pluginId": "com.deeplux.plugin.regionstats",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of the isolated real RegionStats binary, fixed area/bbox/centroid oracles against runtime and Agent key/port readback, coordinate provenance claims, required-port failure attribution, failed-run output unavailability, and cleanup.",
+      "testId": "test_sam_region_flow::testAgentRegionStatsCentroidUnknownProducerHasNoSourceMapping",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "For both unknown and known image provenance, the real plugin runtime and Agent key/port reads match fixed area=400, bbox=(120,120,20,20), centroid=(130,130); typed centroid is Point2D [130,130], scalar readbacks have no invented unit, and no sourceImageCoordinates are returned."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "With the declared and connected Region2D output omitted from fixture data, the run starts and fails at stats on the framework required-port diagnostic `缺少必需输入：区域`; Agent reports failed and region_area unavailable with reason run_failed. This is not represented as the plugin process diagnostic."
+      }
+    },
+    {
+      "dirName": "Parallel",
+      "pluginId": "com.deeplux.plugin.parallel",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent parallelCount configuration and project mutation assertions for both entry/join instances, same-run key readback, all-join branch ordering/concurrency, fast branch failure attribution and sibling cancellation, Agent unavailable output, and test-owned temporary plugin root with process-scoped plugin-manager teardown.",
+      "testId": "test_acceptance_flows::testAgentRunFlowPreservesParallelAllJoin",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent set_module_params configures par and merge parallelCount=3; the run completes with both branches succeeding before merge, merge and after succeeding once, and maximum branch concurrency at least two. Agent get_module_output reads the same-run parallel_count key as 3 from both instances."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Agent run_flow reports failed; fast bad starts and fails exactly once, slow starts and is cancelled before success, merge/after do not start, total cancellation time is below 500 ms, and the slow image output is unavailable for that run."
+      }
+    },
+    {
+      "dirName": "Matching",
+      "pluginId": "com.deeplux.plugin.matching",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent set_module_params rejection and success, exact Project mutation boundary, same deterministic factory reload after parameter update, real CropImage/Matching execution, fixed detection/source-coordinate oracles, Agent key/port readback, and fixture lifecycle.",
+      "testId": "test_acceptance_flows::testAgentMatchingScalarsDeclareLocalPixelUnits",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent sets matchThreshold=0.8/maxMatches=5; after deterministic factory reload, the 240x180 generated source crops to 160x120 and produces first match bbox (65,45,30,30), score 1.0. Agent key/port reads for match_x/y/width/height match exact values with px units; DetectionList has image_pixels frame and exact source bbox (170.5,167,45,60)."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Agent set_module_params with matchThreshold=1.1 returns VALIDATION_FAILED and the exact diagnostic; prior project values 0.9/2 remain unchanged and engine stays idle before valid configuration and execution."
+      }
+    },
+    {
+      "dirName": "SamPredict",
+      "pluginId": "com.deeplux.plugin.sampredict",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent parameter rejection/no-mutation, runtime no-prompt failure and zero HTTP requests, exactly-once SAM request protocol and prompt body, real GrabImage/CropImage/SamPredict/RegionStats execution, coordinate transform and Agent output readback, and fixture isolation.",
+      "testId": "test_sam_region_flow::testAgentSamPredictRegionCoordinatesAfterNonzeroCrop",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures SamPredict against the local peer and a real GrabImage→CropImage→SamPredict→RegionStats flow succeeds. The peer receives exactly one set_image and one predict request with positive point [[320,240]], no negative points, and embedding emb-1. Agent reads the concave-L Region2D and fixed six-point source-image polygon/bbox after crop translation (80,70), plus fixed RegionStats values through keys and ports."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "An empty serverUrl is rejected as VALIDATION_FAILED without changing serverUrl, label, positive/negative points, null box, or timeout and leaves the engine idle. Empty prompt arrays are accepted as configuration but fail the next run at SamPredict with the exact prompt diagnostic, no HTTP requests, Agent failed status, and unavailable region output with reason run_failed."
+      }
+    },
+    {
+      "dirName": "EdgeDefectDetection",
+      "pluginId": "com.deeplux.plugin.edgedefectdetection",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent threshold rejection/no-mutation and accepted configuration, fixed defect statistics and region oracle, complete key/port row serialization against the same-run snapshot, coordinate-frame/unit gating, two-point runtime failure attribution, failed-run output invalidation, and Developer-authorized test scope.",
+      "testId": "test_acceptance_flows::testAgentEdgeDefectDeviationUnitsRequireImageLocalPointSetSource",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent rejects threshold 101 without mutation, sets threshold=4/searchLength=10/isConvex=true, and runs the real GrabImage→CropImage→MeasurementInput→EdgeDefectDetection flow. For the fixed image and 72-point input it returns has_defect=true, defect_count=1, convex_count=1, concave_count=0, max deviation 7, mean 6.111111111111111, population standard deviation 0.3142696805273546, and one convex row with 72 samples and fixed start/end indices. Agent key and port reads match the complete same-run snapshot row; px units are emitted only for ImageLocalPixel point_set provenance."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures MeasurementInput with exactly two finite point-set coordinates and receives params_set. The run then fails at EdgeDefectDetection with exact diagnostic `参考边缘点不足，无法拟合基准`; Agent get_run_results reports failed and max_deviation is unavailable with reason run_failed."
+      }
+    },
+    {
+      "dirName": "JiErHanDefectsDet",
+      "pluginId": "com.deeplux.plugin.jierhandefectsdet",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of generated high/low confidence images, Agent threshold rejection/no-mutation and threshold-dependent candidate counts, fixed local/source Region2D output and source ID, weak-only no-candidate failure with Agent output invalidation, and unprovenanced coordinate boundaries.",
+      "testId": "test_acceptance_flows::testAgentJiErHanDefectRegionMapsThroughCropOrigin",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent sets threshold 0.1 on the fixed strong+weak generated image and reads defect_count=2, then sets 0.9 and reads 1. The remaining strong Region2D is `焊接缺陷`, local bbox (59,49,61,61), score 1, source bbox (99,79,61,61) with matching sourceImageId. The weak-only image at threshold 0.9 fails at defect with exact `未检测到缺陷`; Agent reports failed and defect_region unavailable/run_failed. The unprovenanced variant returns only local bbox/score and does not invent source coordinates."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Agent set_module_params threshold=1.5 returns VALIDATION_FAILED with exact diagnostic `阈值必须在 0.1 到 1.0 之间`; threshold remains 0.9 and the engine remains idle. Weak-only runtime failure is separately attributed to the plugin and invalidates Agent output for the failed run."
+      }
+    },
+    {
+      "dirName": "ImageScript",
+      "pluginId": "com.deeplux.plugin.imagescript",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of isolated dynamic plugin loading, Agent graph/configuration/run/output path for all four public ImageScript modes, exact same-run full-pixel oracles and provenance for invert/grayscale/blur/sharpen, invalid parameter rejection without execution, and optional-input runtime failure with failed-run output invalidation.",
+      "testId": "test_agent_visual_plugins_g8::testAgentImageScriptInvertAndRejectsInvalidConfigurationAndMissingImage",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures the linked GrabImage→ImageScript flow and exercises every public scriptType 0–3. Mode 0 output is pixel-identical to bitwise inversion of all 12 source pixels. Mode 1 maps the fixed BGR (20,80,180) image to (103,103,103); mode 2 maps the 5×5 support around a center impulse from 80/180 to 84 and leaves other pixels at 80; mode 3 maps a center value 100 over an 80 background to 180 at center, 60 at its four axial neighbors, and 80 elsewhere. Each mode's Agent-configured completed run exposes script_executed=true, its own script_type, and a full pixel-exact ImageScript output from the same runId; each output preserves sourceImageId, sourceSize, and localToSourceMatrix from that run's GrabImage output."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Agent rejects scriptType=4 with exact VALIDATION_FAILED diagnostic, no parameter mutation, and no moduleStarted event. After disconnecting GrabImage.image→ImageScript.image and disabling GrabImage, the optional empty ImageScript input passes preflight but fails at the plugin with exact `输入图像无效`; Agent reports failed and script_executed unavailable/run_failed."
+      }
+    },
+    {
+      "dirName": "FreeformSurface",
+      "pluginId": "com.deeplux.plugin.freeformsurface",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of retired samplingInterval removal, legacy project loading behavior, Agent schema rejection, exact all-point cloud metrics, missing-cloud failure attribution, and documentation/compatibility scope.",
+      "testId": "test_agent_visual_plugins_g8::testAgentLoadPointCloudFeedsFreeformSurfaceAndRejectsLegacyParameter",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent loads actual LoadPointCloud and FreeformSurface plugins, configures a generated four-vertex unit square PLY, and reads point_count=4, surface_area=1.0, surface_roughness=0.0. samplingInterval is absent from Agent parameters; all input points are used."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Agent setting the retired samplingInterval is rejected as INVALID_PARAM/Unknown parameter without mutation or execution. After disabling LoadPointCloud, FreeformSurface fails with exact `未提供点云数据`; Agent reports failed and surface_area unavailable/run_failed. Direct plugin validation rejects the retired field, while legacy fromJson remains successful and omits it from runtime params."
+      }
+    },
+    {
+      "dirName": "LoadPointCloud",
+      "pluginId": "com.deeplux.plugin.loadpointcloud",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of Agent path/file configuration, same-run point_count output, downstream FreeformSurface consumption, missing-path failure attribution and output invalidation, real isolated dynamic plugin loading, and CMake dependency.",
+      "testId": "test_agent_visual_plugins_g8::testAgentLoadPointCloudFeedsFreeformSurfaceAndRejectsLegacyParameter",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent loads the real plugin, configures a generated four-vertex unit-square ASCII PLY, runs it into FreeformSurface, and reads LoadPointCloud point_count=4 from the same successful run. Downstream FreeformSurface independently reports four consumed points."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Agent sets filePath to a non-existing PLY; run fails at LoadPointCloud with exact `文件不存在: <path>`, and point_count is unavailable/run_failed for that run ID."
+      }
+    },
+    {
+      "dirName": "JigsawPuzzle",
+      "pluginId": "com.deeplux.plugin.jigsawsolver",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of isolated real GrabImage/JigsawPuzzle plugins, Agent configuration and same-run scalar outputs, exact 16x15 crop pixel oracle, undersized-image failure attribution/output invalidation, and truthful fixed-grid capability boundary.",
+      "testId": "test_agent_visual_plugins_g8::testAgentJigsawPuzzleSplitsAndReassemblesGridAndRejectsUndersizedInput",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures rows=3/cols=4 on a generated nonuniform 19x17 source. It reads puzzle_rows=3, puzzle_cols=4 and puzzle_piece_count=12. The same-run RunEngine image snapshot is exactly pixel-identical to the source top-left 16x15 crop; non-divisible right/bottom remainders are discarded."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Agent replaces the source with a 2x2 image while retaining the positive 3x4 grid. The run fails at JigsawPuzzle with exact `图像尺寸不足以按当前行列数切分`; get_module_output for that failed run returns unavailable/run_failed."
+      }
+    },
+    {
+      "dirName": "QueueOut",
+      "pluginId": "com.deeplux.plugin.queueout",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of the approved empty-queue contract, configured output key, queue size marker, same-run Agent readback, isolated queue state, CMake registration, and regression risk.",
+      "testId": "test_agent_visual_plugins_g8::testAgentQueueOutEmptyResultUsesConfiguredOutputAndReportsZeroSize",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures a UUID-named empty queue and custom outputVariable; the successful same-run QueueOut outputs report queue_empty=true, the configured key as an empty string, queue_<name>_size=0, and queue size remains zero."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "The same empty-queue boundary is asserted through Agent by checking that the run succeeds with an explicit empty marker and zero size rather than returning a false item or mutating the queue."
+      }
+    },
+    {
+      "dirName": "QueueIn",
+      "pluginId": "com.deeplux.plugin.queuein",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of the approved string-path contract, real CreateString/QueueIn/QueueOut Agent flow, same-run outputs, exact missing-data failure attribution, queue side-effect assertions, and CMake registration.",
+      "testId": "test_agent_visual_plugins_g8::testAgentQueueInRoundTripsConfiguredStringAndRejectsMissingData",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent loads real plugins, creates lot-42-检测 under ImageData key message, enqueues it in a UUID-named queue and dequeues it in the same run. QueueIn reports size 1; QueueOut returns the exact string, queue_empty=false, and queue size returns to zero."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "After disabling CreateString, QueueIn fails with exact `队列数据为空`; failed-run queue size output is unavailable/run_failed and the actual queue remains zero, proving no enqueue side effect."
+      }
+    },
+    {
+      "dirName": "GapMeasure3D",
+      "pluginId": "com.deeplux.plugin.gapmeasure3d",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of the approved synthetic-height-map contract, real GrabImage/GapMeasure3D Agent flow, same-run measurement and units, no-detection sentinel, ROI failure attribution, plugin isolation, and CMake registration.",
+      "testId": "test_agent_visual_plugins_g8::testAgentMeasuresGapFromHeightImageAndReportsNotFoundAndInvalidRoi",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent runs a generated 640x480 float TIFF with a 40-pixel groove, reads gap_found=true, gap_width about 20.0 mm, gap_offset_width about 20.5 mm, corner_dx_mm equal to gap_width, and is_pass=true. The two Z-related outputs are available but do not claim a unit."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "A flat height map completes with gap_found=false, configured gap_width sentinel -3.5, and is_pass=false. An in-range ROI center outside the image fails at GapMeasure3D with exact `截面 ROI 与图像无交集`; gap_width is unavailable/run_failed."
+      }
+    },
+    {
+      "dirName": "PerProcessing",
+      "pluginId": "com.deeplux.plugin.perprocessing",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of all eleven approved processType branches with full same-run output-matrix oracles and provenance, fixture discrimination, numeric and enum rejection paths, missing-image failure attribution, isolated plugin loading, and CMake wiring.",
+      "testId": "test_agent_visual_plugins_g8::testAgentPerProcessingGaussianBlurAndRejectsUnsupportedTypeAndMissingImage",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent applies all eleven public processType modes to the same deterministic 9x9 BGR grayscale fixture and, for each mode, retrieves processed_type, dimensions, full pixel-exact output, and sourceImageId/sourceSize/localToSourceMatrix from that runId. Outputs match independent OpenCV references: GaussianBlur (3x3,sigma 1.2), MedianBlur (3x3), BilateralFilter (d=3,sigmaColor=20,sigmaSpace=5), Sobel (BGR2GRAY, CV_16S dx=dy=1, convertScaleAbs), Laplacian (BGR2GRAY, CV_16S aperture 3, convertScaleAbs), Canny (50/150, aperture 3), and Dilate/Erode/Open/Close/Gradient (rect 3x3, one iteration). The three edge outputs are one-channel; other modes are three-channel. All eleven complete matrices are distinct and differ from the input."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "UnsupportedFilter is rejected as VALIDATION_FAILED with exact diagnostic before any run and without parameter mutation; out-of-range/fractional numeric parameters are rejected without mutation. With no image, the run fails at PerProcessing with exact `输入图像无效` and processed_type unavailable/run_failed."
+      }
+    },
+    {
+      "dirName": "PreProcessing3D",
+      "pluginId": "com.deeplux.plugin.3dpreprocessing",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of the approved float-height-map Agent fixture, schema-declared HeightMap2D port, runtime ImageData port summary, exact same-run pixels/statistics, three-channel rejection attribution, isolated plugin loading, and CMake registration.",
+      "testId": "test_agent_visual_plugins_g8::testAgentPreProcessing3DReportsHeightMapAndRejectsColorInput",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent feeds a generated 7x9 CV_32F height ramp through real GrabImage and PreProcessing3D plugins. It reads valid_pixel_count=63, filtered_pixel_count=0, min_height=10, max_height=44; schema declares image as HeightMap2D, runtime port query reports a 9x7 ImageData summary, and the same-run snapshot is pixel-identical to source."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "A generated three-channel PNG fails at PreProcessing3D with exact `高度图须为 1 或 2 通道，收到 3 通道`; valid_pixel_count is unavailable/run_failed for that run."
+      }
+    },
+    {
+      "dirName": "While",
+      "pluginId": "com.deeplux.plugin.while",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of all six While comparison branches through Agent configuration, explicit CreateString image input, same-run outputs, bounded StopWhile control flow, the existing false-condition/validation fixture, and isolated cleanup.",
+      "testId": "test_agent_visual_plugins_g8::testAgentStopWhileExitsWhileBodyAndContinuesAfterFlow",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures CreateString→While over an explicit image data edge and exercises NotEmpty, Empty, Equal, NotEqual, numeric GreaterThan and LessThan with true outcomes. Each runId proves the source value is available (including present empty string), while_result and stop_while_requested are true, and the body/StopWhile/after modules each run exactly once before the loop exits. The existing false NotEmpty run remains covered by testAgentWhileFalseConditionAndRejectsInvalidComparisonAndLimit."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Agent accepts and stores maxIterations 1 and 100000; rejects 0, 100001, and fractional limits with VALIDATION_FAILED and exact diagnostics without changing the stored value. UnsupportedComparison is rejected with exact diagnostic, unchanged comparison, idle RunEngine, and no moduleStarted event."
+      }
+    },
+    {
+      "dirName": "StopWhile",
+      "pluginId": "com.deeplux.plugin.stopwhile",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of implicit Agent control endpoints, control-edge fan-in semantics, wrong data-to-control rejection, graph observability, and real StopWhile early-exit behavior.",
+      "testId": "test_agent_visual_plugins_g8::testAgentStopWhileExitsWhileBodyAndContinuesAfterFlow",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "Agent creates a true While loop with real Delay and StopWhile modules using implicit control endpoints. StopWhile sets stop_while_requested=true; the completed run then executes the after module exactly once."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Agent rejects a data image output connected to the implicit control input with VALIDATION_FAILED and no graph mutation. Four valid control edges include two incoming sources on after.control; the resulting flow executes body, StopWhile, and after exactly once, confirming early exit and OR activation for the implicit input."
+      }
+    },
+    {
+      "dirName": "DefectDetection",
+      "pluginId": "com.deeplux.plugin.defectdetection",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/defect_detection_g8_review",
+      "reviewScope": "Read-only review of demo-mode plugin construction, Agent point-cloud input link, SDK-unavailable failure classification, and metadata exposure of declared result ports. No HymsonVision3D algorithm success path is claimed.",
+      "testId": "test_agent_core_plugins_g8::testAgentReportsHymsonSdkUnavailableForDefectDetection",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "FAIL",
+        "assertion": "A valid four-point PLY is loaded and linked through Agent, but no business result is produced because ENABLE_HYMSON3D is OFF and the plugin correctly reports the SDK requirement. The successful algorithm fixture remains blocked on the HymsonVision3D SDK."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "Agent configures and runs LoadPointCloud → DefectDetection. The run fails at the DefectDetection instance with exact SDK-unavailable error and matching plugin log; get_flow_state exposes defect_point_cloud, has_defects, and defect_count output ports."
+      }
+    },
+    {
+      "dirName": "V4L2Camera",
+      "pluginId": "com.deeplux.camera.v4l2",
+      "reviewStatus": "PASS",
+      "reviewer": "/root/slice176_final_review",
+      "reviewScope": "Read-only review of the production V4L2 discovery plugin using its injected fake system adapter, Agent list_cameras output, asynchronous CameraManager lifecycle, descriptor cleanup, and failure-path registration guard.",
+      "testId": "test_v4l2discovery::testAgentListsFakeV4L2DiscoveryAndReleasesSkippedDeviceFd",
+      "evidencePath": "build-codex-agent/agent-phase8-current-matrix-evidence/slice47-full-ctest.log",
+      "validBusinessFixture": {
+        "status": "PASS",
+        "assertion": "On Linux, the production V4L2CameraPlugin receives one fake V4L2 device through the injected system adapter and CameraManager managed discovery. Agent list_cameras returns exactly /fake/video0 as a disconnected Fake camera."
+      },
+      "criticalFailureFixture": {
+        "status": "PASS",
+        "assertion": "A second fake device fails open and is omitted. The adapter records two open attempts and one close for the successful descriptor. CameraManager unregister succeeds; its plugin registry and Agent camera list no longer contain the fixture before the plugin object is destroyed."
+      }
+    }
+  ]
+}

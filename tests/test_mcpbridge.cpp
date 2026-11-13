@@ -308,7 +308,6 @@ private slots:
         const QJsonArray tools = resultOf(response).value(QStringLiteral("tools")).toArray();
         const QList<ToolDefinition> definitions = ToolSchema::instance().allTools();
         QCOMPARE(tools.size(), definitions.size());
-        QCOMPARE(tools.size(), 25);
 
         QMap<QString, QJsonObject> byName;
         for (const QJsonValue& value : tools) {

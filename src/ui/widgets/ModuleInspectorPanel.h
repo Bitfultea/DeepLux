@@ -69,6 +69,9 @@ public:
      */
     void setPinned(bool pinned);
 
+    /** Set the collapsed width state and notify the owning splitter. */
+    void setCollapsed(bool collapsed);
+
     /**
      * @return 当前实例 ID
      */
@@ -131,6 +134,9 @@ public:
      * 阶段 B 复核: 反映当前实例的启用/断点/备注状态（不增弹窗）。
      */
     void setRuntimeState(bool enabled, bool breakpoint, const QString& note);
+    void setEnabledState(bool enabled);
+    void setBreakpointState(bool breakpoint);
+    void setNoteState(const QString& note);
 
 signals:
     void paramsChanged(const QString& instanceId, const QString& key, const QVariant& value);

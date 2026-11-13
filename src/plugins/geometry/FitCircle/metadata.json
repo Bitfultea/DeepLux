@@ -92,6 +92,13 @@
                 "type": "Number",
                 "required": false,
                 "multiple": false
+            },
+            {
+                "id": "circle",
+                "displayName": "拟合圆",
+                "type": "Circle2D",
+                "required": false,
+                "multiple": false
             }
         ]
     }

@@ -105,8 +105,10 @@ bool CommunicationManager::connect(const QString& configId) {
         return true;
     }
 
+    m_states[configId] = CommunicationState::Connecting;
     emit connectionStateChanged(configId, CommunicationState::Connecting);
     Logger::instance().info(QString("Connecting: %1 (%2)").arg(config->name).arg(configId), "Comm");
+    const CommunicationConfig connectionConfig = *config;
 
     switch (config->type) {
     case CommunicationType::TCP_Client:
@@ -114,12 +116,16 @@ bool CommunicationManager::connect(const QString& configId) {
         QTcpSocket* socket = new QTcpSocket(this);
         m_tcpSockets[configId] = socket;
 
-        QObject::connect(socket, &QTcpSocket::connected, this, [this, configId, config]() {
+        QObject::connect(socket, &QTcpSocket::connected, this, [this, configId, connectionConfig]() {
             m_states[configId] = CommunicationState::Connected;
             emit connectionStateChanged(configId, CommunicationState::Connected);
-            const QString transport = (config->type == CommunicationType::PLC) ? "PLC Modbus TCP" : "TCP server";
-            Logger::instance().success(
-                QString("Connected to %1: %2:%3").arg(transport).arg(config->ipAddress).arg(config->port), "Comm");
+            const QString transport =
+                (connectionConfig.type == CommunicationType::PLC) ? "PLC Modbus TCP" : "TCP server";
+            Logger::instance().success(QString("Connected to %1: %2:%3")
+                                           .arg(transport)
+                                           .arg(connectionConfig.ipAddress)
+                                           .arg(connectionConfig.port),
+                                       "Comm");
         });
 
         QObject::connect(socket, &QTcpSocket::readyRead, this, &CommunicationManager::onReadyRead);
@@ -131,7 +137,7 @@ bool CommunicationManager::connect(const QString& configId) {
                              emit errorOccurred(configId, socket->errorString());
                          });
 
-        socket->connectToHost(config->ipAddress, config->port);
+        socket->connectToHost(connectionConfig.ipAddress, connectionConfig.port);
         break;
     }
 
@@ -146,6 +152,8 @@ bool CommunicationManager::connect(const QString& configId) {
             emit connectionStateChanged(configId, CommunicationState::Listening);
             Logger::instance().success(QString("TCP server listening on port: %1").arg(config->port), "Comm");
         } else {
+            m_states[configId] = CommunicationState::Error;
+            emit connectionStateChanged(configId, CommunicationState::Error);
             emit errorOccurred(configId, server->errorString());
             Logger::instance().error(QString("Failed to start TCP server: %1").arg(server->errorString()), "Comm");
         }
@@ -176,6 +184,8 @@ bool CommunicationManager::connect(const QString& configId) {
             emit connectionStateChanged(configId, CommunicationState::Connected);
             Logger::instance().success(QString("Serial port opened: %1").arg(config->portName), "Comm");
         } else {
+            m_states[configId] = CommunicationState::Error;
+            emit connectionStateChanged(configId, CommunicationState::Error);
             emit errorOccurred(configId, serial->errorString());
             Logger::instance().error(QString("Failed to open serial port: %1").arg(serial->errorString()), "Comm");
         }
@@ -306,8 +316,10 @@ void CommunicationManager::onDisconnected() {
     }
 
     if (!configId.isEmpty()) {
-        m_states[configId] = CommunicationState::Disconnected;
-        emit connectionStateChanged(configId, CommunicationState::Disconnected);
+        if (m_states.value(configId) != CommunicationState::Error) {
+            m_states[configId] = CommunicationState::Disconnected;
+            emit connectionStateChanged(configId, CommunicationState::Disconnected);
+        }
     }
 
     socket->deleteLater();

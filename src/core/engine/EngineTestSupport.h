@@ -3,7 +3,14 @@
 #include "FlowExecutionService.h"
 #include "RunEngine.h"
 
+#include <mutex>
+
 namespace DeepLux {
+
+#ifdef DEEPLUX_BUILD_TESTS
+DEEPLUX_API void resetParallelPoolStartCountForTest();
+DEEPLUX_API int parallelPoolStartCountForTest();
+#endif
 
 class RunEngineTestAccess {
 public:
@@ -29,6 +36,12 @@ public:
     int guiDispatchLateCallbackDropCountForTest() const;
     int guiDispatchTimeoutHitCountForTest() const;
     int guiDispatchRunningWaitEnteredCountForTest() const;
+    void setBeforeCompletedSnapshotClearHookForTest(std::function<void()> hook);
+    void clearBeforeCompletedSnapshotClearHookForTest();
+    std::unique_lock<QMutex> lockRunObservationForTest();
+    bool hasCompletedOutputSnapshotForTest() const;
+    void resetParallelPoolStartCountForTest();
+    int parallelPoolStartCountForTest() const;
 
 private:
     RunEngine& m_engine;
@@ -38,6 +51,8 @@ class FlowExecutionServiceTestAccess {
 public:
     explicit FlowExecutionServiceTestAccess(FlowExecutionService& service) : m_service(service) {}
 
+    void setAfterStartSettledHookForTest(std::function<void()> hook);
+    void clearAfterStartSettledHookForTest();
     void setStartHandshakeHookForTest(std::function<void()> hook);
     void clearStartHandshakeHookForTest();
     void setShutdownDeadlineForTest(int msecs);

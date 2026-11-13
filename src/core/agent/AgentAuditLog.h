@@ -34,6 +34,7 @@ public:
     /// 同步追加一行（GUI 线程；重入保护）
     void append(const AgentActionLogEntry& entry);
     void flush();
+    QString currentFilePath() const;
 
 #ifdef DEEPLUX_BUILD_TESTS
     // ---- 测试可见 ----
@@ -44,11 +45,6 @@ public:
     void setMaxFileBytesForTest(int bytes);
     void setRetentionDaysForTest(int days);
     void resetForTest();
-#endif
-
-public:
-    QString currentFilePath() const;
-#ifdef DEEPLUX_BUILD_TESTS
     DEEPLUX_TEST_VISIBILITY : int droppedRecords() const {
         return m_droppedRecords;
     }

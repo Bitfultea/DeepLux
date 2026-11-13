@@ -162,8 +162,8 @@ private slots:
     }
 
     void init() {
+        AgentController::instance().abortCurrentTurn();
         AgentController::instance().clearConversation();
-        AgentController::instance().transitionTo(AgentController::AgentState::Idle);
         m_client = new MockStreamingClient(&AgentController::instance());
         AgentController::instance().setLLMClient(m_client);
     }

@@ -74,7 +74,7 @@
             {
                 "id": "image",
                 "displayName": "输入",
-                "type": "PointCloud3D",
+                "type": "Any",
                 "required": false,
                 "multiple": false
             }
@@ -83,7 +83,28 @@
             {
                 "id": "image",
                 "displayName": "输出",
+                "type": "Any",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "defect_point_cloud",
+                "displayName": "缺陷点云",
                 "type": "PointCloud3D",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "has_defects",
+                "displayName": "是否存在缺陷",
+                "type": "Boolean",
+                "required": false,
+                "multiple": false
+            },
+            {
+                "id": "defect_count",
+                "displayName": "缺陷点数量",
+                "type": "Integer",
                 "required": false,
                 "multiple": false
             }

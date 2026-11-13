@@ -1,6 +1,6 @@
 # DeepLux Agent 能力改进路线图（对标 visionflow-studio）
 
-- 状态：**第二迭代已交付**（2026-10-28；t22 审核 pass、t21 复验全绿）；第一迭代交付于 2026-10-27
+- 历史状态：**第二迭代已交付**（2026-10-28；t22 审核 pass、t21 复验全绿）；第一迭代交付于 2026-10-27。本文保留历史路线图与迭代记录，当前项目/分支状态见 [STATUS](STATUS.md)。
 - 设计文档：[agent-iteration1-design.md](agent-iteration1-design.md)（第一迭代）、[agent-iteration2-design.md](agent-iteration2-design.md)（2A 流式+上下文）、[agent-iteration2b-design.md](agent-iteration2b-design.md)（2B 审计/2C MCP/2D 遗留）
 - 基线提交：第二迭代基线 `af56b5b`（第一迭代交付提交）；第一迭代基线 `d381129`（分支 `Windows_work`）
 - 对标对象：<https://github.com/agentthink/visionflow-studio>（Halcon Vision Studio，WPF/.NET 10 + Halcon）
@@ -673,7 +673,9 @@ ctest（全量）           → 84/84 Passed，0 skipped/disabled，exit 0
 
 **生产隐私注意**：审计日志默认开启，失败请求日志对未显式配置的用户默认**关闭**（集成收口 B5；显式已有配置值继续尊重）。审计可包含工具参数；失败请求日志开启时，BadRequest/Malformed 可包含每条消息的前 2048 字符及错误详情，即使匹配规则已脱敏，普通业务内容仍可能留在磁盘 14 天。敏感机台应先评估目录访问权限和保留策略；可在 Agent 设置页或 `<appData>/config/config.json` 的 `agent` 对象中分别设置 `auditEnabled`、`failedRequestLogEnabled`，并重启应用。关闭只停止写入新正文，不自动删除已有文件。修改时保留该对象的其他配置。详见 [agent-integration-hardening-plan.md](agent-integration-hardening-plan.md) B5。
 
-### 12.8 第三迭代入口（建议顺序）
+### 12.8 第三迭代入口（历史建议顺序）
+
+本节是 2026-10-28 的建议清单，不是当前待办或完成状态；当前状态统一见 [STATUS](STATUS.md)。
 
 1. **MCP 写能力 + GUI 确认**：实现 `-32004` 预留通道（外部请求 → GUI 确认 → 执行 → 回传），仍不放开"无确认直执行"。
 2. **多服务商与凭据**：provider 预设、每 provider 独立 Key（系统凭据存储，不明文落盘）、模型列表拉取与连接测试。

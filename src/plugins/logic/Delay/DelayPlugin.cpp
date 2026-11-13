@@ -2,7 +2,6 @@
 
 #include "core/common/Logger.h"
 
-#include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QFormLayout>
 #include <QSpinBox>
@@ -47,8 +46,6 @@ bool DelayPlugin::process(const ImageData& input, ImageData& output) {
 
         const int remainingMs = m_delayMs - static_cast<int>(timer.elapsed());
         QThread::msleep(qMin(20, qMax(1, remainingMs)));
-        // ponytail: RunEngine still executes on the UI thread; keep Delay stoppable without moving the engine yet.
-        QCoreApplication::processEvents();
     }
 
     return !isCancellationRequested();

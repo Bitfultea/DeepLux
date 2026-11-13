@@ -35,6 +35,20 @@ void SamPredictPlugin::shutdown() {
     ModuleBase::shutdown();
 }
 
+ExecutionResult SamPredictPlugin::execute(const PortValueMap& inputs, PortValueMap& outputs,
+                                          ExecutionContext& context) {
+    m_uncertainStage.clear();
+    const ExecutionResult result = ModuleBase::execute(inputs, outputs, context);
+    if (!result.success && !m_uncertainStage.isEmpty()) {
+        const QString diagnostics =
+            result.diagnostics.isEmpty()
+                ? QStringLiteral("uncertainStage=%1").arg(m_uncertainStage)
+                : QStringLiteral("%1 uncertainStage=%2").arg(result.diagnostics, m_uncertainStage);
+        return ExecutionResult::fail(ExecError::SideEffectUncertain, result.userMessage, diagnostics);
+    }
+    return result;
+}
+
 bool SamPredictPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
     error.clear();
     const QJsonValue url = params[QLatin1String("serverUrl")];
@@ -110,6 +124,7 @@ bool SamPredictPlugin::process(const ImageData& input, ImageData& output) {
     const SamPredictOutcome outcome = runSamPredictBatch(params["serverUrl"].toString(), tmp.fileName(), {item},
                                                          params["timeoutMs"].toInt(), cancellationToken());
     if (!outcome.ok) {
+        m_uncertainStage = outcome.uncertainStage;
         emit errorOccurred(outcome.error);
         return false;
     }

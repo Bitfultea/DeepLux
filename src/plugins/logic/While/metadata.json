@@ -13,14 +13,16 @@
             },
             "comparison": {
                 "order": 20,
-                "label": "比较方式"
+                "label": "比较方式",
+                "_options": ["NotEmpty", "Empty", "Equal", "NotEqual", "GreaterThan", "LessThan"]
             },
             "compareValue": {
                 "order": 30,
                 "label": "比较值"
             },
             "maxIterations": {
-                "min": 0,
+                "min": 1,
+                "max": 100000,
                 "step": 1,
                 "decimals": 0,
                 "order": 40,

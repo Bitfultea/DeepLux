@@ -5,6 +5,7 @@
 #include <QPointF>
 #include <QRectF>
 #include <QString>
+#include <cmath>
 
 namespace DeepLux {
 
@@ -22,6 +23,25 @@ struct Circle2D {
 
     bool isValid() const {
         return radius > 0.0;
+    }
+};
+
+/**
+ * @brief 2D 椭圆测量结果载荷（契约层专用载荷类型）
+ *
+ * 半轴单位为当前图像局部像素，angleDegrees 为长轴方向角。
+ */
+struct Ellipse2D {
+    double centerX = 0.0;
+    double centerY = 0.0;
+    double majorRadius = 0.0;
+    double minorRadius = 0.0;
+    double angleDegrees = 0.0;
+
+    bool isValid() const {
+        return std::isfinite(centerX) && std::isfinite(centerY) && std::isfinite(majorRadius) &&
+               std::isfinite(minorRadius) && std::isfinite(angleDegrees) && majorRadius >= minorRadius &&
+               minorRadius > 0.0 && angleDegrees >= 0.0 && angleDegrees < 180.0;
     }
 };
 
@@ -80,6 +100,7 @@ struct Region2D {
 } // namespace DeepLux
 
 Q_DECLARE_METATYPE(DeepLux::Circle2D)
+Q_DECLARE_METATYPE(DeepLux::Ellipse2D)
 Q_DECLARE_METATYPE(DeepLux::Detection)
 Q_DECLARE_METATYPE(DeepLux::DetectionList)
 Q_DECLARE_METATYPE(DeepLux::Region2D)

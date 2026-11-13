@@ -12,6 +12,7 @@
 #include <core/common/CancellationToken.h>
 #include <core/common/Logger.h>
 #include <core/engine/RunEngine.h>
+#include <core/manager/GlobalVarManager.h>
 #include <core/model/Project.h>
 #include <memory>
 #include <thread>
@@ -110,8 +111,10 @@ private:
 class BlockingParallelModule : public ModuleBase {
     Q_OBJECT
 public:
-    BlockingParallelModule(std::atomic<int>& calls, QSemaphore& entered, QSemaphore& release)
-        : m_calls(calls), m_entered(entered), m_release(release) {
+    BlockingParallelModule(std::atomic<int>& calls, QSemaphore& entered, QSemaphore& release,
+                           bool clearRunningStateWhileBlocked = false)
+        : m_calls(calls), m_entered(entered), m_release(release),
+          m_clearRunningStateWhileBlocked(clearRunningStateWhileBlocked) {
         m_moduleId = QStringLiteral("com.deeplux.test.parallel-blocking");
         m_name = QStringLiteral("parallel-blocking");
         m_category = QStringLiteral("test");
@@ -121,6 +124,10 @@ public:
 protected:
     bool process(const ImageData& input, ImageData& output) override {
         m_calls.fetch_add(1, std::memory_order_relaxed);
+        if (m_clearRunningStateWhileBlocked) {
+            m_state = ModuleState::Idle;
+            m_stateClearedWhileRunning.store(true, std::memory_order_release);
+        }
         m_entered.release();
         m_release.acquire();
         output = input;
@@ -131,10 +138,17 @@ protected:
         return nullptr;
     }
 
+public:
+    bool stateClearedWhileRunning() const {
+        return m_stateClearedWhileRunning.load(std::memory_order_acquire);
+    }
+
 private:
     std::atomic<int>& m_calls;
     QSemaphore& m_entered;
     QSemaphore& m_release;
+    bool m_clearRunningStateWhileBlocked = false;
+    std::atomic<bool> m_stateClearedWhileRunning{false};
 };
 
 class ParallelFailureGateModule : public ModuleBase {
@@ -941,12 +955,21 @@ private slots:
     // 阶段 6 复核（三轮）并发生命周期回归
     void testConcurrentStopDuringRunKeepsStoppedState();
     void testConcurrentMaintenanceDuringRunStart();
+    void testProjectMutationLeaseLinearizesWithRunStart();
+    void testDataSourceImportCommitLeaseExcludesRunStart();
+    void testGlobalVariableExecutionLeaseLinearizesRunsAndWrites();
     void testSnapshotConcurrentWithRun();
+    void testRunOutputSnapshotConcurrentWithClearModules();
     void testStopSimultaneousWithBreakpointHit();
     void testClearAndLoadRejectedWhileRunning();
     // 阶6 八轮回归：恢复/tick/循环断点/校验收尾/维护停止
     void testResumeAfterStopDoesNotReexecute();
     void testStaleCycleTickAfterStopDoesNotExecute();
+    void testOldCycleTimerCannotTickNewSession();
+    void testDeferredCycleContinuesAfterFlowValidationFailure();
+    void testBoundedCycleValidationFailureStopsWithoutRetry();
+    void testCycleStopsAfterRuntimeFailureWithoutRetry();
+    void testBoundedCycleStopPreservesCompletedCountWithoutRetry();
     void testCycleBreakpointResumeKeepsCycleMode();
     void testValidationAbortThenNextRunNotBlocked();
     void testStopDuringMaintenanceClearsStepState();
@@ -963,6 +986,7 @@ private slots:
     void testBreakpointDoesNotBlockRun();
     void testBreakpointPreservesFailureAcrossResume();
     void testMultipleBreakpointsCanResumeAndStop();
+    void testResumeSnapshotRejectsEarlierPauseEpochWithinSameRun();
     void testRemoveModuleClearsTopology();
     // 阶段 C: 显式控制边契约
     void testDataEdgeToControlPortRejected();
@@ -1041,6 +1065,7 @@ private slots:
     void testClearModules();
     void testModuleExecution();
     void testFailedRunReportsFailureAndPreservesModuleError();
+    void testAsyncFailureCarriesAcceptedRunId();
     void testFalseControlResultIsNotExecutionFailure();
     void testConditionalWithoutEndSkipsOneBodyModule();
     void testWhileFalseSkipsLoopBody();
@@ -1274,6 +1299,30 @@ void TestRunEngine::testFailedRunReportsFailureAndPreservesModuleError() {
     QCOMPARE(engine.failedRuns(), failuresBefore + 1);
     QCOMPARE(engine.moduleOutput(QStringLiteral("FailingModule")).data(QStringLiteral("error")).toString(),
              QStringLiteral("camera unavailable"));
+
+    engine.clearModules();
+    delete module;
+}
+
+void TestRunEngine::testAsyncFailureCarriesAcceptedRunId() {
+    RunEngine& engine = RunEngine::instance();
+    auto* module = new TestExecutionModule("AsyncFailingModule");
+    module->executeResult = false;
+    module->errorText = QStringLiteral("fixture failure");
+    QVERIFY(module->initialize());
+    engine.addModule(module);
+
+    QSignalSpy finished(&engine, &RunEngine::runFinished);
+    QString acceptedRunId;
+    QVERIFY(engine.runOnceAsync(&acceptedRunId));
+    QVERIFY(!acceptedRunId.isEmpty());
+    QTRY_COMPARE(finished.count(), 1);
+    const RunResult result = finished.at(0).at(0).value<RunResult>();
+    QCOMPARE(result.runId, acceptedRunId);
+    QVERIFY(!result.success);
+    QCOMPARE(result.errorMessage, QStringLiteral("fixture failure"));
+    QCOMPARE(result.failedModule, QStringLiteral("AsyncFailingModule"));
+    QVERIFY(!result.diagnostics.isEmpty());
 
     engine.clearModules();
     delete module;
@@ -1880,8 +1929,10 @@ void TestRunEngine::testExecuteParallelRejectsDuplicateModuleInBatch() {
     RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("duplicate"),
                                                                   ExecutionAffinity::Worker);
 
+    RunEngineTestAccess(engine).resetParallelPoolStartCountForTest();
     const ExecutionResult result =
         engine.executeParallel(QStringList{QStringLiteral("duplicate"), QStringLiteral("duplicate")}, {});
+    QCOMPARE(RunEngineTestAccess(engine).parallelPoolStartCountForTest(), 0);
     QVERIFY2(!result.success, "the same module instance must not be dispatched twice in one parallel batch");
     QCOMPARE(result.errorCode, ExecError::DuplicateModuleInBatch);
     QVERIFY2(result.diagnostics.contains(QStringLiteral("duplicate_module_in_batch")), qPrintable(result.diagnostics));
@@ -1898,7 +1949,7 @@ void TestRunEngine::testExecuteParallelRejectsSameInstanceAcrossRequests() {
     QSemaphore entered;
     QSemaphore release;
     std::unique_ptr<BlockingParallelModule> module =
-        std::make_unique<BlockingParallelModule>(processCalls, entered, release);
+        std::make_unique<BlockingParallelModule>(processCalls, entered, release, true);
     QSemaphore secondReturned;
     ExecutionResult firstResult;
     ExecutionResult secondResult;
@@ -1930,6 +1981,7 @@ void TestRunEngine::testExecuteParallelRejectsSameInstanceAcrossRequests() {
         std::thread([&] { firstResult = engine.executeParallel({QStringLiteral("parallel-blocking")}, {}); });
 
     QVERIFY2(entered.tryAcquire(1, 5000), "first request must enter the module before the second request");
+    QVERIFY(module->stateClearedWhileRunning());
     secondRequest = std::thread([&] {
         secondResult = engine.executeParallel({QStringLiteral("parallel-blocking")}, {});
         secondReturned.release();
@@ -2348,6 +2400,253 @@ void TestRunEngine::testConcurrentMaintenanceDuringRunStart() {
     QVERIFY(engine.modules().isEmpty());
 }
 
+void TestRunEngine::testProjectMutationLeaseLinearizesWithRunStart() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance instance;
+    instance.id = QStringLiteral("project_mutation_gate");
+    instance.moduleId = QStringLiteral("project_mutation_gate");
+    project.addModule(instance);
+    QSemaphore moduleEntered;
+    QSemaphore releaseModule;
+    QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& item) -> ModuleBase* {
+        return new GateModule(item.id, &moduleEntered, &releaseModule, nullptr);
+    }));
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("project_mutation_gate"),
+                                                                  ExecutionAffinity::Worker);
+
+    QSemaphore mutationLeaseEntered;
+    QSemaphore releaseMutation;
+    std::atomic<int> mutationResult{static_cast<int>(RunEngine::ProjectMutationResult::Rejected)};
+    std::thread mutator([&]() {
+        const auto result = engine.withProjectMutationLease([&]() {
+            mutationLeaseEntered.release();
+            releaseMutation.acquire();
+            return true;
+        });
+        mutationResult.store(static_cast<int>(result), std::memory_order_release);
+    });
+    QVERIFY2(mutationLeaseEntered.tryAcquire(1, 5000), "project mutation must acquire maintenance lease");
+    QString runId;
+    QVERIFY(!engine.runOnceAsync(&runId));
+    QVERIFY(runId.isEmpty());
+    QVERIFY(engine.isBusy());
+    releaseMutation.release();
+    mutator.join();
+    QCOMPARE(mutationResult.load(std::memory_order_acquire),
+             static_cast<int>(RunEngine::ProjectMutationResult::Applied));
+
+    std::thread runner([&engine]() { engine.runOnce(); });
+    QVERIFY2(moduleEntered.tryAcquire(1, 5000), "run must own execution lease before mutation attempt");
+    bool mutationBodyCalled = false;
+    const auto rejected = engine.withProjectMutationLease([&]() {
+        mutationBodyCalled = true;
+        return true;
+    });
+    QCOMPARE(rejected, RunEngine::ProjectMutationResult::Busy);
+    QVERIFY(!mutationBodyCalled);
+    engine.stop();
+    releaseModule.release();
+    runner.join();
+    QVERIFY(!engine.isBusy());
+    engine.clearModules();
+}
+
+void TestRunEngine::testDataSourceImportCommitLeaseExcludesRunStart() {
+    RunEngine& engine = RunEngine::instance();
+    engine.stop();
+    engine.clearModules();
+    Project project;
+    ModuleInstance instance;
+    instance.id = QStringLiteral("data_source_import_lease_probe");
+    instance.moduleId = QStringLiteral("data_source_import_lease_probe");
+    project.addModule(instance);
+    QSemaphore moduleEntered;
+    QSemaphore releaseModule;
+    QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& item) -> ModuleBase* {
+        return new GateModule(item.id, &moduleEntered, &releaseModule, nullptr);
+    }));
+
+    const quint64 generationBefore = project.dataSourceCollectionGeneration();
+    QSemaphore importCommitEntered;
+    QSemaphore competingRunFinished;
+    std::atomic_bool runAccepted{true};
+    std::thread runner([&]() {
+        importCommitEntered.acquire();
+        QString runId;
+        runAccepted.store(engine.runOnceAsync(&runId), std::memory_order_release);
+        competingRunFinished.release();
+    });
+
+    const RunEngine::ProjectMutationResult importResult = engine.withProjectMutationLease([&]() {
+        // This is the Slice 5 one-way commit operation. It runs in Project::thread()
+        // while holding exactly the maintenance lease used by import_data_source.
+        DataSource source;
+        source.id = QStringLiteral("lease-imported-source");
+        source.name = QStringLiteral("lease-source.png");
+        source.type = QStringLiteral("image");
+        source.filePath = QStringLiteral("/tmp/lease-source.png");
+        project.addDataSource(source);
+        importCommitEntered.release();
+        competingRunFinished.acquire();
+        return true;
+    });
+    runner.join();
+
+    QCOMPARE(importResult, RunEngine::ProjectMutationResult::Applied);
+    QVERIFY(!runAccepted.load(std::memory_order_acquire));
+    QCOMPARE(project.dataSourceCollectionGeneration(), generationBefore + 1);
+    QCOMPARE(project.dataSources().size(), 1);
+    QCOMPARE(moduleEntered.available(), 0);
+    QVERIFY(!engine.isBusy());
+    engine.clearModules();
+}
+
+void TestRunEngine::testGlobalVariableExecutionLeaseLinearizesRunsAndWrites() {
+    RunEngine& engine = RunEngine::instance();
+    GlobalVarManager& variables = GlobalVarManager::instance();
+    engine.stop();
+    engine.clearModules();
+    variables.clearAllVariables();
+
+    Project project;
+    ModuleInstance gateInstance;
+    gateInstance.id = QStringLiteral("global_variable_gate");
+    gateInstance.moduleId = QStringLiteral("gate");
+    project.addModule(gateInstance);
+
+    QSemaphore moduleEntered;
+    QSemaphore releaseModule;
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& instance) -> ModuleBase* {
+        return new GateModule(instance.id, &moduleEntered, &releaseModule, &log);
+    }));
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("global_variable_gate"),
+                                                                  ExecutionAffinity::Worker);
+
+    // If a user mutation owns the gate first, run admission waits and no module can
+    // observe an intermediate variable state. Releasing the mutation admits the run.
+    const RunState stateBeforeAdmission = engine.state();
+    QVERIFY(variables.beginUserMutationLease());
+    QSemaphore runAttempted;
+    std::thread runner([&]() {
+        runAttempted.release();
+        engine.runOnce();
+    });
+    const bool runnerStarted = runAttempted.tryAcquire(1, 1000);
+    const bool moduleEnteredBeforeMutationRelease = moduleEntered.tryAcquire(1, 100);
+    const bool stateStayedStable = engine.state() == stateBeforeAdmission;
+    variables.addVariable(new VarModel(QStringLiteral("lease_order_probe"), VarDataType::Int, 7));
+    variables.endUserMutationLease();
+
+    const bool moduleEnteredAfterMutationRelease = moduleEntered.tryAcquire(1, 5000);
+    QString errorCode;
+    bool mutationRejectedDuringRun = false;
+    if (moduleEnteredAfterMutationRelease) {
+        mutationRejectedDuringRun = !variables.tryCreateUserVariable(QStringLiteral("during_run"), VarDataType::Int, 1,
+                                                                     {}, nullptr, &errorCode) &&
+                                    errorCode == QLatin1String("ENGINE_BUSY");
+    }
+    engine.stop();
+    releaseModule.release();
+    runner.join();
+    QVERIFY2(runnerStarted, "run thread must reach admission");
+    QVERIFY2(!moduleEnteredBeforeMutationRelease, "run must wait for the user mutation lease");
+    QVERIFY2(stateStayedStable, "waiting for mutation admission must not publish a run state");
+    QVERIFY2(moduleEnteredAfterMutationRelease, "run must start after the mutation commits");
+    QVERIFY2(mutationRejectedDuringRun, "administrative writes must be rejected during execution");
+    QVERIFY(!engine.isBusy());
+    QVERIFY(variables.tryCreateUserVariable(QStringLiteral("after_run"), VarDataType::Int, 2, {}, nullptr, &errorCode));
+
+    // A breakpoint pause and an idle interval between cycle ticks are still part
+    // of the active execution session and must keep the same exclusion lease.
+    engine.clearModules();
+    Project pausedProject;
+    ModuleInstance pausedInstance;
+    pausedInstance.id = QStringLiteral("breakpoint_before_variable_user");
+    pausedInstance.moduleId = QStringLiteral("plain");
+    pausedInstance.breakpoint = true;
+    pausedProject.addModule(pausedInstance);
+    QVERIFY(engine.loadProject(&pausedProject, [](const ModuleInstance& instance) -> ModuleBase* {
+        return new TestExecutionModule(instance.id);
+    }));
+    engine.runOnce();
+    QVERIFY(engine.isPausedAtBreakpoint());
+    QVERIFY(!variables.trySetUserVariable(QStringLiteral("after_run"), 3, {}, nullptr, &errorCode));
+    QCOMPARE(errorCode, QStringLiteral("ENGINE_BUSY"));
+    bool pausedRunFinishedWasBusy = false;
+    bool pausedStoppedStateWasBusy = false;
+    const auto pausedRunFinishedConnection = connect(
+        &engine, &RunEngine::runFinished, &engine,
+        [&variables, &pausedRunFinishedWasBusy](const RunResult&) {
+            QString callbackError;
+            pausedRunFinishedWasBusy =
+                !variables.trySetUserVariable(QStringLiteral("after_run"), 4, {}, nullptr, &callbackError) &&
+                callbackError == QLatin1String("ENGINE_BUSY");
+        },
+        Qt::DirectConnection);
+    const auto pausedStateConnection = connect(
+        &engine, &RunEngine::stateChanged, &engine,
+        [&variables, &pausedStoppedStateWasBusy](RunState state) {
+            if (state != RunState::Stopped)
+                return;
+            QString callbackError;
+            pausedStoppedStateWasBusy =
+                !variables.trySetUserVariable(QStringLiteral("after_run"), 5, {}, nullptr, &callbackError) &&
+                callbackError == QLatin1String("ENGINE_BUSY");
+        },
+        Qt::DirectConnection);
+    engine.stop();
+    disconnect(pausedRunFinishedConnection);
+    disconnect(pausedStateConnection);
+    QVERIFY(pausedRunFinishedWasBusy);
+    QVERIFY(pausedStoppedStateWasBusy);
+    QVERIFY(variables.trySetUserVariable(QStringLiteral("after_run"), 3, {}, nullptr, &errorCode));
+
+    engine.clearModules();
+    Project cycleProject;
+    ModuleInstance cycleInstance;
+    cycleInstance.id = QStringLiteral("cycle_variable_lease");
+    cycleInstance.moduleId = QStringLiteral("plain");
+    cycleProject.addModule(cycleInstance);
+    QVERIFY(engine.loadProject(&cycleProject, [](const ModuleInstance& instance) -> ModuleBase* {
+        return new TestExecutionModule(instance.id);
+    }));
+    QVERIFY(engine.startCycle(nullptr, 60000, false));
+    bool cycleStoppedWasBusy = false;
+    bool cycleStoppedStateWasBusy = false;
+    const auto cycleStoppedConnection = connect(
+        &engine, &RunEngine::cycleStopped, &engine,
+        [&variables, &cycleStoppedWasBusy]() {
+            QString callbackError;
+            cycleStoppedWasBusy = !variables.tryRemoveUserVariable(QStringLiteral("after_run"), {}, &callbackError) &&
+                                  callbackError == QLatin1String("ENGINE_BUSY");
+        },
+        Qt::DirectConnection);
+    const auto cycleStateConnection = connect(
+        &engine, &RunEngine::stateChanged, &engine,
+        [&variables, &cycleStoppedStateWasBusy](RunState state) {
+            if (state != RunState::Stopped)
+                return;
+            QString callbackError;
+            cycleStoppedStateWasBusy =
+                !variables.tryRemoveUserVariable(QStringLiteral("after_run"), {}, &callbackError) &&
+                callbackError == QLatin1String("ENGINE_BUSY");
+        },
+        Qt::DirectConnection);
+    QVERIFY(variables.tryRemoveUserVariable(QStringLiteral("after_run"), {}, &errorCode) == false);
+    QCOMPARE(errorCode, QStringLiteral("ENGINE_BUSY"));
+    engine.stop();
+    disconnect(cycleStoppedConnection);
+    disconnect(cycleStateConnection);
+    QVERIFY(cycleStoppedWasBusy);
+    QVERIFY(cycleStoppedStateWasBusy);
+    QVERIFY(variables.tryRemoveUserVariable(QStringLiteral("after_run"), {}, &errorCode));
+    variables.clearAllVariables();
+    engine.clearModules();
+}
+
 void TestRunEngine::testStopSimultaneousWithBreakpointHit() {
     // 阶6 复核（三轮）："断点命中同时停止"——断点回调内调用 stop()，
     // 暂停应被放弃、走正常结束，状态为 Stopped 且不残留暂停。
@@ -2500,6 +2799,250 @@ void TestRunEngine::testStaleCycleTickAfterStopDoesNotExecute() {
     QTest::qWait(350); // > 3 个 tick
     QCOMPARE(log.count(QStringLiteral("M")), countAfterStop);
     QCOMPARE(engine.state(), RunState::Stopped);
+    engine.clearModules();
+}
+
+void TestRunEngine::testOldCycleTimerCannotTickNewSession() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance instance;
+    instance.id = QStringLiteral("old_cycle_timer_probe");
+    instance.moduleId = QStringLiteral("OldCycleTimerProbe");
+    project.addModule(instance);
+    QStringList executionLog;
+    QVERIFY(engine.loadProject(&project, [&executionLog](const ModuleInstance& loading) {
+        auto* module = new TestExecutionModule(loading.id);
+        module->executionLog = &executionLog;
+        return module;
+    }));
+
+    QString oldSessionId;
+    QVERIFY(engine.startCycle(&oldSessionId, 60000, false));
+    QVERIFY(!oldSessionId.isEmpty());
+    QTimer* oldTimer = engine.findChild<QTimer*>(QStringLiteral("RunEngineCycleTimer"));
+    QVERIFY(oldTimer);
+    engine.stop();
+
+    QString newSessionId;
+    QVERIFY(engine.startCycle(&newSessionId, 60000, false));
+    QVERIFY(!newSessionId.isEmpty());
+    QVERIFY(newSessionId != oldSessionId);
+    QCOMPARE(executionLog.size(), 0);
+    QSignalSpy startedSpy(&engine, &RunEngine::runStarted);
+
+    // Deliver the stopped session's already-addressed timeout after a new session exists.
+    QVERIFY(QMetaObject::invokeMethod(oldTimer, "timeout", Qt::DirectConnection));
+    QCOMPARE(startedSpy.count(), 0);
+    QCOMPARE(executionLog.size(), 0);
+    QCOMPARE(engine.runObservation(newSessionId).sessionId, newSessionId);
+    QVERIFY(engine.runObservation(newSessionId).lastIterationRunId.isEmpty());
+
+    engine.stop();
+    engine.clearModules();
+}
+
+void TestRunEngine::testDeferredCycleContinuesAfterFlowValidationFailure() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance requiredInput;
+    requiredInput.id = QStringLiteral("required_input_without_source");
+    requiredInput.moduleId = QStringLiteral("com.deeplux.test.typed.target");
+    project.addModule(requiredInput);
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& instance) {
+        return new TypedPortModule(instance.id, DataType::Number, false);
+    }));
+
+    QSignalSpy finishedSpy(&engine, &RunEngine::runFinished);
+    QString sessionId;
+    RunObservation firstFailedSession;
+    const QMetaObject::Connection stopAfterSecondFailure = connect(
+        &engine, &RunEngine::runFinished, &engine,
+        [&](const RunResult&) {
+            if (finishedSpy.count() == 1)
+                firstFailedSession = engine.runObservation(sessionId);
+            else if (finishedSpy.count() == 2)
+                engine.stop();
+        },
+        Qt::DirectConnection);
+    QVERIFY(engine.startCycle(&sessionId, 1, true, true));
+    QVERIFY(!sessionId.isEmpty());
+    QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 2, 1000);
+    const RunResult firstResult = qvariant_cast<RunResult>(finishedSpy.at(0).at(0));
+    const RunResult secondResult = qvariant_cast<RunResult>(finishedSpy.at(1).at(0));
+    QVERIFY(!firstResult.success);
+    QVERIFY(!secondResult.success);
+    QVERIFY(firstResult.runId != secondResult.runId);
+    disconnect(stopAfterSecondFailure);
+    QCOMPARE(firstFailedSession.sessionId, sessionId);
+    QCOMPARE(firstFailedSession.state, RunState::Running);
+    QVERIFY(firstFailedSession.lastIterationRunId == firstResult.runId);
+    QCOMPARE(firstFailedSession.lastCompletedRunId, firstResult.runId);
+    QVERIFY(!engine.isBusy());
+    engine.clearModules();
+}
+
+void TestRunEngine::testCycleStopsAfterRuntimeFailureWithoutRetry() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance instance;
+    instance.id = QStringLiteral("cycle_runtime_failure");
+    instance.moduleId = QStringLiteral("CycleRuntimeFailure");
+    project.addModule(instance);
+    QStringList executionLog;
+    TestExecutionModule* failureModule = nullptr;
+    QVERIFY(engine.loadProject(&project, [&executionLog, &failureModule](const ModuleInstance& loading) {
+        failureModule = new TestExecutionModule(loading.id);
+        failureModule->executeResult = false;
+        failureModule->errorText = QStringLiteral("simulated runtime failure");
+        failureModule->executionLog = &executionLog;
+        return failureModule;
+    }));
+
+    QSignalSpy finishedSpy(&engine, &RunEngine::runFinished);
+    QSignalSpy stoppedSpy(&engine, &RunEngine::cycleStopped);
+    RunObservation sessionAtStopped;
+    QString sessionId;
+    const QMetaObject::Connection inspectStoppedSession = connect(
+        &engine, &RunEngine::cycleStopped, &engine,
+        [&engine, &sessionId, &sessionAtStopped]() { sessionAtStopped = engine.runObservation(sessionId); },
+        Qt::DirectConnection);
+    const QMetaObject::Connection concurrentStop = connect(
+        &engine, &RunEngine::runFinished, &engine, [&engine](const RunResult&) { engine.stop(); },
+        Qt::DirectConnection);
+    bool restartedFromStoppedSignal = true;
+    const QMetaObject::Connection restartFromStoppedSignal = connect(
+        &engine, &RunEngine::cycleStopped, &engine,
+        [&engine, &restartedFromStoppedSignal]() {
+            restartedFromStoppedSignal = engine.startCycle(nullptr, 1000, false);
+        },
+        Qt::DirectConnection);
+    QVERIFY(engine.startCycle(&sessionId, 5, true, true, false, 3));
+    QVERIFY(!sessionId.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 1000);
+    QTest::qWait(100); // 跨越多个 5 ms 周期，确保失败迭代没有重放。
+
+    QCOMPARE(executionLog.size(), 1);
+    QVERIFY(failureModule);
+    QCOMPARE(failureModule->executeCount, 1);
+    QCOMPARE(finishedSpy.count(), 1);
+    QCOMPARE(stoppedSpy.count(), 1);
+    QVERIFY(sessionAtStopped.finished);
+    QVERIFY(!sessionAtStopped.result.success);
+    QVERIFY(!restartedFromStoppedSignal);
+    QVERIFY(!engine.isCycleMode());
+    QVERIFY(!engine.isBusy());
+    const RunResult failedRun = qvariant_cast<RunResult>(finishedSpy.at(0).at(0));
+    QVERIFY(!failedRun.success);
+    const RunObservation observation = engine.runObservation(sessionId);
+    QCOMPARE(observation.sessionId, sessionId);
+    QVERIFY(observation.finished);
+    QVERIFY(!observation.result.success);
+    QCOMPARE(observation.maxCycles, 3);
+    QCOMPARE(observation.completedCycles, 0);
+    QVERIFY(observation.lastSuccessfulRunId.isEmpty());
+    QCOMPARE(observation.lastCompletedRunId, failedRun.runId);
+    disconnect(concurrentStop);
+    disconnect(restartFromStoppedSignal);
+    disconnect(inspectStoppedSession);
+    engine.clearModules();
+}
+
+void TestRunEngine::testBoundedCycleValidationFailureStopsWithoutRetry() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance requiredInput;
+    requiredInput.id = QStringLiteral("bounded_cycle_missing_input");
+    requiredInput.moduleId = QStringLiteral("com.deeplux.test.typed.target");
+    project.addModule(requiredInput);
+    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& instance) {
+        return new TypedPortModule(instance.id, DataType::Number, false);
+    }));
+
+    QSignalSpy finishedSpy(&engine, &RunEngine::runFinished);
+    QSignalSpy stoppedSpy(&engine, &RunEngine::cycleStopped);
+    QString sessionId;
+    RunObservation sessionAtStopped;
+    const QMetaObject::Connection inspectStoppedSession = connect(
+        &engine, &RunEngine::cycleStopped, &engine,
+        [&engine, &sessionId, &sessionAtStopped]() { sessionAtStopped = engine.runObservation(sessionId); },
+        Qt::DirectConnection);
+
+    QVERIFY(engine.startCycle(&sessionId, 1, true, true, false, 3));
+    QVERIFY(!sessionId.isEmpty());
+    QCOMPARE(finishedSpy.count(), 1);
+    QCOMPARE(stoppedSpy.count(), 1);
+    QVERIFY(sessionAtStopped.finished);
+    QCOMPARE(sessionAtStopped.maxCycles, 3);
+    QCOMPARE(sessionAtStopped.completedCycles, 0);
+    QCOMPARE(sessionAtStopped.state, RunState::Idle);
+    QVERIFY(!sessionAtStopped.result.success);
+    QVERIFY(!sessionAtStopped.lastCompletedRunId.isEmpty());
+    QTest::qWait(100);
+    QCOMPARE(finishedSpy.count(), 1);
+    QCOMPARE(stoppedSpy.count(), 1);
+
+    disconnect(inspectStoppedSession);
+    engine.clearModules();
+}
+
+void TestRunEngine::testBoundedCycleStopPreservesCompletedCountWithoutRetry() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    ModuleInstance instance;
+    instance.id = QStringLiteral("bounded_cycle_stop");
+    instance.moduleId = QStringLiteral("BoundedCycleStop");
+    project.addModule(instance);
+    TestExecutionModule* boundedModule = nullptr;
+    QVERIFY(engine.loadProject(&project, [&boundedModule](const ModuleInstance& loading) {
+        boundedModule = new TestExecutionModule(loading.id);
+        return boundedModule;
+    }));
+
+    QString sessionId;
+    QSignalSpy finishedSpy(&engine, &RunEngine::runFinished);
+    QSignalSpy stoppedSpy(&engine, &RunEngine::cycleStopped);
+    QJsonObject sessionAtStop;
+    const QMetaObject::Connection stopAfterFirstTick = connect(
+        &engine, &RunEngine::runFinished, &engine, [&engine, &sessionId](const RunResult&) { engine.stop(); },
+        Qt::DirectConnection);
+    const QMetaObject::Connection inspectStoppedSession = connect(
+        &engine, &RunEngine::cycleStopped, &engine,
+        [&engine, &sessionAtStop, &sessionId]() {
+            const RunObservation observation = engine.runObservation(sessionId);
+            sessionAtStop = QJsonObject{{QStringLiteral("finished"), observation.finished},
+                                        {QStringLiteral("state"), static_cast<int>(observation.state)},
+                                        {QStringLiteral("maxCycles"), observation.maxCycles},
+                                        {QStringLiteral("completedCycles"), observation.completedCycles},
+                                        {QStringLiteral("errorCode"), observation.result.errorCode},
+                                        {QStringLiteral("success"), observation.result.success},
+                                        {QStringLiteral("lastCompletedRunId"), observation.lastCompletedRunId},
+                                        {QStringLiteral("lastSuccessfulRunId"), observation.lastSuccessfulRunId}};
+        },
+        Qt::DirectConnection);
+
+    QVERIFY(engine.startCycle(&sessionId, 1, true, true, false, 5));
+    QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 1000);
+    QTest::qWait(100);
+    QVERIFY(boundedModule);
+    QCOMPARE(boundedModule->executeCount, 1);
+    QCOMPARE(finishedSpy.count(), 1);
+    QCOMPARE(stoppedSpy.count(), 1);
+    QVERIFY(sessionAtStop.value(QStringLiteral("finished")).toBool());
+    QCOMPARE(sessionAtStop.value(QStringLiteral("state")).toInt(), static_cast<int>(RunState::Stopped));
+    QCOMPARE(sessionAtStop.value(QStringLiteral("errorCode")).toInt(), static_cast<int>(ExecError::Cancelled));
+    QVERIFY(!sessionAtStop.value(QStringLiteral("success")).toBool());
+    QCOMPARE(sessionAtStop.value(QStringLiteral("maxCycles")).toInt(), 5);
+    QCOMPARE(sessionAtStop.value(QStringLiteral("completedCycles")).toInt(), 1);
+    QCOMPARE(sessionAtStop.value(QStringLiteral("lastCompletedRunId")).toString(),
+             sessionAtStop.value(QStringLiteral("lastSuccessfulRunId")).toString());
+
+    disconnect(stopAfterFirstTick);
+    disconnect(inspectStoppedSession);
     engine.clearModules();
 }
 
@@ -2697,6 +3240,15 @@ void TestRunEngine::testValidateFlowReportsMissingRequiredInput() {
     QStringList problems = engine.validateFlow();
     QVERIFY2(!problems.isEmpty(), "expected pre-run error for missing required input");
     QVERIFY(problems.join("; ").contains("consumer"));
+    QSignalSpy finishedSpy(&engine, &RunEngine::runFinished);
+    QString rejectedRunId;
+    QVERIFY(engine.runOnceAsync(&rejectedRunId));
+    QTRY_COMPARE(finishedSpy.count(), 1);
+    const RunResult rejected = finishedSpy.at(0).at(0).value<RunResult>();
+    QCOMPARE(rejected.runId, rejectedRunId);
+    QCOMPARE(rejected.failedModule, QStringLiteral("consumer"));
+    QCOMPARE(rejected.failedPort, QStringLiteral("value"));
+    QVERIFY(rejected.diagnostics.contains(QStringLiteral("consumer")));
 
     // 有名称匹配的连接 src.value->consumer.value：预检通过。
     Project linked;
@@ -3179,6 +3731,48 @@ void TestRunEngine::testMultipleBreakpointsCanResumeAndStop() {
     QCOMPARE(engine.state(), RunState::Stopped);
     QVERIFY(!engine.isPausedAtBreakpoint());
     QCOMPARE(log, QStringList({QStringLiteral("A")}));
+}
+
+void TestRunEngine::testResumeSnapshotRejectsEarlierPauseEpochWithinSameRun() {
+    RunEngine& engine = RunEngine::instance();
+    Project project;
+    for (const QString& id : {QStringLiteral("A"), QStringLiteral("B")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        instance.breakpoint = true;
+        project.addModule(instance);
+    }
+
+    QStringList log;
+    QVERIFY(engine.loadProject(&project, [&log](const ModuleInstance& instance) {
+        auto* module = new TestExecutionModule(instance.id);
+        module->executionLog = &log;
+        return module;
+    }));
+
+    engine.runOnce();
+    QCOMPARE(engine.state(), RunState::Paused);
+    const RunResumeSnapshot pauseA = engine.resumeSnapshot();
+    QVERIFY(!pauseA.runId.isEmpty());
+    QVERIFY(pauseA.sessionId.isEmpty());
+    QCOMPARE(pauseA.state, RunState::Paused);
+    QVERIFY(log.isEmpty());
+
+    QVERIFY(engine.resumeExpected(pauseA)); // resumes A and stops at breakpoint B
+    QCOMPARE(engine.state(), RunState::Paused);
+    QCOMPARE(log, QStringList({QStringLiteral("A")}));
+    const RunResumeSnapshot pauseB = engine.resumeSnapshot();
+    QCOMPARE(pauseB.runId, pauseA.runId); // same RunOnce
+    QVERIFY(pauseB.sessionId.isEmpty());
+    QCOMPARE(pauseB.state, RunState::Paused);
+    QVERIFY(pauseB.lifecycleGeneration != pauseA.lifecycleGeneration);
+
+    QVERIFY(!engine.resumeExpected(pauseA)); // stale confirmation cannot resume B
+    QCOMPARE(engine.state(), RunState::Paused);
+    QCOMPARE(log, QStringList({QStringLiteral("A")}));
+    engine.stop();
+    engine.clearModules();
 }
 
 void TestRunEngine::testRemoveModuleClearsTopology() {
@@ -6263,6 +6857,68 @@ void TestRunEngine::testSnapshotConcurrentWithRun() {
     QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 10000);
     QVERIFY(!engine.nodePortOutputs(QStringLiteral("SnapSource")).isEmpty());
     engine.clearModules();
+}
+
+void TestRunEngine::testRunOutputSnapshotConcurrentWithClearModules() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    auto module = std::make_unique<TestExecutionModule>(QStringLiteral("OutputSnapshotClear"));
+    module->outputTag = QStringLiteral("snapshot-value");
+    if (!module->initialize()) {
+        QFAIL("test module initialization failed");
+        return;
+    }
+    engine.addModule(module.get());
+    engine.runOnce();
+
+    const QString runId = engine.runObservation(QString()).runId;
+    const QString moduleName = module->name();
+    if (runId.isEmpty() || !RunEngineTestAccess(engine).hasCompletedOutputSnapshotForTest()) {
+        engine.clearModules();
+        QFAIL("completed output snapshot was not recorded");
+        return;
+    }
+
+    RunEngineTestAccess access(engine);
+    auto observationLock = access.lockRunObservationForTest();
+    QSemaphore clearStarted;
+    QSemaphore clearAtSnapshotBoundary;
+    QSemaphore allowSnapshotClear;
+    QSemaphore clearReturned;
+    access.setBeforeCompletedSnapshotClearHookForTest([&] {
+        clearAtSnapshotBoundary.release();
+        allowSnapshotClear.acquire();
+    });
+    std::thread clearer([&] {
+        clearStarted.release();
+        engine.clearModules();
+        clearReturned.release();
+    });
+
+    const bool started = clearStarted.tryAcquire(1, 1000);
+    const bool reachedBoundary = started && clearAtSnapshotBoundary.tryAcquire(1, 1000);
+    const bool currentStateCleared =
+        reachedBoundary && engine.modules().isEmpty() && !engine.getOutput(moduleName, QStringLiteral("tag")).isValid();
+    const bool completedSnapshotPreserved = reachedBoundary && access.hasCompletedOutputSnapshotForTest();
+    allowSnapshotClear.release();
+    const bool returnedBeforeUnlock = clearReturned.tryAcquire(1, 100);
+    const bool snapshotPreservedUntilUnlock = access.hasCompletedOutputSnapshotForTest();
+    observationLock.unlock();
+    const bool returned = returnedBeforeUnlock || clearReturned.tryAcquire(1, 1000);
+    clearer.join();
+    access.clearBeforeCompletedSnapshotClearHookForTest();
+    module.reset();
+
+    if (!started)
+        QFAIL("module clearing thread did not start");
+    if (!reachedBoundary || !currentStateCleared)
+        QFAIL("module clearing did not reach the output-snapshot boundary");
+    if (!completedSnapshotPreserved || !snapshotPreservedUntilUnlock || returnedBeforeUnlock)
+        QFAIL("completed snapshot was cleared before the observation lock was released");
+    if (!returned || access.hasCompletedOutputSnapshotForTest())
+        QFAIL("module clearing did not remove completed output snapshots");
+    if (!engine.modules().isEmpty())
+        QFAIL("module list was not cleared");
 }
 
 static ModuleBase* createLegacyFixtureModule(const ModuleInstance& instance) {

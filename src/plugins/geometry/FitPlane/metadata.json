@@ -13,7 +13,7 @@
                 "step": 1,
                 "decimals": 0,
                 "order": 10,
-                "label": "ROI 中心X"
+                "label": "ROI 中心X（当前输入高度图局部像素）"
             },
             "roiCenterY": {
                 "min": 0,
@@ -21,7 +21,7 @@
                 "step": 1,
                 "decimals": 0,
                 "order": 20,
-                "label": "ROI 中心Y"
+                "label": "ROI 中心Y（当前输入高度图局部像素）"
             },
             "roiLength1": {
                 "min": 0,
@@ -29,7 +29,7 @@
                 "step": 1,
                 "decimals": 0,
                 "order": 30,
-                "label": "ROI 长边（0=全图）"
+                "label": "ROI 长边（像素；0=全图）"
             },
             "roiLength2": {
                 "min": 0,
@@ -37,7 +37,7 @@
                 "step": 1,
                 "decimals": 0,
                 "order": 40,
-                "label": "ROI 短边（0=全图）"
+                "label": "ROI 短边（像素；0=全图）"
             },
             "roiAngle": {
                 "min": -360,
@@ -53,7 +53,7 @@
                 "step": 0.0001,
                 "decimals": 6,
                 "order": 60,
-                "label": "X 像素尺寸"
+                "label": "X 标定比例（单位/像素）"
             },
             "pixelSizeY": {
                 "min": 0.000001,
@@ -61,7 +61,7 @@
                 "step": 0.0001,
                 "decimals": 6,
                 "order": 70,
-                "label": "Y 像素尺寸"
+                "label": "Y 标定比例（单位/像素）"
             },
             "zScale": {
                 "min": 0.000001,
@@ -69,7 +69,7 @@
                 "step": 0.0001,
                 "decimals": 6,
                 "order": 80,
-                "label": "Z 比例"
+                "label": "Z 标定比例（单位/高度值）"
             },
             "invalidValue": {
                 "min": -1000000000,

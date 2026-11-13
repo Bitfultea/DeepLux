@@ -30,6 +30,9 @@ struct CameraInfo {
  * @brief 相机插件接口 - 所有相机驱动必须实现
  *
  * 用于运行时发现和创建相机实例
+ *
+ * CameraManager 同步调用此接口时持有内部互斥锁。实现不得在这些虚调用中，或由其同步信号槽，
+ * 重入调用 CameraManager API；可在虚调用返回后异步发出通知。
  */
 class DEEPLUX_API ICameraPlugin : public QObject {
     Q_OBJECT

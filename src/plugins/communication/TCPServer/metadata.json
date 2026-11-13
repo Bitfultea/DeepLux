@@ -7,6 +7,14 @@
     "description": "TCP服务器数据收发通信",
     "ui": {
         "parameters": {
+            "bindAddress": {
+                "order": 5,
+                "label": "监听地址",
+                "options": [
+                    {"value": "Any", "label": "所有网络接口"},
+                    {"value": "LocalHost", "label": "仅本机"}
+                ]
+            },
             "port": {
                 "min": 0,
                 "step": 1,

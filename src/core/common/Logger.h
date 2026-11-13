@@ -40,6 +40,8 @@ public:
 
     // 日志记录接口
     void addLog(const QString& message, LogLevel level = LogLevel::Info, const QString& category = QString());
+    // Clears the current in-memory snapshot and returns its exact size under the same lock.
+    int clearLogsAndGetCount();
     void debug(const QString& message, const QString& category = QString());
     void info(const QString& message, const QString& category = QString());
     void warning(const QString& message, const QString& category = QString());

@@ -11,11 +11,14 @@ set(CMAKE_AUTOUIC ON)
 set(SOURCES
     V4L2Camera.cpp
     V4L2CameraPlugin.cpp
+    V4L2DiscoveryJob.cpp
 )
 
 set(HEADERS
     V4L2Camera.h
     V4L2CameraPlugin.h
+    V4L2DiscoveryJob.h
+    V4L2DiscoverySystem.h
 )
 
 # Create plugin library

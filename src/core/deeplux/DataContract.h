@@ -115,8 +115,13 @@ inline constexpr int TypeMismatch = 1002;           // 输入类型与端口声�
 inline constexpr int UndeclaredOutput = 1003;       // 写出未声明端口
 inline constexpr int Processing = 1004;             // 算法/运行期错误
 inline constexpr int Cancelled = 1005;              // 被取消
-inline constexpr int DuplicateModuleInBatch = 1006; // 并行批次包含重复模块实例
+inline constexpr int SideEffectUncertain = 1006;    // 外部副作用结果无法确认
+inline constexpr int ConfirmedTargetChanged = 1007; // 已批准的文件目标在操作前发生变化
+inline constexpr int DuplicateModuleInBatch = 1008; // 并行批次包含重复模块实例
 } // namespace ExecError
+
+inline constexpr char AgentFolderDeleteAuthorizationProperty[] = "_deeplux.agent.folderDeleteAuthorization";
+inline constexpr char AgentFileOutputAuthorizationProperty[] = "_deeplux.agent.fileOutputAuthorization";
 
 /**
  * @brief 将 DataType 转为可读字符串（用于诊断与日志）
@@ -131,10 +136,9 @@ bool dataTypeFromString(const QString& name, DataType& out);
 /**
  * @brief 类型是否允许被 metadata 声明为可运行端口（阶段 3 收口）
  *
- * Mask2D/Ellipse2D/Transform2D/ClassScores 尚无载荷契约与生产者插件（Region2D
- * 已于 SAM 批1 落地契约与生产者）：枚举值保留以维持 ABI 稳定，但 metadata
- * 声明这些类型会在加载阶段被明确拒绝，避免"连接合法、运行期永远拒绝"的
- * 悬空端口。待对应载荷/插件落地后再放开。
+ * Mask2D/Transform2D/ClassScores 尚无载荷契约与生产者插件；Region2D 已于 SAM 批1
+ * 落地，Ellipse2D 已有强类型载荷契约。未落地类型枚举值保留以维持 ABI 稳定，但
+ * metadata 声明这些未支持类型会在加载阶段被明确拒绝，避免"连接合法、运行期永远拒绝"。
  */
 bool isSupportedPortType(DataType type);
 

@@ -84,6 +84,41 @@ int RunEngineTestAccess::guiDispatchRunningWaitEnteredCountForTest() const {
     return m_engine.guiDispatchRunningWaitEnteredCountForTest();
 }
 
+void RunEngineTestAccess::setBeforeCompletedSnapshotClearHookForTest(std::function<void()> hook) {
+    m_engine.m_testBeforeCompletedSnapshotClearHook = std::move(hook);
+}
+
+void RunEngineTestAccess::clearBeforeCompletedSnapshotClearHookForTest() {
+    m_engine.m_testBeforeCompletedSnapshotClearHook = nullptr;
+}
+
+std::unique_lock<QMutex> RunEngineTestAccess::lockRunObservationForTest() {
+    return std::unique_lock<QMutex>(m_engine.m_runObservationMutex);
+}
+
+bool RunEngineTestAccess::hasCompletedOutputSnapshotForTest() const {
+    QMutexLocker valueLocker(&m_engine.m_outputMutex);
+    QMutexLocker imageLocker(&m_engine.m_lastOutputMutex);
+    return !m_engine.m_lastFinishedValues.isEmpty() || !m_engine.m_lastFinishedImages.isEmpty() ||
+           !m_engine.m_lastFinishedPortOutputs.isEmpty();
+}
+
+void RunEngineTestAccess::resetParallelPoolStartCountForTest() {
+    DeepLux::resetParallelPoolStartCountForTest();
+}
+
+int RunEngineTestAccess::parallelPoolStartCountForTest() const {
+    return DeepLux::parallelPoolStartCountForTest();
+}
+
+void FlowExecutionServiceTestAccess::setAfterStartSettledHookForTest(std::function<void()> hook) {
+    m_service.setAfterStartSettledHookForTest(std::move(hook));
+}
+
+void FlowExecutionServiceTestAccess::clearAfterStartSettledHookForTest() {
+    m_service.clearAfterStartSettledHookForTest();
+}
+
 void FlowExecutionServiceTestAccess::setStartHandshakeHookForTest(std::function<void()> hook) {
     m_service.setStartHandshakeHookForTest(std::move(hook));
 }

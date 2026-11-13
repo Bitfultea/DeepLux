@@ -1,5 +1,6 @@
 #include "WriteTextPlugin.h"
 
+#include "agent/AgentFileOutputAuthorization.h"
 #include "common/Logger.h"
 
 #include <QCheckBox>
@@ -29,6 +30,21 @@ void WriteTextPlugin::shutdown() {
     ModuleBase::shutdown();
 }
 
+ExecutionResult WriteTextPlugin::execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) {
+    m_writeUnconfirmed = false;
+    m_writeDiagnostics.clear();
+    m_writeResult = false;
+    const QString authorizationError = agentFileOutputAuthorizationError(
+        property(AgentFileOutputAuthorizationProperty).toJsonObject(), instanceName(), moduleId(), currentParams());
+    if (!authorizationError.isEmpty())
+        return ExecutionResult::fail(ExecError::ConfirmedTargetChanged, tr("已批准的文件输出配置或目标已变化"),
+                                     authorizationError);
+    const ExecutionResult result = ModuleBase::execute(inputs, outputs, context);
+    if (!result.success && m_writeUnconfirmed)
+        return ExecutionResult::fail(ExecError::SideEffectUncertain, result.userMessage, m_writeDiagnostics);
+    return result;
+}
+
 bool WriteTextPlugin::process(const ImageData& input, ImageData& output) {
     Q_UNUSED(output);
     output = input;
@@ -54,14 +70,35 @@ bool WriteTextPlugin::process(const ImageData& input, ImageData& output) {
     QFile file(filePath);
     QIODevice::OpenMode mode = appendMode ? QIODevice::Append : QIODevice::WriteOnly;
 
-    if (file.open(mode | QIODevice::Text)) {
+    if (file.open(mode)) {
+        m_writeUnconfirmed = true;
         QTextStream out(&file);
         out << textContent;
         if (!textContent.endsWith("\n")) {
             out << "\n";
         }
+        out.flush();
+        const QTextStream::Status streamStatus = out.status();
+        const bool flushOk = file.flush();
+        const QFileDevice::FileError fileErrorBeforeClose = file.error();
         file.close();
-        m_writeResult = true;
+        const QFileDevice::FileError fileErrorAfterClose = file.error();
+        const QFileDevice::FileError fileError =
+            fileErrorBeforeClose != QFileDevice::NoError ? fileErrorBeforeClose : fileErrorAfterClose;
+        m_writeResult = streamStatus == QTextStream::Ok && flushOk && fileError == QFileDevice::NoError;
+        if (m_writeResult) {
+            m_writeUnconfirmed = false;
+        } else {
+            m_writeDiagnostics =
+                QStringLiteral("writeAttempted=true streamStatus=%1 flushOk=%2 fileErrorBeforeClose=%3 "
+                               "fileErrorAfterClose=%4")
+                    .arg(static_cast<int>(streamStatus))
+                    .arg(flushOk ? QStringLiteral("true") : QStringLiteral("false"))
+                    .arg(static_cast<int>(fileErrorBeforeClose))
+                    .arg(static_cast<int>(fileErrorAfterClose));
+        }
+        if (!m_writeResult)
+            emit errorOccurred(QString("无法确认文件写入结果: %1").arg(filePath));
     } else {
         m_writeResult = false;
         emit errorOccurred(QString("无法写入文件: %1").arg(filePath));
@@ -77,7 +114,7 @@ bool WriteTextPlugin::process(const ImageData& input, ImageData& output) {
                                  .arg(m_writeResult ? "成功" : "失败"),
                              "WriteText");
 
-    return true;
+    return m_writeResult;
 }
 
 bool WriteTextPlugin::doValidateParams(const QJsonObject& params, QString& error) const {

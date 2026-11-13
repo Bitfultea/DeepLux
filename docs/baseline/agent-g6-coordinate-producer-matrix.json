@@ -1,0 +1,578 @@
+{
+  "schemaVersion": 1,
+  "criterion": "G6-3",
+  "sourceOfTruth": "Current DeepLux_codex checkout tests and phase-6 acceptance evidence",
+  "criterionAssessment": {
+    "decision": "PASS",
+    "inputRoutes": "当前内置 GUI 快速测量、Agent 快速测量、GUI MeasurementInput、图像来源链、SAM GUI/会话导出和点云入口已分别列行。",
+    "coordinateFrames": "矩阵列出 ImageLocalPixel、SourceImagePixel、World3D 与 Unspecified；markerless point_line/line_pair 已覆盖当前接受的 3.0、2.0 与缺省 version 输入路径，显式未知版本由 Project::load 拒绝。",
+    "transformsAndLifecycle": "当前69项内置插件源码与metadata已逐项清单核对：像素几何变换仅有 CropImage crop 与 NPointCalibration affine/perspective warp；JigsawPuzzle按原网格顺序拼回，其他内置图像过滤/检测不重采样像素。变换、provenance组合失败及视口生命周期均有对应回归。",
+    "consumersAndOverlays": "各生产入口列出同 run 消费者、测量/ROI overlay 或点云输出；GPU 呈现和真实设备物理坐标不在本地证据范围。",
+    "samSessionAndExporters": "GUI 假服务提示/保存/重开/LabelMe 与独立逐对象 LabelMe/YOLO-Seg/COCO exporter 测试均有引用；不代表真实模型推理质量。",
+    "remainingGaps": [],
+    "passRule": "AUDIT_PASS 限定于当前仓库69项内置插件及G6标准3列明的坐标生产/消费路径；动态安装的第三方插件、GPU绘制和设备物理标定由独立产品/阶段8范围处理。"
+  },
+  "statusPolicy": {
+    "covered": "The cited test exercises the named producer and asserts the stated coordinate contract for its declared scope.",
+    "partial": "Some behavior is tested, but the row records a concrete untested or legacy boundary.",
+    "not_covered": "No cited regression currently establishes the named path."
+  },
+  "rows": [
+    {
+      "id": "gui.quick2d.distance",
+      "producer": "普通 GUI 快速测量：两点距离",
+      "inputDomain": "HImageWidget 真实鼠标点击；2D 图像局部像素",
+      "coordinateRule": "屏幕变换逆映射到 ImageLocalPixel；有 provenance 时独立提供 SourceImagePixel，不让 source 值进入当前算法几何。",
+      "transforms": "actual-size、zoom=2、中键平移；固定仿射来源 oracle。",
+      "lifecycle": "该测试不覆盖换图/取消；生命周期由 HImageWidget/Slice194 其他路径覆盖。",
+      "outputs": "真实日志标签、距离、P1/P2 overlay；source map 单独核对。",
+      "testIds": [
+        "tests/test_mainwindow.cpp::testGuiQuickMeasureDistanceUsesImageLocalCoordinatesAfterViewportTransform"
+      ],
+      "acceptanceRefs": [
+        "Slice 190"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice190-evidence",
+      "status": "covered",
+      "remaining": "不覆盖物理标定或其它显示后端。",
+      "additionalEvidencePaths": []
+    },
+    {
+      "id": "gui.quick2d.point_line_segment_gap",
+      "producer": "普通 GUI 快速测量：点到线、两线段间距",
+      "inputDomain": "HImageWidget 真实鼠标点击；2D 图像局部像素",
+      "coordinateRule": "实际拾取以 ImageLocalPixel 为准；来源图映射只用于独立 provenance 检查。",
+      "transforms": "actual-size、zoom=2、中键平移；固定局部/屏幕/来源坐标。",
+      "lifecycle": "该切片测算术和坐标，不覆盖换图/取消。",
+      "outputs": "垂足、最近段、线和点 overlay、间距标签及唯一日志。",
+      "testIds": [
+        "tests/test_mainwindow.cpp::testGuiQuickMeasurePointLineAndSegmentGapUseImageLocalCoordinatesAfterViewportTransform"
+      ],
+      "acceptanceRefs": [
+        "Slice 191"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice191-evidence",
+      "status": "covered",
+      "remaining": "只覆盖固定仿射 2D 图像路径。",
+      "additionalEvidencePaths": []
+    },
+    {
+      "id": "gui.quick2d.angle_circle",
+      "producer": "普通 GUI 快速测量：三点角度、三点拟合圆",
+      "inputDomain": "HImageWidget 真实鼠标点击；2D 图像局部像素",
+      "coordinateRule": "GUI 算法和 overlay 使用图像局部值；provenance oracle 不重写拾取值。",
+      "transforms": "actual-size、zoom=2、中键平移。",
+      "lifecycle": "不覆盖换图/取消。",
+      "outputs": "90° 角度、圆心/半径/周长、射线、64 段圆 overlay 与日志。",
+      "testIds": [
+        "tests/test_mainwindow.cpp::testGuiQuickMeasureAngleAndCircleUseImageLocalCoordinatesAfterViewportTransform"
+      ],
+      "acceptanceRefs": [
+        "Slice 192"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice192-evidence",
+      "status": "covered",
+      "remaining": "不覆盖退化共线圆、物理单位或其它 viewport backend。",
+      "additionalEvidencePaths": []
+    },
+    {
+      "id": "gui.quick2d.rectangle_roi",
+      "producer": "普通 GUI 快速矩形面积 ROI",
+      "inputDomain": "HImageWidget ROI drag；ImageLocalPixel",
+      "coordinateRule": "ROI 四角及 overlay 以 image-local 为准。",
+      "transforms": "zoom/pan 下真实矩形拖拽。",
+      "lifecycle": "同一 GUI session 重入后只建立一个 ROI handler；退出重入不累积连接。",
+      "outputs": "四角/边 overlay、宽高面积标签及日志。",
+      "testIds": [
+        "tests/test_mainwindow.cpp::testGuiQuickMeasureRectangleUsesImageLocalCoordinatesAndSingleRoiConnection"
+      ],
+      "acceptanceRefs": [
+        "Slice 189"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice189-evidence",
+      "status": "covered",
+      "remaining": "不代表任意 ROI 类型或 Agent ROI。",
+      "additionalEvidencePaths": []
+    },
+    {
+      "id": "agent.quick2d.distance_rectangle",
+      "producer": "Agent 快速测量：2D 两点距离与矩形面积",
+      "inputDomain": "Agent begin_quick_measurement 建立绑定 viewport 的输入请求；点击来自真实 GUI。",
+      "coordinateRule": "imageLocal 是权威算法值；有效 provenance 附加 sourceImagePixel，不把 source 映射倒灌为输入。",
+      "transforms": "viewport resize/zoom/pan；矩形另有旋转/非等比 scale provenance。",
+      "lifecycle": "target viewport 隔离、目标内容代次失效及 ROI release 取消由独立测试覆盖。",
+      "outputs": "request status/pickedCoordinates、source id/size、ROI 或距离 overlay。",
+      "testIds": [
+        "tests/test_mainwindow.cpp::testAgentQuickMeasurementCoordinatesSurviveViewportTransformsAndSourceIsolation",
+        "tests/test_mainwindow.cpp::testAgentRectangleRoiUsesFixedScreenCoordinatesAndSourceMapping",
+        "tests/test_mainwindow.cpp::testAgentRectangleRoiMapsRotatedScaledSourceCoordinates"
+      ],
+      "acceptanceRefs": [
+        "Slice 55",
+        "Slice 56",
+        "Slice 178"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice56-evidence",
+      "status": "covered",
+      "remaining": "逐类具体形状见下方 segment/angle/line/circle 行。",
+      "additionalEvidencePaths": [
+        "build-codex-agent/agent-phase6-slice55-evidence",
+        "build-codex-agent/agent-phase6-slice178-evidence"
+      ]
+    },
+    {
+      "id": "agent.quick2d.segment_angle_line_circle",
+      "producer": "Agent 快速测量：2D segment_gap、angle_3_points、point_to_line、circle_3_points",
+      "inputDomain": "Agent 工具建立 2D 请求，真实 GUI 点击供点。",
+      "coordinateRule": "四类操作逐点回报 ImageLocalPixel 与来源映射；算术与 overlay 从实际拾取点独立计算。",
+      "transforms": "zoom/pan 与平移 provenance；旋转/非等比 provenance 对矩形 ROI 单独覆盖。",
+      "lifecycle": "该行不独立证明换图取消；共享请求取消/过期/迟到 release 由 Slice 56/178/194 交叉覆盖。",
+      "outputs": "最近点/间距、角度、有限段垂足、拟合圆心和圆周 overlay。",
+      "testIds": [
+        "tests/test_mainwindow.cpp::testAgentQuickSegmentGapCoordinatesSurviveViewportTransforms",
+        "tests/test_mainwindow.cpp::testAgentQuickAngleCoordinatesSurviveViewportTransforms",
+        "tests/test_mainwindow.cpp::testAgentQuickPointToLineCoordinatesSurviveViewportTransforms",
+        "tests/test_mainwindow.cpp::testAgentQuickCircleCoordinatesSurviveViewportTransforms"
+      ],
+      "acceptanceRefs": [
+        "Slice 135",
+        "Slice 136",
+        "Slice 137",
+        "Slice 138"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice138-evidence",
+      "status": "covered",
+      "remaining": "真实模型/GPU 不在这些 CPU/GUI 输入测试中。",
+      "additionalEvidencePaths": [
+        "build-codex-agent/agent-phase6-slice135-evidence",
+        "build-codex-agent/agent-phase6-slice136-evidence",
+        "build-codex-agent/agent-phase6-slice137-evidence"
+      ]
+    },
+    {
+      "id": "agent.quick3d.world_measurements",
+      "producer": "Agent 快速测量：3D point_to_line、segment_gap、angle_3_points、circle_3_points",
+      "inputDomain": "Viewport3DContent 鼠标拾取通过相机投影反算为 PointCloud World3D 双精度点。",
+      "coordinateRule": "World3D 原始 world 值为权威；不附加 2D 图像 provenance、不声明外部物理原点或单位。",
+      "transforms": "固定点云下 wheel zoom/orbit 相机变换后按次投影 oracle 验证。",
+      "lifecycle": "覆盖跨 viewport、部分取消、换云/迟到 release 的共享 guard。",
+      "outputs": "Agent picks/status、实际几何结果和世界 overlay。",
+      "testIds": [
+        "tests/test_mainwindow.cpp::testAgent3DQuickPointToLinePicksAfterCameraTransformsAndCancelsSafely",
+        "tests/test_mainwindow.cpp::testAgent3DSegmentGapPicksAfterCameraTransforms",
+        "tests/test_mainwindow.cpp::testAgent3DAnglePicksAfterCameraTransforms",
+        "tests/test_mainwindow.cpp::testAgent3DCirclePicksAfterCameraTransforms"
+      ],
+      "acceptanceRefs": [
+        "Slice 179",
+        "Slice 180",
+        "Slice 181",
+        "Slice 182"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice182-evidence",
+      "status": "covered",
+      "remaining": "离屏环境不能证明 GPU 呈现、设备标定或外部物理基准。",
+      "additionalEvidencePaths": [
+        "build-codex-agent/agent-phase6-slice179-evidence",
+        "build-codex-agent/agent-phase6-slice180-evidence",
+        "build-codex-agent/agent-phase6-slice181-evidence"
+      ]
+    },
+    {
+      "id": "gui.measurementinput.2d_pair_set",
+      "producer": "普通 GUI MeasurementInput：2D point_pair 与 point_set",
+      "inputDomain": "RunEngine 等待状态中的真实 HImageWidget 点击。",
+      "coordinateRule": "ImageLocalPixel 参数进入 Project/同 run snapshot/消费者；可用时另行报告来源像素。",
+      "transforms": "固定非零 source origin；CropImage 插件实际输出 image 后再次 zoom/pan 点击。",
+      "lifecycle": "image replace/stop/迟到 release、跨视口和 queued continuation 项目身份由 Slice 54/194 覆盖。",
+      "outputs": "point_pair 的 same-run DistancePP；point_set 的 FitCircle 输入/覆盖层；来源信号独立断言。",
+      "testIds": [
+        "tests/test_mainwindow.cpp::testG6MeasurementInputUsesActualCropImageOutputAfterViewportTransform",
+        "tests/test_mainwindow.cpp::testG6MeasurementInput2DRealMousePicksWithViewportTransformsAndProvenance",
+        "tests/test_mainwindow.cpp::testRunCreatesMeasurementInputForConsumer",
+        "tests/test_mainwindow.cpp::testG6MeasurementInputCancelsImageChangeAndLateRelease"
+      ],
+      "acceptanceRefs": [
+        "Slice 54",
+        "Slice 173",
+        "Slice 193",
+        "Slice 194"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice194-evidence",
+      "status": "covered",
+      "remaining": "point_set 并非所有可能消费者均逐一运行。",
+      "additionalEvidencePaths": [
+        "build-codex-agent/agent-phase6-slice54-evidence",
+        "build-codex-agent/agent-phase6-slice173-evidence",
+        "build-codex-agent/agent-phase6-slice193-evidence"
+      ]
+    },
+    {
+      "id": "gui.measurementinput.2d_point_line_line_pair",
+      "producer": "普通 GUI MeasurementInput：2D point_line 与 line_pair",
+      "inputDomain": "真实 HImageWidget 2D 鼠标点；line endpoints 由同一 image-local 点击维数形成。",
+      "coordinateRule": "point_line 输出 ImageLocalPixel 点/线；line_pair 输出两条局部线；不套来源变换进算法值。",
+      "transforms": "真实 zoom/pan；point_line 用 DistancePL，line_pair 用 LinesDistance 同 run。",
+      "lifecycle": "两项算术测试本身不覆盖换图；共用生命周期由 Slice194 与跨视口拒点测试交叉覆盖。",
+      "outputs": "同 run 结果、垂足/最近点 overlay 和坐标框架。",
+      "testIds": [
+        "tests/test_mainwindow.cpp::testG6MeasurementInput2DPointLineRealMousePicksAndRunsDistancePL",
+        "tests/test_mainwindow.cpp::testG6MeasurementInput2DLinePairRealMousePicksAndRunsLinesDistance",
+        "tests/test_mainwindow.cpp::testG6MeasurementInputRejectsCrossViewportPick"
+      ],
+      "acceptanceRefs": [
+        "Slice 183",
+        "Slice 184",
+        "Slice 194"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice184-evidence",
+      "status": "covered",
+      "remaining": "仅验证清单中这两个内置消费者。",
+      "additionalEvidencePaths": [
+        "build-codex-agent/agent-phase6-slice183-evidence",
+        "build-codex-agent/agent-phase6-slice194-evidence"
+      ]
+    },
+    {
+      "id": "gui.measurementinput.3d_modes",
+      "producer": "普通 GUI MeasurementInput：3D point_pair、point_line、line_pair、point_plane",
+      "inputDomain": "真实 Viewport3DContent picking；point/line 的世界坐标由固定测试点云与相机变换 oracle 验证。",
+      "coordinateRule": "纯 3D 值保持 World3D；point_line/line_pair 的 2D 线端点按既定混合契约使用 z=0，不产生 image provenance。",
+      "transforms": "相机 wheel/orbit，精确双精度信号和视口身份校验。",
+      "lifecycle": "跨视口与点云替换取消；三维点击在 stop 后旧 release 不继续写入。",
+      "outputs": "MeasurementInput Project/同 run snapshot、PointSurfaceDistance point_plane 与世界 overlay。",
+      "testIds": [
+        "tests/test_mainwindow.cpp::testG6MeasurementInput3DRealMousePicksAfterCameraTransformsRunOnce",
+        "tests/test_mainwindow.cpp::testG6MeasurementInput3DPointLineRealMousePicksAfterCameraTransforms",
+        "tests/test_mainwindow.cpp::testG6MeasurementInput3DLinePairRealMousePicksAfterCameraTransforms",
+        "tests/test_mainwindow.cpp::testG6MeasurementInput3DPointPlaneRealMousePicksAfterCameraTransforms",
+        "tests/test_mainwindow.cpp::testG6MeasurementInput3DCrossViewportPickIsIgnored",
+        "tests/test_mainwindow.cpp::testG6MeasurementInput3DPickCancelsAfterPointCloudReplacement"
+      ],
+      "acceptanceRefs": [
+        "Slice 129",
+        "Slice 131",
+        "Slice 132",
+        "Slice 133",
+        "Slice 134",
+        "Slice 185",
+        "Slice 194"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice185-evidence",
+      "status": "covered",
+      "remaining": "World3D 未给定真实设备/工件坐标基准或单位。",
+      "additionalEvidencePaths": [
+        "build-codex-agent/agent-phase6-slice129-evidence",
+        "build-codex-agent/agent-phase6-slice131-evidence",
+        "build-codex-agent/agent-phase6-slice132-evidence",
+        "build-codex-agent/agent-phase6-slice133-evidence",
+        "build-codex-agent/agent-phase6-slice134-evidence",
+        "build-codex-agent/agent-phase6-slice194-evidence"
+      ]
+    },
+    {
+      "id": "producer.image.grab_crop_calibration",
+      "producer": "图像来源链：GrabImage 根图、CropImage 派生图、NPointCalibration 可逆仿射/透视变换",
+      "inputDomain": "ImageData 带 source ID/size 与当前局部像素到 source 像素 3x3 矩阵。",
+      "coordinateRule": "根图新来源 ID；crop/可逆校准按顺序组合映射；算法值留在当前 input 网格。",
+      "transforms": "连续多裁剪、非零 crop origin、仿射与透视组合；horizon/几何失效 fail closed。",
+      "lifecycle": "序列化像素不带运行时来源；打开/重建时不凭路径猜测 parent provenance。",
+      "outputs": "MeasurementInput、Line2D/Circle2D/Region2D/DetectionList 等按类型附加安全 source value。",
+      "testIds": [
+        "tests/test_batch4.cpp::testCropCoordinateProvenanceComposesAndSerializesOnlyPixels",
+        "tests/test_batch4.cpp::testCalibrationCoordinateProvenanceComposesAffineAndPerspectiveMappings",
+        "tests/test_batch4.cpp::testFlowGrabToCropToMeasureCircle"
+      ],
+      "acceptanceRefs": [
+        "Slice 55",
+        "Slice 58",
+        "Slice 74",
+        "Slice 82"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice82-evidence",
+      "status": "covered",
+      "remaining": "未列举的外部插件自定义图像变换不能继承来源映射。",
+      "additionalEvidencePaths": [
+        "build-codex-agent/agent-phase6-slice55-evidence",
+        "build-codex-agent/agent-phase6-slice58-evidence",
+        "build-codex-agent/agent-phase6-slice74-evidence"
+      ]
+    },
+    {
+      "id": "producer.image.provenance_edges",
+      "producer": "当前69项内置插件的图像网格变换与 provenance 边界",
+      "inputDomain": "图像网格内容及其运行时 provenance。",
+      "coordinateRule": "JigsawPuzzle 按原序裁切且保持网格时传递来源；crop/calibration 组合局部到来源映射；缺来源或点映射不可用时不伪造 source 坐标；网格保持的内置滤波透传 provenance。",
+      "transforms": "源码审计确认内置几何变换仅含 CropImage crop 与 NPointCalibration affine/perspective warp；另含按原序 Jigsaw 拼接及网格保持滤波；未发现其他像素重排/非可逆 warp producer。",
+      "lifecycle": "这些用例核对运行期映射与局部像素分离；序列化后运行时来源失效。",
+      "outputs": "sourceCoordinateAvailable=false/字段省略，局部算法数据不被改写。",
+      "testIds": [
+        "tests/test_batch4.cpp::testJigsawPuzzlePreservesKnownPixelLineage",
+        "tests/test_batch4.cpp::testJigsawPuzzleDoesNotInventLineageForUntrackedOrEmptyOutput",
+        "tests/test_batch4.cpp::testCalibrationCoordinateProvenanceComposesAffineAndPerspectiveMappings",
+        "tests/test_batch4.cpp::testProjectiveCoordinateMappingRejectsHorizonAndKeepsPointSetAlignment",
+        "tests/test_batch4.cpp::testCalibrationCompositionOverflowInvalidatesOutputProvenance",
+        "tests/test_imageplugins.cpp::testPerProcessingBuiltinsPreserveCoordinateProvenance"
+      ],
+      "acceptanceRefs": [
+        "Slice 55",
+        "Slice 60",
+        "Slice 61",
+        "Slice 197",
+        "Slice 199"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice61-evidence",
+      "status": "covered",
+      "remaining": "源码审计限定于仓库中69项plugin source/metadata；动态安装的第三方插件不在本阶段0分母内。",
+      "additionalEvidencePaths": [
+        "build-codex-agent/agent-phase6-slice55-evidence",
+        "build-codex-agent/agent-phase6-slice60-evidence",
+        "build-codex-agent/agent-phase6-slice197-evidence",
+        "build-codex-agent/agent-phase6-slice199-evidence"
+      ]
+    },
+    {
+      "id": "producer.image.algorithm_coordinate_outputs",
+      "producer": "内置检测/几何/SAM 算法向 Agent 输出的 image-local 与 source coordinate 结果",
+      "inputDomain": "GrabImage→CropImage 非零来源映射后，由当前输入图像网格上的内置算法生成检测框、圆、线、矩形或 Region2D。",
+      "coordinateRule": "算法局部几何值保持在当前输入图像坐标；只有真实同-run provenance 可映射的白名单结构化字段附加来源坐标，scalar/局部几何不被改写。",
+      "transforms": "真实非零 crop 平移；MeasureRect 另覆盖旋转/非等比局部几何，SAM Region 覆盖非零裁剪与同 run consumer。",
+      "lifecycle": "覆盖算法输出经 Agent get_module_output 同 run 查询；SAM Region 接入 RegionStats 下游。",
+      "outputs": "Matching DetectionList、FindCircle Circle2D、Blob DetectionList、ColorRecognition Point2D、JiErHan Region2D、MeasureCircle/Line/Rect 与 SamPredict Region2D 的局部值及可验证来源映射。",
+      "testIds": [
+        "tests/test_imageplugins.cpp::testMatchingFindsTemplateDeterministic",
+        "tests/test_acceptance_flows.cpp::testAgentFindCircleMapsCircleThroughCrop",
+        "tests/test_acceptance_flows.cpp::testAgentBlobLargestDetectionMapsThroughCropOrigin",
+        "tests/test_acceptance_flows.cpp::testAgentColorRecognitionCenterMapsThroughCropOrigin",
+        "tests/test_acceptance_flows.cpp::testAgentJiErHanDefectRegionMapsThroughCropOrigin",
+        "tests/test_acceptance_flows.cpp::testAgentMeasureCircleMapsCenterThroughCropOrigin",
+        "tests/test_acceptance_flows.cpp::testAgentMeasureLineMapsEndpointsThroughCropOrigin",
+        "tests/test_acceptance_flows.cpp::testAgentMeasureRectMapsRotatedVerticesAndDoesNotLeakFailedRunOutput",
+        "tests/test_sam_region_flow.cpp::testAgentSamPredictRegionCoordinatesAfterNonzeroCrop",
+        "tests/test_acceptance_flows.cpp::testAgentMatchingScalarsDeclareLocalPixelUnits"
+      ],
+      "acceptanceRefs": [
+        "Slice 71",
+        "Slice 72",
+        "Slice 73",
+        "Slice 74",
+        "Slice 75",
+        "Slice 76",
+        "Slice 82",
+        "Slice 83",
+        "Slice 84",
+        "Slice 94"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice71-evidence",
+      "status": "covered",
+      "remaining": "仅覆盖矩阵列明的内置结果生产者；未来新增插件或输出结构须随产品变更补充坐标契约与证据。",
+      "additionalEvidencePaths": [
+        "build-codex-agent/agent-phase6-slice72-evidence",
+        "build-codex-agent/agent-phase6-slice73-evidence",
+        "build-codex-agent/agent-phase6-slice74-evidence",
+        "build-codex-agent/agent-phase6-slice75-evidence",
+        "build-codex-agent/agent-phase6-slice76-evidence",
+        "build-codex-agent/agent-phase6-slice82-evidence",
+        "build-codex-agent/agent-phase6-slice83-evidence",
+        "build-codex-agent/agent-phase6-slice84-evidence",
+        "build-codex-agent/agent-phase6-slice94-evidence"
+      ]
+    },
+    {
+      "id": "roi.agent.rectangle",
+      "producer": "Agent 快速矩形 ROI",
+      "inputDomain": "2D ROI drag 返回 image-local 四角及绑定 viewport/source snapshot。",
+      "coordinateRule": "旋转/非等比仿射下 mapRectToSourceBounds 仅作 bbox 映射；局部 ROI 是权威输入。",
+      "transforms": "zoom/pan 与旋转/非等比 scale provenance。",
+      "lifecycle": "请求绑定 viewport；取消/迟到 release 和内容失效由共享请求测试覆盖。",
+      "outputs": "status 四角、source bbox 和 ROI overlay。",
+      "testIds": [
+        "tests/test_mainwindow.cpp::testAgentRectangleRoiUsesFixedScreenCoordinatesAndSourceMapping",
+        "tests/test_mainwindow.cpp::testAgentRectangleRoiMapsRotatedScaledSourceCoordinates",
+        "tests/test_mainwindow.cpp::testAgentQuickMeasurementCancelDropsLateClickAndRoiRelease"
+      ],
+      "acceptanceRefs": [
+        "Slice 56",
+        "Slice 178"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice178-evidence",
+      "status": "covered",
+      "remaining": "只接受声明的轴对齐输入 ROI；任意旋转输出顶点语义需用 polygon 路径。",
+      "additionalEvidencePaths": [
+        "build-codex-agent/agent-phase6-slice56-evidence"
+      ]
+    },
+    {
+      "id": "sam.gui.prompt_session_roundtrip",
+      "producer": "SAM GUI prompt → service-generated annotation → session save/open → LabelMe export",
+      "inputDomain": "真实 overlay 局部点击；SAM response 生成局部 polygon/bbox/mask preview。",
+      "coordinateRule": "提示/对象在当前标注图局部坐标；有效 source provenance 只用于明确 lineage/来源 bbox，不改 polygon 算法值。",
+      "transforms": "GUI zoom/pan/crop provenance；新测试以 fake response 固定坐标并贯通实际 overlay 请求。",
+      "lifecycle": "本行验证会话 save/open 的摘要和 provenance 往返；不据此推断在途请求取消或迟到响应行为。",
+      "outputs": "overlay、确认对象、DeepLux 会话持久化、LabelMe polygon 文件。LabelMe schema 本身不保存 DeepLux provenance。",
+      "testIds": [
+        "tests/test_samannotatordialog.cpp::mainViewOverlayCoordinatesMapThroughCropProvenance",
+        "tests/test_samannotatordialog.cpp::concaveAnnotationPersistsCropLocalCoordinatesAndSourceBbox",
+        "tests/test_samannotatordialog.cpp::guiPromptPredictionSessionRoundTripAndLabelMeExportPreserveLineage"
+      ],
+      "acceptanceRefs": [
+        "Slice 164",
+        "Slice 187",
+        "Slice 195"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice195-evidence",
+      "status": "covered",
+      "remaining": "固定假服务不验证真实模型质量；此行不覆盖在途预测取消/迟到响应、COCO/YOLO GUI 全链、OS 文件对话框以及 LabelMe 对来源矩阵的表达。",
+      "additionalEvidencePaths": [
+        "build-codex-agent/agent-phase6-slice164-evidence",
+        "build-codex-agent/agent-phase6-slice187-evidence"
+      ]
+    },
+    {
+      "id": "sam.session.export_formats",
+      "producer": "已保存 SAM 会话 → LabelMe/YOLO-Seg/COCO 生产 exporter",
+      "inputDomain": "固定双对象会话夹具；polygon 与图像尺寸作为 exporter 输入。",
+      "coordinateRule": "LabelMe 输出绝对像素顶点；YOLO-Seg 按宽高归一化顶点；COCO 输出逐对象 segmentation/bbox/area；不声称三种格式携带 DeepLux provenance。",
+      "transforms": "逐格式解析生成文件并与固定对象标签、坐标、尺寸及类别语义比较。",
+      "lifecycle": "不涉及 GUI prompt/会话编辑；导出目标失败保全由同一测试的既有断言覆盖。",
+      "outputs": "每格式对象数量、标签/类别、所有顶点或 segmentation，以及 COCO bbox/area。",
+      "testIds": [
+        "tests/test_agent_sam_tools.cpp::exportAnnotationSessionMatchesAllExistingFormatsAndRejectsStaleTargets"
+      ],
+      "acceptanceRefs": [
+        "Slice 8",
+        "Slice 53"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice53-evidence",
+      "status": "covered",
+      "remaining": "固定双对象 fixture 不代表所有 annotation shape/类别组合；真实 GUI prompt 闭环见 sam.gui.prompt_session_roundtrip。",
+      "additionalEvidencePaths": [
+        "build-codex-agent/agent-phase6-slice8-evidence"
+      ]
+    },
+    {
+      "id": "pointcloud.load_scaled_ply",
+      "producer": "LoadPointCloud PLY loader 与逐轴 scaleX/scaleY/scaleZ",
+      "inputDomain": "真实四点 ASCII PLY → PointCloudData 数值；RunEngine 同 run 快照与 Agent preview。",
+      "coordinateRule": "三轴缩放后的数值为点云坐标；无单位/外部基准声明，不附二维 image provenance。",
+      "transforms": "固定非等比例 scaleX=2、scaleY=3、scaleZ=4，并按独立四点 oracle 核对。",
+      "lifecycle": "流程成功运行且同 runId 读取；不覆盖运行中替换文件。",
+      "outputs": "LoadPointCloud PointCloudData 快照及 Agent point_cloud preview 四点逐项一致。",
+      "testIds": [
+        "tests/test_acceptance_flows.cpp::testAgentFreeformSurfaceResultsRetainUnknownUnits"
+      ],
+      "acceptanceRefs": [
+        "Slice 122",
+        "Slice 172"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice172-evidence",
+      "status": "covered",
+      "remaining": "具体逐轴缩放证据限 PLY；TIFF 高度图 scale 及外部物理坐标基准不由本用例证明。",
+      "additionalEvidencePaths": [
+        "build-codex-agent/agent-phase6-slice122-evidence"
+      ]
+    },
+    {
+      "id": "pointcloud.gui_agent_world",
+      "producer": "GUI/Agent 3D picks 与普通 GUI 3D MeasurementInput",
+      "inputDomain": "PointCloudData 双精度点及 World3D 拾取；显示相机只影响投影。",
+      "coordinateRule": "Agent/GUI 拾取回原始点云坐标；无 source image mapping；数值单位/外部基准不臆测。",
+      "transforms": "wheel zoom/orbit 和独立 CPU 投影 oracle。",
+      "lifecycle": "Agent 点云拾取的相机变换与取消/迟到事件，及 GUI 跨 viewport 与点云替换取消分别有测试；不把同一生命周期覆盖外推到所有 3D 入口。",
+      "outputs": "World3D MeasurementInput/Agent status、3D 几何消费者和 overlay。",
+      "testIds": [
+        "tests/test_mainwindow.cpp::testAgent3DQuickMeasurementPicksWorldPointsAfterCameraTransforms",
+        "tests/test_mainwindow.cpp::testG6MeasurementInput3DPointPlaneRealMousePicksAfterCameraTransforms",
+        "tests/test_mainwindow.cpp::testG6MeasurementInput3DCrossViewportPickIsIgnored",
+        "tests/test_mainwindow.cpp::testG6MeasurementInput3DPickCancelsAfterPointCloudReplacement",
+        "tests/test_mainwindow.cpp::testAgent3DQuickMeasurementUsesWorldPicksAndDropsStaleReleases",
+        "tests/test_mainwindow.cpp::testAgent3DQuickPointToLinePicksAfterCameraTransformsAndCancelsSafely"
+      ],
+      "acceptanceRefs": [
+        "Slice 57",
+        "Slice 70",
+        "Slice 129",
+        "Slice 179",
+        "Slice 185",
+        "Slice 194"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice185-evidence",
+      "status": "covered",
+      "remaining": "离屏 CPU oracle 不等同 GPU；不定义现场机械/相机标定和物理单位。",
+      "additionalEvidencePaths": [
+        "build-codex-agent/agent-phase6-slice57-evidence",
+        "build-codex-agent/agent-phase6-slice70-evidence",
+        "build-codex-agent/agent-phase6-slice129-evidence",
+        "build-codex-agent/agent-phase6-slice179-evidence",
+        "build-codex-agent/agent-phase6-slice194-evidence"
+      ]
+    },
+    {
+      "id": "crosscut.viewport_change_cancel",
+      "producer": "所有绑定 GUI/Agent 采点请求的 viewport identity/content-generation 生命周期",
+      "inputDomain": "request 创建时冻结 viewport pointer/id 与内容代次；2D/3D 输入各走对应拾取入口。",
+      "coordinateRule": "错误 viewport 或过期内容的事件不得加入当前请求。",
+      "transforms": "A→B 图像替换、点云替换和多视口同尺寸不同来源。",
+      "lifecycle": "停止、跨视口、删除 viewport、旧 press/late release 均显式验证；新请求可成功。",
+      "outputs": "Project 参数、request state、运行次数、source signal、overlay 不被旧事件污染。",
+      "testIds": [
+        "tests/test_mainwindow.cpp::testG6MeasurementInputRejectsCrossViewportPick",
+        "tests/test_mainwindow.cpp::testG6MeasurementInputCancelsImageChangeAndLateRelease",
+        "tests/test_mainwindow.cpp::testAgentQuickMeasurementCancelDropsLateClickAndRoiRelease",
+        "tests/test_mainwindow.cpp::testG6MeasurementInputQueuedContinuationRejectsDestroyedViewport",
+        "tests/test_mainwindow.cpp::testG6MeasurementInput3DCrossViewportPickIsIgnored"
+      ],
+      "acceptanceRefs": [
+        "Slice 54",
+        "Slice 56",
+        "Slice 129",
+        "Slice 131",
+        "Slice 194"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice194-evidence",
+      "status": "covered",
+      "remaining": "窗口/操作系统真实桌面事件由阶段 8 平台验收，不以 offscreen 证据替代。",
+      "additionalEvidencePaths": [
+        "build-codex-agent/agent-phase6-slice54-evidence",
+        "build-codex-agent/agent-phase6-slice56-evidence",
+        "build-codex-agent/agent-phase6-slice129-evidence",
+        "build-codex-agent/agent-phase6-slice131-evidence"
+      ]
+    },
+    {
+      "id": "legacy.markerless.3d_measurement",
+      "producer": "当前支持版本中无 coordinate_frame marker 的 point_line/line_pair 工程数据",
+      "inputDomain": "Project::load 接受的 3.0、2.0 与缺省 version 工程输入；历史 JSON 数值数组不能可靠区分二维局部线和三维 world 点线。",
+      "coordinateRule": "未知语义保持 fail-closed/Unspecified；不根据数值长度或视图猜测来源框架。",
+      "transforms": "v3 直接往返；v2 与缺省 version 经生产 ProjectMigrator 迁移到 3.0；未知显式版本被 Project::load 拒绝。",
+      "lifecycle": "不适用。",
+      "outputs": "通用读取值可保留，但不提供伪造 source mapping 或单位。",
+      "testIds": [
+        "tests/test_measurementinput.cpp::pointLineCoordinateFrameControlsProvenance",
+        "tests/test_measurementinput.cpp::linePairCoordinateFrameControlsProvenance",
+        "tests/test_mainwindow.cpp::testG6MeasurementInput2DPointLineRealMousePicksAndRunsDistancePL",
+        "tests/test_mainwindow.cpp::testG6MeasurementInput3DPointLineRealMousePicksAfterCameraTransforms",
+        "tests/test_acceptance_flows.cpp::testAgentDistancePLFootPointFailsClosedForMissingAndHorizonSources",
+        "tests/test_acceptance_flows.cpp::testAgentMeasurementInputLineOutputsRespectCoordinateFrame",
+        "tests/test_acceptance_flows.cpp::testLegacyMarkerlessLineMeasurementsStayUnspecifiedAfterProjectRoundTrip",
+        "tests/test_acceptance_flows.cpp::testLegacyMarkerlessLineMeasurementsRemainUnspecifiedAfterMigration"
+      ],
+      "acceptanceRefs": [
+        "Slice 133",
+        "Slice 134",
+        "Slice 177",
+        "Slice 197",
+        "Slice 198"
+      ],
+      "evidencePath": "build-codex-agent/agent-phase6-slice177-evidence",
+      "status": "covered",
+      "remaining": "显式 1.0 和未知版本不是当前支持的输入；未来工程版本或不同旧 payload 形状需单独声明兼容范围后审计。",
+      "additionalEvidencePaths": [
+        "build-codex-agent/agent-phase6-slice133-evidence",
+        "build-codex-agent/agent-phase6-slice134-evidence",
+        "build-codex-agent/agent-phase6-slice197-evidence",
+        "build-codex-agent/agent-phase6-slice198-evidence"
+      ]
+    }
+  ]
+}

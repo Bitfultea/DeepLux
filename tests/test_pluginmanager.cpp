@@ -1,16 +1,56 @@
+#include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLibrary>
+#include <QSemaphore>
+#include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QtTest/QtTest>
+#include <atomic>
 #include <core/base/ModuleBase.h>
+#include <core/device/CameraManager.h>
 #include <core/interface/IModule.h>
 #include <core/manager/PluginManager.h>
 
 using namespace DeepLux;
+
+class BlockingDestructionChild : public QObject {
+public:
+    BlockingDestructionChild(QSemaphore* entered, QSemaphore* continueDestruction, QObject* parent)
+        : QObject(parent), m_entered(entered), m_continueDestruction(continueDestruction) {}
+
+    ~BlockingDestructionChild() override {
+        m_entered->release();
+        m_continueDestruction->acquire();
+    }
+
+private:
+    QSemaphore* m_entered;
+    QSemaphore* m_continueDestruction;
+};
+
+class UnmanagedModule final : public ModuleBase {
+public:
+    UnmanagedModule() {
+        m_name = QStringLiteral("Unmanaged test module");
+    }
+
+protected:
+    IModule* cloneImpl() const override {
+        return new UnmanagedModule();
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+    bool process(const ImageData&, ImageData&) override {
+        return true;
+    }
+};
 
 class TestPluginManager : public QObject {
     Q_OBJECT
@@ -25,8 +65,15 @@ private slots:
     void testAvailableModules();
     void testPluginInfo();
     void testCreateModuleClone();
+    void testSafeModulePluginUnload();
+    void testConcurrentModuleCreationAndUnload();
+    void testConcurrentModuleDestructionAndUnload();
+    void testLegacyDirectDeletePinsPlugin();
     void testExecutionMetadataValidation();
     void testBlockingMetadataParsedAndInjected();
+    void testAvailabilityItemUsesMetadataSnapshotAndLoadedPriority();
+    void testAvailabilityDetectsMacOSPluginBinary();
+    void testCameraAvailabilityPlatformCompatibility();
     void testExecutionAffinityDefaultsToGui();
     void testExecutionAffinityParsesWorker();
     void testExecutionAffinityUnknownFallsBackToGui();
@@ -37,6 +84,10 @@ private slots:
     void testRejectsLegacyPluginWithoutAbiExport();
     void testRejectsAbiExportsOwnedByDependency();
     void testValidAbiPreflightLoadsNativeInitializerOnce();
+    void testConcurrentLoadsAreSerializedOnManagerThread();
+    void testUnloadRejectsForeignThread();
+    void testWorkerLoadHonorsTimeoutWhenManagerThreadIsNotPumping();
+    void testWorkerLoadReportsResultAfterStartedLoadExceedsDispatchTimeout();
 
 private:
 };
@@ -200,8 +251,242 @@ void TestPluginManager::testCreateModuleClone() {
     QCOMPARE(a->currentParams().value("instanceMarker").toString(), QString("a"));
     QCOMPARE(b->currentParams().value("instanceMarker").toString(), QString("b"));
 
-    delete a;
-    delete b;
+    QVERIFY(mgr.destroyModule(a));
+    QVERIFY(mgr.destroyModule(b));
+}
+
+void TestPluginManager::testSafeModulePluginUnload() {
+    PluginManager& manager = PluginManager::instance();
+    const QStringList modules = manager.availableModules();
+    QVERIFY(!modules.isEmpty());
+
+    QString error;
+    QVERIFY(!manager.tryUnloadPlugin(QString(), &error));
+    QCOMPARE(error, QStringLiteral("PLUGIN_NOT_FOUND"));
+    QVERIFY(!manager.tryUnloadPlugin(QStringLiteral("NoSuchPlugin"), &error));
+    QCOMPARE(error, QStringLiteral("PLUGIN_NOT_FOUND"));
+    QCOMPARE(PluginManager::unloadBlockReason(true, 0), QStringLiteral("CAMERA_PLUGIN_LIFECYCLE_UNSUPPORTED"));
+    QCOMPARE(PluginManager::unloadBlockReason(false, 1), QStringLiteral("PLUGIN_IN_USE"));
+    QCOMPARE(PluginManager::unloadBlockReason(false, 0, false), QStringLiteral("PLUGIN_LIFECYCLE_UNTRACKED"));
+    QVERIFY(PluginManager::unloadBlockReason(false, 0).isEmpty());
+
+    const QString pluginName = modules.first();
+    if (!manager.isPluginLoaded(pluginName))
+        QVERIFY(manager.loadPlugin(pluginName, 5000));
+
+    IModule* first = manager.createModule(pluginName);
+    IModule* second = manager.createModule(pluginName);
+    QVERIFY(first);
+    QVERIFY(second);
+
+    QSignalSpy unloadedSpy(&manager, &PluginManager::pluginUnloaded);
+    QVERIFY(!manager.tryUnloadPlugin(pluginName, &error));
+    QCOMPARE(error, QStringLiteral("PLUGIN_IN_USE"));
+    QVERIFY(manager.isPluginLoaded(pluginName));
+    QCOMPARE(unloadedSpy.count(), 0);
+    QVERIFY(!first->name().isEmpty());
+    QVERIFY(!second->name().isEmpty());
+
+    QVERIFY(manager.destroyModule(first));
+    QCoreApplication::processEvents();
+    QVERIFY(!manager.tryUnloadPlugin(pluginName, &error));
+    QCOMPARE(error, QStringLiteral("PLUGIN_IN_USE"));
+    QVERIFY(manager.isPluginLoaded(pluginName));
+    QVERIFY(manager.destroyModule(second));
+    QCoreApplication::processEvents();
+
+    QVERIFY(manager.tryUnloadPlugin(pluginName, &error));
+    QVERIFY(error.isEmpty());
+    QVERIFY(!manager.isPluginLoaded(pluginName));
+    QCOMPARE(unloadedSpy.count(), 1);
+    QVERIFY(!manager.tryUnloadPlugin(pluginName, &error));
+    QCOMPARE(error, QStringLiteral("PLUGIN_NOT_LOADED"));
+    QCOMPARE(unloadedSpy.count(), 1);
+    QVERIFY(manager.loadPlugin(pluginName, 5000));
+    QVERIFY(manager.isPluginLoaded(pluginName));
+    IModule* reloaded = manager.createModule(pluginName);
+    QVERIFY(reloaded);
+    QVERIFY(manager.destroyModule(reloaded));
+    QCoreApplication::processEvents();
+
+    QVERIFY2(modules.size() >= 2, "Safe unloadAll test requires two scanned module plugins");
+    {
+        const QString idlePluginName = modules.at(1);
+        if (!manager.isPluginLoaded(idlePluginName))
+            QVERIFY(manager.loadPlugin(idlePluginName, 5000));
+        IModule* held = manager.createModule(pluginName);
+        QVERIFY(held);
+
+        manager.unloadAllPlugins();
+        QVERIFY(manager.isPluginLoaded(pluginName));
+        QVERIFY(!manager.isPluginLoaded(idlePluginName));
+
+        QVERIFY(manager.destroyModule(held));
+        QVERIFY(manager.tryUnloadPlugin(pluginName, &error));
+    }
+
+    const QStringList cameras = manager.availableCameras();
+    if (!cameras.isEmpty()) {
+        const QString cameraName = cameras.first();
+        if (!manager.isPluginLoaded(cameraName))
+            QVERIFY(manager.loadPlugin(cameraName, 5000));
+
+        const QList<ICameraPlugin*> registeredBefore = CameraManager::instance().plugins();
+        QSignalSpy unloadedSpy(&manager, &PluginManager::pluginUnloaded);
+        QVERIFY(!manager.tryUnloadPlugin(cameraName, &error));
+        QCOMPARE(error, QStringLiteral("CAMERA_PLUGIN_LIFECYCLE_UNSUPPORTED"));
+        manager.unloadPlugin(cameraName);
+        manager.unloadAllPlugins();
+        QVERIFY(manager.isPluginLoaded(cameraName));
+        QCOMPARE(CameraManager::instance().plugins(), registeredBefore);
+        QCOMPARE(unloadedSpy.count(), 0);
+    } else {
+        // Some reduced builds omit camera plugins; the unconditional reason-code assertion above still locks
+        // the fail-closed policy, while Linux/Windows plugin builds exercise manager integration here.
+    }
+}
+
+void TestPluginManager::testConcurrentModuleCreationAndUnload() {
+    PluginManager& manager = PluginManager::instance();
+    const QStringList modules = manager.availableModules();
+    QVERIFY(!modules.isEmpty());
+    const QString pluginName = modules.first();
+
+    for (int iteration = 0; iteration < 20; ++iteration) {
+        if (!manager.isPluginLoaded(pluginName))
+            QVERIFY(manager.loadPlugin(pluginName, 5000));
+
+        QSemaphore start;
+        QSemaphore created;
+        QSemaphore releaseDestroy;
+        bool returnedInstance = false;
+        QThread* creator = QThread::create([&]() {
+            start.acquire();
+            IModule* module = manager.createModule(pluginName);
+            returnedInstance = module != nullptr;
+            created.release();
+            releaseDestroy.acquire();
+            if (module)
+                manager.destroyModule(module);
+        });
+        QVERIFY(creator);
+        creator->start();
+        start.release();
+
+        QString error;
+        const bool unloaded = manager.tryUnloadPlugin(pluginName, &error);
+        created.acquire();
+        if (returnedInstance) {
+            QVERIFY(!unloaded);
+            QCOMPARE(error, QStringLiteral("PLUGIN_IN_USE"));
+            QVERIFY(manager.isPluginLoaded(pluginName));
+        } else {
+            QVERIFY(unloaded);
+            QVERIFY(!manager.isPluginLoaded(pluginName));
+        }
+        releaseDestroy.release();
+        QVERIFY(creator->wait(5000));
+        delete creator;
+        QCoreApplication::processEvents();
+    }
+
+    if (!manager.isPluginLoaded(modules.first()))
+        QVERIFY(manager.loadPlugin(modules.first(), 5000));
+}
+
+void TestPluginManager::testConcurrentModuleDestructionAndUnload() {
+    PluginManager& manager = PluginManager::instance();
+    const QStringList modules = manager.availableModules();
+    QVERIFY(!modules.isEmpty());
+    const QString pluginName = modules.first();
+    if (!manager.isPluginLoaded(pluginName))
+        QVERIFY(manager.loadPlugin(pluginName, 5000));
+
+    QSemaphore created;
+    QSemaphore beginDestruction;
+    QSemaphore childDestructionEntered;
+    QSemaphore continueChildDestruction;
+    QSemaphore moduleDeletionComplete;
+    bool createdModule = false;
+    QThread* destroyer = QThread::create([&]() {
+        IModule* module = manager.createModule(pluginName);
+        if (!module) {
+            created.release();
+            return;
+        }
+        createdModule = true;
+        new BlockingDestructionChild(&childDestructionEntered, &continueChildDestruction, module);
+        created.release();
+        beginDestruction.acquire();
+        manager.destroyModule(module);
+        moduleDeletionComplete.release();
+    });
+    QVERIFY(destroyer);
+    destroyer->start();
+    created.acquire();
+
+    if (!createdModule) {
+        QVERIFY(destroyer->wait(5000));
+        delete destroyer;
+        QFAIL("A loaded module plugin must create an instance before destruction race testing");
+    }
+    QVERIFY(manager.isPluginLoaded(pluginName));
+    beginDestruction.release();
+    const bool enteredChildDestructor = childDestructionEntered.tryAcquire(1, 5000);
+    if (!enteredChildDestructor) {
+        continueChildDestruction.release();
+        moduleDeletionComplete.tryAcquire(1, 5000);
+        QVERIFY(destroyer->wait(5000));
+        delete destroyer;
+        QFAIL("Parent deletion must invoke the test child destructor");
+    }
+
+    QString error;
+    const bool unloaded = manager.tryUnloadPlugin(pluginName, &error);
+    continueChildDestruction.release();
+    QVERIFY(moduleDeletionComplete.tryAcquire(1, 5000));
+    QVERIFY(destroyer->wait(5000));
+    delete destroyer;
+
+    QVERIFY(!unloaded);
+    QCOMPARE(error, QStringLiteral("PLUGIN_IN_USE"));
+    QVERIFY(manager.isPluginLoaded(pluginName));
+    bool finalUnload = false;
+    QElapsedTimer unloadWait;
+    unloadWait.start();
+    while (!finalUnload && unloadWait.elapsed() < 5000) {
+        QCoreApplication::processEvents();
+        finalUnload = manager.tryUnloadPlugin(pluginName, &error);
+        if (!finalUnload)
+            QTest::qWait(1);
+    }
+    QVERIFY(finalUnload);
+    QVERIFY(!manager.isPluginLoaded(pluginName));
+}
+
+void TestPluginManager::testLegacyDirectDeletePinsPlugin() {
+    PluginManager& manager = PluginManager::instance();
+    const QStringList modules = manager.availableModules();
+    QVERIFY(!modules.isEmpty());
+    const QString pluginName = modules.last();
+    if (!manager.isPluginLoaded(pluginName))
+        QVERIFY(manager.loadPlugin(pluginName, 5000));
+
+    IModule* legacyModule = manager.createModule(pluginName);
+    QVERIFY(legacyModule);
+    delete legacyModule;
+
+    QString error;
+    QVERIFY(!manager.tryUnloadPlugin(pluginName, &error));
+    QCOMPARE(error, QStringLiteral("PLUGIN_LIFECYCLE_UNTRACKED"));
+    QVERIFY(manager.isPluginLoaded(pluginName));
+    QVERIFY(!manager.destroyModule(nullptr));
+
+    auto* unmanaged = new UnmanagedModule();
+    QVERIFY(unmanaged->initialize());
+    QVERIFY(!manager.destroyModule(unmanaged));
+    QVERIFY(unmanaged->isInitialized());
+    delete unmanaged;
 }
 
 void TestPluginManager::testExecutionMetadataValidation() {
@@ -238,6 +523,7 @@ void TestPluginManager::testExecutionMetadataValidation() {
 
     const PluginInfo valid = manager.pluginInfo(QStringLiteral("MetadataValid"));
     QVERIFY(valid.threadSafe);
+    QVERIFY(valid.portsDeclared);
     QCOMPARE(valid.inputPorts.size(), 1);
     QCOMPARE(valid.inputPorts.first().joinPolicy, ControlJoinPolicy::All);
 
@@ -276,13 +562,144 @@ void TestPluginManager::testBlockingMetadataParsedAndInjected() {
     manager.scanPlugins();
 
     const PluginInfo blockingInfo = manager.pluginInfo(QStringLiteral("BlockingMod"));
+    QVERIFY(blockingInfo.portsDeclared); // 合法空端口数组与缺失端口声明必须可区分
     QVERIFY(blockingInfo.threadSafe);
     QVERIFY2(blockingInfo.blocking, "blocking=true must be parsed from metadata");
 
     const PluginInfo nonBlockingInfo = manager.pluginInfo(QStringLiteral("NonBlockingMod"));
+    QVERIFY(nonBlockingInfo.portsDeclared);
     QVERIFY(!nonBlockingInfo.blocking);
     // createModule 注入 isBlocking() 的验证见 test_pluginparametercontracts
     // （该测试通过 installAllPlugins 可靠加载真实插件）
+}
+
+void TestPluginManager::testAvailabilityDetectsMacOSPluginBinary() {
+#ifdef Q_OS_DARWIN
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QFile library(root.filePath(QStringLiteral("libFixture.dylib")));
+    QVERIFY(library.open(QIODevice::WriteOnly));
+    library.close();
+
+    PluginInfo info;
+    info.name = QStringLiteral("Fixture");
+    info.path = root.filePath(QStringLiteral("metadata.json"));
+    const QJsonObject item = PluginManager::availabilityItem(info, false);
+    QCOMPARE(item.value(QStringLiteral("availability")).toString(), QStringLiteral("loadable"));
+    QVERIFY(!item.value(QStringLiteral("reasons")).toArray().contains(QStringLiteral("PLUGIN_BINARY_MISSING")));
+#else
+    QSKIP("macOS binary discovery is only meaningful on macOS");
+#endif
+}
+
+void TestPluginManager::testAvailabilityItemUsesMetadataSnapshotAndLoadedPriority() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    const auto writeMetadata = [&root](const QString& folder, const QByteArray& requirementFields) {
+        const QString pluginDir = root.filePath(folder);
+        if (!QDir().mkpath(pluginDir))
+            return QString();
+        const QString metadataPath = QDir(pluginDir).filePath(QStringLiteral("metadata.json"));
+        QFile file(metadataPath);
+        if (!file.open(QIODevice::WriteOnly))
+            return QString();
+        const QByteArray json = QByteArray(R"({"id":"com.deeplux.test.availability","name":"AvailabilityFixture",)") +
+                                requirementFields +
+                                QByteArray(R"(,"category":"test","version":"1.0","ports":{"inputs":[],"outputs":[]}})");
+        if (file.write(json) != json.size() || !file.flush())
+            return QString();
+        return metadataPath;
+    };
+
+    const QString metadataPath = writeMetadata(
+        QStringLiteral("valid"), QByteArray(R"("platform":"linux","abi":{"major":2},"sdk":"sdk-x","dependencies":{})"));
+    QVERIFY(!metadataPath.isEmpty());
+    PluginInfo info;
+    QVERIFY(PluginManager::instance().loadPluginMetadata(metadataPath, info));
+
+#ifdef Q_OS_WIN
+    const QString libraryName = QStringLiteral("fixture.dll");
+#else
+    const QString libraryName = QStringLiteral("fixture.so");
+#endif
+    const QString libraryPath = QFileInfo(metadataPath).absoluteDir().filePath(libraryName);
+    QFile library(libraryPath);
+    QVERIFY(library.open(QIODevice::WriteOnly));
+    QVERIFY(library.write("fixture") > 0);
+    library.close();
+
+    QJsonObject item = PluginManager::availabilityItem(info, false);
+    QVERIFY(item.value(QStringLiteral("installed")).toBool());
+    QVERIFY(!item.value(QStringLiteral("loaded")).toBool());
+    QCOMPARE(item.value(QStringLiteral("availability")).toString(), QStringLiteral("loadable"));
+    QVERIFY(item.value(QStringLiteral("executableActions")).toArray().isEmpty());
+    QCOMPARE(item.value(QStringLiteral("suggestedActions")).toArray().first().toString(), QStringLiteral("load"));
+    const QJsonObject requirements = item.value(QStringLiteral("requirements")).toObject();
+    QCOMPARE(requirements.value(QStringLiteral("platforms")).toArray().first().toString(), QStringLiteral("linux"));
+    QCOMPARE(requirements.value(QStringLiteral("abi")).toObject().value(QStringLiteral("major")).toInt(), 2);
+    QCOMPARE(requirements.value(QStringLiteral("sdk")).toString(), QStringLiteral("sdk-x"));
+    QCOMPARE(requirements.value(QStringLiteral("model")).toString(), QStringLiteral("not_declared"));
+
+    QVERIFY(QFile::remove(libraryPath));
+    item = PluginManager::availabilityItem(info, false);
+    QVERIFY(!item.value(QStringLiteral("installed")).toBool());
+    QCOMPARE(item.value(QStringLiteral("availability")).toString(), QStringLiteral("unavailable"));
+    QCOMPARE(item.value(QStringLiteral("unavailableReason")).toArray().first().toString(),
+             QStringLiteral("PLUGIN_BINARY_MISSING"));
+
+    item = PluginManager::availabilityItem(info, true);
+    QVERIFY(!item.value(QStringLiteral("installed")).toBool());
+    QVERIFY(item.value(QStringLiteral("loaded")).toBool());
+    QCOMPARE(item.value(QStringLiteral("availability")).toString(), QStringLiteral("loaded"));
+
+    const QString invalidPath = writeMetadata(QStringLiteral("invalid"), QByteArray(R"("platforms":["linux",7])"));
+    QVERIFY(!invalidPath.isEmpty());
+    PluginInfo invalidInfo;
+    QVERIFY(PluginManager::instance().loadPluginMetadata(invalidPath, invalidInfo));
+    item = PluginManager::availabilityItem(invalidInfo, false);
+    QCOMPARE(item.value(QStringLiteral("requirements")).toObject().value(QStringLiteral("platforms")).toString(),
+             QStringLiteral("invalid_declaration"));
+    QVERIFY(item.value(QStringLiteral("unavailableReason"))
+                .toArray()
+                .contains(QStringLiteral("PLUGIN_REQUIREMENT_METADATA_INVALID")));
+}
+
+void TestPluginManager::testCameraAvailabilityPlatformCompatibility() {
+    PluginInfo info;
+    info.id = QStringLiteral("com.deeplux.camera.fixture");
+    info.name = QStringLiteral("CameraFixture");
+    info.category = QStringLiteral("camera");
+    info.requirements.insert(QStringLiteral("platforms"), QJsonArray{QStringLiteral("Linux")});
+
+    QJsonObject item = PluginManager::cameraAvailabilityItem(info, false, QStringLiteral("linux"));
+    QCOMPARE(item.value(QStringLiteral("platformCompatibility")).toString(), QStringLiteral("supported"));
+    QCOMPARE(item.value(QStringLiteral("availability")).toString(), QStringLiteral("unavailable"));
+
+    item = PluginManager::cameraAvailabilityItem(info, false, QStringLiteral("windows"));
+    QCOMPARE(item.value(QStringLiteral("platformCompatibility")).toString(), QStringLiteral("unsupported"));
+    const QJsonArray unsupportedReasons = item.value(QStringLiteral("unavailableReason")).toArray();
+    QVERIFY(unsupportedReasons.contains(QStringLiteral("PLUGIN_PLATFORM_UNSUPPORTED")));
+    QVERIFY(unsupportedReasons.contains(QStringLiteral("PLUGIN_BINARY_MISSING")));
+
+    item = PluginManager::cameraAvailabilityItem(info, true, QStringLiteral("windows"));
+    QCOMPARE(item.value(QStringLiteral("availability")).toString(), QStringLiteral("loaded"));
+    QCOMPARE(item.value(QStringLiteral("platformCompatibility")).toString(), QStringLiteral("unsupported"));
+
+    info.requirements.remove(QStringLiteral("platforms"));
+    item = PluginManager::cameraAvailabilityItem(info, false, QStringLiteral("linux"));
+    QCOMPARE(item.value(QStringLiteral("platformCompatibility")).toString(), QStringLiteral("not_declared"));
+
+    info.requirements.insert(QStringLiteral("platforms"), QStringLiteral("invalid_declaration"));
+    info.requirementMetadataErrors.append(QStringLiteral("platforms"));
+    item = PluginManager::cameraAvailabilityItem(info, false, QStringLiteral("linux"));
+    QCOMPARE(item.value(QStringLiteral("platformCompatibility")).toString(), QStringLiteral("not_declared"));
+    QVERIFY(item.value(QStringLiteral("unavailableReason"))
+                .toArray()
+                .contains(QStringLiteral("PLUGIN_REQUIREMENT_METADATA_INVALID")));
+    QVERIFY(!item.value(QStringLiteral("unavailableReason"))
+                 .toArray()
+                 .contains(QStringLiteral("PLUGIN_PLATFORM_UNSUPPORTED")));
 }
 
 void TestPluginManager::testExecutionAffinityDefaultsToGui() {
@@ -409,9 +826,6 @@ void TestPluginManager::testNonCameraUserPluginFallsBackToBundledCamera() {
     manager.addPluginPath(userRoot.path());
     manager.scanPlugins();
     QCOMPARE(manager.pluginInfo("PackagingCameraFallback").path, QDir(userDir).filePath("metadata.json"));
-    QVERIFY(manager.loadPlugin("PackagingCameraFallback"));
-    QCOMPARE(manager.pluginInfo("PackagingCameraFallback").path, QDir(bundleDir.path()).filePath("metadata.json"));
-    manager.unloadPlugin("PackagingCameraFallback");
 
     QFile moduleMetadataSource(QStringLiteral(TEST_PLUGINMANAGER_METADATA));
     QVERIFY(moduleMetadataSource.open(QIODevice::ReadOnly));
@@ -427,7 +841,9 @@ void TestPluginManager::testNonCameraUserPluginFallsBackToBundledCamera() {
 
     manager.scanPlugins();
     QVERIFY(manager.availableModules().contains("PackagingCameraFallback"));
-    QVERIFY(!manager.availableCameras().contains("PackagingCameraFallback"));
+    QVERIFY(manager.availableCameras().contains("PackagingCameraFallback"));
+    // Keep both metadata candidates visible so Agent can reject the name as ambiguous;
+    // loadPlugin still resolves the missing user module to the bundled camera fallback.
     QVERIFY(manager.loadPlugin("PackagingCameraFallback"));
     QCOMPARE(manager.pluginInfo("PackagingCameraFallback").path, QDir(bundleDir.path()).filePath("metadata.json"));
     QVERIFY(!manager.availableModules().contains("PackagingCameraFallback"));
@@ -538,6 +954,124 @@ void TestPluginManager::testValidAbiPreflightLoadsNativeInitializerOnce() {
     QVERIFY(markerFile.open(QIODevice::ReadOnly));
     QCOMPARE(markerFile.readAll(), QByteArray("load\n"));
     manager.unloadPlugin(QStringLiteral("AbiValid"));
+}
+
+void TestPluginManager::testConcurrentLoadsAreSerializedOnManagerThread() {
+    constexpr int kCallers = 8;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString installed =
+        installAbiFixture(root, QStringLiteral("AbiValid"), QStringLiteral(TEST_ABI_VALID_PLUGIN));
+    QVERIFY(!installed.isEmpty());
+    const QString marker = root.filePath(QStringLiteral("native-load-marker"));
+    ScopedEnvironmentVariable markerEnv("DEEPLUX_ABI_FIXTURE_NATIVE_LOAD_MARKER", marker.toLocal8Bit());
+
+    PluginManager& manager = PluginManager::instance();
+    manager.shutdown();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+
+    QSemaphore start;
+    QVector<int> results(kCallers, 0);
+    std::atomic_int completed{0};
+    QVector<QThread*> threads;
+    for (int i = 0; i < kCallers; ++i) {
+        QThread* worker = QThread::create([&, i] {
+            start.acquire();
+            results[i] = manager.loadPlugin(QStringLiteral("AbiValid"));
+            completed.fetch_add(1, std::memory_order_release);
+        });
+        QVERIFY(worker);
+        threads.append(worker);
+        worker->start();
+    }
+    start.release(kCallers);
+    QTRY_COMPARE_WITH_TIMEOUT(completed.load(std::memory_order_acquire), kCallers, 5000);
+    for (QThread* worker : threads) {
+        QVERIFY(worker->wait(5000));
+        delete worker;
+    }
+    for (int result : results)
+        QVERIFY(result);
+    QVERIFY(manager.isPluginLoaded(QStringLiteral("AbiValid")));
+
+    QFile markerFile(marker);
+    QVERIFY(markerFile.open(QIODevice::ReadOnly));
+    QCOMPARE(markerFile.readAll(), QByteArray("load\n"));
+    QVERIFY(manager.tryUnloadPlugin(QStringLiteral("AbiValid")));
+}
+
+void TestPluginManager::testUnloadRejectsForeignThread() {
+    PluginManager& manager = PluginManager::instance();
+    const QString pluginName = QStringLiteral("GrabImage");
+    if (!manager.isPluginLoaded(pluginName))
+        QVERIFY(manager.loadPlugin(pluginName));
+
+    bool unloaded = true;
+    QString error;
+    QThread* worker = QThread::create([&] { unloaded = manager.tryUnloadPlugin(pluginName, &error); });
+    QVERIFY(worker);
+    worker->start();
+    QVERIFY(worker->wait(5000));
+    delete worker;
+
+    QVERIFY(!unloaded);
+    QCOMPARE(error, QStringLiteral("PLUGIN_THREAD_AFFINITY"));
+    QVERIFY(manager.isPluginLoaded(pluginName));
+    QVERIFY(manager.tryUnloadPlugin(pluginName));
+}
+
+void TestPluginManager::testWorkerLoadHonorsTimeoutWhenManagerThreadIsNotPumping() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QVERIFY(!installAbiFixture(root, QStringLiteral("AbiValid"), QStringLiteral(TEST_ABI_VALID_PLUGIN)).isEmpty());
+
+    PluginManager& manager = PluginManager::instance();
+    manager.shutdown();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+    QVERIFY(!manager.isPluginLoaded(QStringLiteral("AbiValid")));
+
+    bool loaded = true;
+    QThread* worker = QThread::create([&] { loaded = manager.loadPlugin(QStringLiteral("AbiValid"), 25); });
+    QVERIFY(worker);
+    worker->start();
+    QVERIFY(worker->wait(1000));
+    delete worker;
+    QVERIFY(!loaded);
+
+    QCoreApplication::processEvents();
+    QVERIFY(!manager.isPluginLoaded(QStringLiteral("AbiValid")));
+}
+
+void TestPluginManager::testWorkerLoadReportsResultAfterStartedLoadExceedsDispatchTimeout() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QVERIFY(!installAbiFixture(root, QStringLiteral("AbiSlow"), QStringLiteral(TEST_ABI_VALID_PLUGIN)).isEmpty());
+    const QString marker = root.filePath(QStringLiteral("native-load-marker"));
+    ScopedEnvironmentVariable markerEnv("DEEPLUX_ABI_FIXTURE_NATIVE_LOAD_MARKER", marker.toLocal8Bit());
+    ScopedEnvironmentVariable delayEnv("DEEPLUX_ABI_FIXTURE_NATIVE_LOAD_DELAY_MS", QByteArrayLiteral("1200"));
+
+    PluginManager& manager = PluginManager::instance();
+    manager.shutdown();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+
+    bool loaded = false;
+    QSemaphore callerReady;
+    QThread* worker = QThread::create([&] {
+        callerReady.release();
+        loaded = manager.loadPlugin(QStringLiteral("AbiSlow"), 1000);
+    });
+    QVERIFY(worker);
+    worker->start();
+    QVERIFY(callerReady.tryAcquire(1, 1000));
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(marker), 3000);
+    QVERIFY(worker->wait(5000));
+    delete worker;
+    QVERIFY(loaded);
+    QVERIFY(manager.isPluginLoaded(QStringLiteral("AbiSlow")));
+    QVERIFY(manager.tryUnloadPlugin(QStringLiteral("AbiSlow")));
 }
 
 QTEST_MAIN(TestPluginManager)

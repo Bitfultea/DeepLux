@@ -58,9 +58,9 @@ flowchart LR
 
 - `affinity`：`gui`（默认）或 `worker`。`gui` 模块在 GUI 线程执行，后台工作者通过 `BlockingQueuedConnection` 回投；`worker` 模块直接在后台服务工作线程内联执行。未审计插件一律保持 `gui`。
 - `threadSafe` / `blocking`：保留的并行资格条件（`worker` 亲和 + `threadSafe` + 非 `blocking` + 无断点才可进入并行池；其他模块按序串行执行，GUI 亲和模块仍在 GUI 线程运行）。
-- 审计规则（design §6.4 + B9/t21 复盘）：① `process()` 及直接调用链不得创建/启动 QTimer、QEventLoop、QTcpSocket、QSerialPort、QProcess；② 不触碰 QWidget/QPixmap/QPainter/OpenGL/视口/相机 SDK；③ 不调用 `QCoreApplication::processEvents()`；④ 不依赖 CameraManager/相机线程亲和性；⑤ 无未加锁的全局可变状态；⑥ 两个实例在 worker 线程执行与 GUI 线程输出一致。补充：`process()` 不得创建 QObject（如 `VarModel`）或把它移交/删除到 GUI 线程；审计必须扫描 `GlobalVarManager/VarModel/PluginManager/RunEngine` 等单例/全局状态，不能只看文件级 static 变量（该规则目前以 `tests/test_workerpluginconsistency.cpp` 注释沉淀，不是自动检查）。
+- 审计规则（design §6.4 + B9/t21 复盘）：① `process()` 及可达调用链不得创建/启动 QTimer、QEventLoop、QTcpSocket、QSerialPort、QProcess；② 不触碰 QWidget/QPixmap/QPainter/OpenGL/视口/相机 SDK；③ 不调用 `QCoreApplication::processEvents()`；④ 不依赖 CameraManager/相机线程亲和性；⑤ 无未加锁的全局可变状态；⑥ 两个实例在 worker 线程执行与 GUI 线程输出一致。补充：`process()` 不得创建 QObject（如 `VarModel`）或把它移交/删除到 GUI 线程；CI 的 `check_plugin_affinity.py` 对配置的 GUI/线程 API、单例写入及词法可识别的文件级可变状态执行静态检查。该检查不是完整 C++ 语义分析，模板/宏/复杂别名或间接别名仍须人工审计；静态通过不替代双线程行为测试。
 
-**已审计并标记 `execution.affinity=worker` 的插件（30 个，2026-11-01）**
+**已完成 worker 并发一致性审计并具备并行资格的插件（30 个，2026-11-01）**
 
 | 分类 | 插件 |
 | --- | --- |
@@ -73,7 +73,9 @@ flowchart LR
 
 **保持 `gui` 的插件与限制**
 
-- plan B9 明确排除：GrabImage、DisplayData、ShowImage、ImageScript（事件循环/脚本状态）；Delay、Parallel、QueueIn、QueueOut、TableOutPut（共享状态/线程池/表格 UI）。
+- plan B9 明确排除并行池：Delay（同步等待，`threadSafe=false`，仍可在 worker 线程执行）、Parallel、QueueIn、QueueOut、TableOutPut（共享状态/线程池/表格 UI）。
+- 保持 `gui`：GrabImage、DisplayData、ShowImage、ImageScript（事件循环/脚本状态）。
+- Delay 保留 `affinity=worker`，但 `threadSafe=false`，因此可在后台执行、不会进入并行池；上表只统计已完成并行一致性审计的插件，不含 Delay。
 - 按设计保持 `gui`：MeasurementInput、ShowPoint、SamPredict、全部相机/PLC/串口/TCP 插件（设备与通讯的 QObject/线程亲和性）。
 - 一致性冒烟未通过（需真实数据/工程参数）：SaveImage、3DPreProcessing、ColorRecognition、QRCode、MeasureCircle、MeasureGap、FitPlane、PointSurfaceDistance、N点标定、GapMeasure3D、FreeformSurface、SplitString、VarDefinePlugin、VarSetPlugin、Condition。
 - `DefectDetection`：本构建 `ENABLE_HYMSON3D=OFF`，插件未构建，无法执行一致性冒烟，保持 `gui`。
@@ -135,9 +137,9 @@ ctest --test-dir build -R test_workerpluginconsistency --output-on-failure
 ### `GrabImage` - 图像采集
 
 - **用途**：从文件、已连接相机或演示输入创建流程中的图像起点。
-- **使用**：通常置于流程首节点；选择“文件”后设置路径，选择“相机”后从已发现的设备中选择相机 ID。
-- **关键配置**：相机、文件路径、曝光时间、增益、图像源、采集超时。元数据：[metadata.json](../src/plugins/image_processing/GrabImage/metadata.json)。
-- **检查**：先单步执行并确认主视图出现正确图像；文件路径、相机连接和超时失败会写入运行日志。
+- **使用**：通常置于流程首节点。文件源可选择单张图像；文件夹源按文件名排序逐张读取，`folderLoop` 默认开启，读到末尾后会从第一张重新开始，关闭后读完即报告文件夹图像已读取完毕。相机源需从已发现的设备中选择相机 ID。
+- **关键配置**：图像源、文件/文件夹路径、文件夹末尾循环、相机、曝光时间、增益、采集超时。元数据：[metadata.json](../src/plugins/image_processing/GrabImage/metadata.json)。
+- **检查**：先单步执行并确认主视图出现正确图像；文件或文件夹路径无效、文件夹没有支持的图像、相机未连接和采集超时都会导致采集失败并写入运行日志。
 
 ### `ImageScript` - 内置图像操作
 
@@ -148,10 +150,10 @@ ctest --test-dir build -R test_workerpluginconsistency --output-on-failure
 
 ### `JigsawPuzzle` - 图像拼接
 
-- **用途**：按规则网格把碎片图像组织为完整图像，用于规则拼板或分区采集后的展示。
-- **使用**：接入碎片来源后，按实际采集布局设置行数和列数；先用少量样本检查拼接方向和尺寸。
+- **用途**：将单张输入图像按固定行列均分为网格块，再按行优先顺序原位重组；当前不识别或重排独立的乱序拼图碎片。
+- **使用**：连接单张图像并设置正整数行数、列数。每块尺寸使用整数除法，不能整除的右侧/底部余量会丢弃。
 - **关键配置**：行数、列数。元数据：[metadata.json](../src/plugins/image_processing/JigsawPuzzle/metadata.json)。
-- **检查**：在主视图查看拼接边界是否错位，必要时调整上游碎片顺序或网格参数。
+- **检查**：确认输出大小为 `(输入宽度/列数×列数, 输入高度/行数×行数)`；网格块尺寸为零时运行失败并报告图像尺寸不足。
 
 ### `LoadPointCloud` - 点云文件加载
 
@@ -280,7 +282,7 @@ ctest --test-dir build -R test_workerpluginconsistency --output-on-failure
 
 - **用途**：把拾取或填写的点、线、面写入流程数据，是几何测量模块的标准上游。
 - **使用**：根据下游测量选择模式：`point_pair` 用于两点，`point_line` 用于点到线，`line_pair` 用于两线，`point_plane` 用于点到平面；在主视图拾取或在配置页录入坐标。
-- **关键配置**：模式、点 1/点 2、点、线、线 1/线 2、平面。2D 线段为 `x1,y1,x2,y2`；平面由三个 3D 点组成。元数据：[metadata.json](../src/plugins/geometry/MeasurementInput/metadata.json)。
+- **关键配置**：模式、点 1/点 2、点、线、线 1/线 2、平面。`point_pair` 接受两个同维度的二维图像像素点或三维 `World3D` 点；二维可保留图像来源映射，三维不映射到来源图像。2D 线段为 `x1,y1,x2,y2`；平面由三个 3D 点组成。元数据：[metadata.json](../src/plugins/geometry/MeasurementInput/metadata.json)。
 - **检查**：主视图应显示拾取的点/线/面；输出会携带相应键与 `measurement_input_mode`。点线与线线距离为 2D 概念，线端点不使用 Z 值。
 
 ### `DistancePP` - 两点距离
@@ -304,10 +306,10 @@ ctest --test-dir build -R test_workerpluginconsistency --output-on-failure
 - **关键配置**：无额外参数。元数据：[metadata.json](../src/plugins/geometry/LinesDistance/metadata.json)。
 - **检查**：结果数据为 `distance`；非平行或线段定义错误时应先回到主视图检查端点。
 
-### `MeasureGap` - 3D 间隙测量
+### `MeasureGap` - 2D/3D 间隙测量
 
 - **用途**：计算两点之间的间隙距离，并输出 XYZ 三个方向的差值。
-- **使用**：将 `MeasurementInput` 设为 `point_pair`，在点云或图像视图提供两个点；2D 坐标也可用，但 Z 会按 0 处理。
+- **使用**：将 `MeasurementInput` 设为 `point_pair` 并连接两个同维度点。二维点按图像像素坐标处理，Z 按 0；三坐标点按 `World3D` 处理。`Any` 端口允许先建立连线，具体消费者会在运行时按自身输入类型校验；例如 FitCircle 的 `fit_points` 只接受二维点集。外部基准和物理单位由工程提供。
 - **关键配置**：无额外参数。元数据：[metadata.json](../src/plugins/geometry/MeasureGap/metadata.json)。
 - **检查**：结果包含 `gap_distance`、`gap_delta_x`、`gap_delta_y`、`gap_delta_z` 和维度标记。
 
@@ -335,9 +337,9 @@ ctest --test-dir build -R test_workerpluginconsistency --output-on-failure
 ### `FreeformSurface` - 自由曲面点云分析
 
 - **用途**：对自由曲面点云进行处理和分析，适合非规则工件的采样与曲面特征准备。
-- **使用**：接在 `LoadPointCloud` 后；先以较稀的采样验证数据方向和范围，再提高精度进行正式分析。
-- **关键配置**：采样间隔。元数据：[metadata.json](../src/plugins/geometry/FreeformSurface/metadata.json)。
-- **检查**：在 3D 主视图查看采样后点云的完整性；采样过大可能遗漏局部细节。
+- **使用**：接在 `LoadPointCloud` 后；模块对输入中的全部点进行 SVD 平面拟合、点到平面的 RMS 粗糙度计算和投影凸包面积计算。
+- **关键配置**：无。旧工程中的 `samplingInterval` 字段会被忽略，不参与计算。元数据：[metadata.json](../src/plugins/geometry/FreeformSurface/metadata.json)。
+- **检查**：确认 `point_count`、`surface_area`、`surface_roughness` 与输入点云一致；粗糙度单位沿用输入坐标单位，面积单位为该坐标单位的平方。工程未声明坐标单位时不要假定为毫米。
 
 ### `RegionStats` - Region2D 区域统计
 
@@ -427,9 +429,9 @@ ctest --test-dir build -R test_workerpluginconsistency --output-on-failure
 ### `TCP服务器` - TCP 被动通信
 
 - **用途**：监听端口并与 TCP 客户端收发数据。
-- **使用**：在网络允许监听的主机上设置端口和超时，选择读写模式；将读到的数据命名为下游变量。
-- **关键配置**：端口、超时、发送数据、读取变量名、操作模式。元数据：[metadata.json](../src/plugins/communication/TCPServer/metadata.json)。
-- **检查**：确认端口未被占用且防火墙放行；用独立客户端验证连接、读写时序和断开行为。
+- **使用**：先选择监听地址，再设置端口和超时并选择读写模式；将读到的数据命名为下游变量。`Any` 会监听所有网络接口，`LocalHost` 仅允许本机连接。应按部署需要选择最窄的监听范围，并确认网络隔离和防火墙规则。
+- **关键配置**：监听地址（默认 `Any`，即所有网络接口；可选 `LocalHost`，仅本机）、端口、超时、发送数据、读取变量名、操作模式。元数据：[metadata.json](../src/plugins/communication/TCPServer/metadata.json)。
+- **检查**：确认端口未被占用；在选择的接口范围内用独立客户端验证连接、读写时序和断开行为，并核对主机防火墙是否允许预期来源访问。
 
 ## 逻辑控制（9）
 
@@ -602,10 +604,12 @@ ctest --test-dir build -R test_workerpluginconsistency --output-on-failure
 
 ### `DefectDetection` - 点云缺陷检测
 
-- **用途**：基于 HymsonVision3D 的点云特征检测缺陷，适合长边、圆角和高度相关的 3D 缺陷筛选。
-- **使用**：接在 `LoadPointCloud` 或稳定的 3D 数据源之后；先用代表性正常/缺陷样本确定各类阈值，再接结果输出或报警。
+- **状态**：算法目前未启用。`ENABLE_HYMSON3D=OFF` 时会构建不可用的框架插件；插件 CMake 中 `HymsonVision3D_FOUND AND FALSE` 也会禁用 SDK 算法代码。运行会失败并报告 `HymsonVision3D SDK 未启用，缺陷检测不可用`，不会生成缺陷结果。不要把该插件用于产品检测判定。
+- **用途（算法启用并通过验收后）**：基于 HymsonVision3D 的点云特征检测缺陷，适合长边、圆角和高度相关的 3D 缺陷筛选。
+- **输入**：连接 `LoadPointCloud` 或其他可提供点云的 3D 数据源；插件从 `ImageData` carrier 中读取 `point_cloud` 或 `pointCloud`，也接受 `display_data` 中的点云。
+- **成功输出契约（当前运行不可用）**：metadata 声明 `defect_point_cloud`（PointCloud3D）、`has_defects`（Boolean）和 `defect_count`（Integer）。只有 SDK 算法构建并执行成功后，这些值才可能由 Agent 查询；当前运行均在算法前失败。
 - **关键配置**：长边/圆角法线角度、长边/圆角曲率阈值、高度阈值、半径、最小点数、最小缺陷尺寸、调试模式。元数据：[metadata.json](../src/plugins/hymson3d/DefectDetection/metadata.json)。
-- **检查**：在 3D 主视图检查缺陷区域与点云位置，调试模式仅用于参数验证；正式运行前评估点云密度、算法耗时和误检率。
+- **验收要求**：SDK 集成恢复后，先核对正常/缺陷样本的输出点数和点云位置，再用现场标注集评估检出率、误检率和耗时；本仓库目前没有成功算法 fixture 或现场质量证据。
 
 ## 文档维护
 

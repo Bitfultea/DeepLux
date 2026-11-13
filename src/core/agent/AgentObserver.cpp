@@ -149,6 +149,10 @@ void AgentObserver::onRunFinished(const RunResult& result) {
     det["elapsedMs"] = static_cast<int>(result.elapsedMs);
     if (!result.success) {
         det["error"] = result.errorMessage;
+        det["errorCode"] = result.errorCode;
+        det["moduleId"] = result.failedModule;
+        det["port"] = result.failedPort;
+        det["diagnostics"] = result.diagnostics;
     }
     pushEvent(GuiEvent(GuiEventType::RunFinished, "RunEngine", det));
 }

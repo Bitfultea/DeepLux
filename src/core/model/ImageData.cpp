@@ -3,7 +3,11 @@
 #include <QBuffer>
 #include <QDebug>
 #include <QImage>
+#include <QUuid>
+#include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <limits>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -11,15 +15,137 @@
 
 namespace DeepLux {
 
+namespace {
+
+bool finiteMatrix(const ImageCoordinateProvenance::Matrix3& matrix) {
+    return std::all_of(matrix.begin(), matrix.end(), [](double value) { return std::isfinite(value); });
+}
+
+double determinant(const ImageCoordinateProvenance::Matrix3& matrix) {
+    return matrix[0] * (matrix[4] * matrix[8] - matrix[5] * matrix[7]) -
+           matrix[1] * (matrix[3] * matrix[8] - matrix[5] * matrix[6]) +
+           matrix[2] * (matrix[3] * matrix[7] - matrix[4] * matrix[6]);
+}
+
+ImageCoordinateProvenance::Matrix3 multiply(const ImageCoordinateProvenance::Matrix3& lhs,
+                                            const ImageCoordinateProvenance::Matrix3& rhs) {
+    ImageCoordinateProvenance::Matrix3 result{};
+    for (int row = 0; row < 3; ++row) {
+        for (int column = 0; column < 3; ++column) {
+            for (int index = 0; index < 3; ++index)
+                result[row * 3 + column] += lhs[row * 3 + index] * rhs[index * 3 + column];
+        }
+    }
+    return result;
+}
+
+bool mapPoint(const ImageCoordinateProvenance::Matrix3& matrix, const QPointF& point, QPointF* mapped) {
+    const double x = point.x();
+    const double y = point.y();
+    const double denominator = matrix[6] * x + matrix[7] * y + matrix[8];
+    const double denominatorScale = std::abs(matrix[6] * x) + std::abs(matrix[7] * y) + std::abs(matrix[8]);
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(denominator) ||
+        std::abs(denominator) <= std::numeric_limits<double>::epsilon() * 16.0 * qMax(1.0, denominatorScale))
+        return false;
+
+    const double mappedX = (matrix[0] * x + matrix[1] * y + matrix[2]) / denominator;
+    const double mappedY = (matrix[3] * x + matrix[4] * y + matrix[5]) / denominator;
+    if (!std::isfinite(mappedX) || !std::isfinite(mappedY))
+        return false;
+    *mapped = QPointF(mappedX, mappedY);
+    return true;
+}
+
+} // namespace
+
+bool ImageCoordinateProvenance::isValid() const {
+    if (sourceImageId.isEmpty() || sourceSize.width() <= 0 || sourceSize.height() <= 0)
+        return false;
+    if (!hasLocalToSourceTransform)
+        return std::isfinite(localOriginInSource.x()) && std::isfinite(localOriginInSource.y());
+    const Matrix3 matrix = localToSourceMatrix();
+    const double det = determinant(matrix);
+    return finiteMatrix(matrix) && std::isfinite(det) && det != 0.0;
+}
+
+std::optional<QPointF> ImageCoordinateProvenance::mapLocalToSource(const QPointF& point) const {
+    if (!isValid())
+        return std::nullopt;
+    QPointF mapped;
+    if (!mapPoint(localToSourceMatrix(), point, &mapped))
+        return std::nullopt;
+    return mapped;
+}
+
+std::optional<QRectF> ImageCoordinateProvenance::mapRectToSourceBounds(const QRectF& rect) const {
+    if (!isValid())
+        return std::nullopt;
+    const QRectF local = rect.normalized();
+    const QPointF corners[] = {local.topLeft(), local.topRight(), local.bottomRight(), local.bottomLeft()};
+    const Matrix3 matrix = localToSourceMatrix();
+    double denominatorSign = 0.0;
+    QPointF mappedCorners[4];
+    for (int i = 0; i < 4; ++i) {
+        const double denominator = matrix[6] * corners[i].x() + matrix[7] * corners[i].y() + matrix[8];
+        if (!std::isfinite(denominator) || denominator == 0.0 || !mapPoint(matrix, corners[i], &mappedCorners[i]))
+            return std::nullopt;
+        const double sign = std::copysign(1.0, denominator);
+        if (denominatorSign != 0.0 && sign != denominatorSign)
+            return std::nullopt;
+        denominatorSign = sign;
+    }
+
+    double minX = mappedCorners[0].x();
+    double maxX = minX;
+    double minY = mappedCorners[0].y();
+    double maxY = minY;
+    for (int i = 1; i < 4; ++i) {
+        minX = qMin(minX, mappedCorners[i].x());
+        maxX = qMax(maxX, mappedCorners[i].x());
+        minY = qMin(minY, mappedCorners[i].y());
+        maxY = qMax(maxY, mappedCorners[i].y());
+    }
+    return QRectF(QPointF(minX, minY), QPointF(maxX, maxY));
+}
+
+bool ImageCoordinateProvenance::offsetLocalOrigin(const QPointF& offset) {
+    const Matrix3 translation{{1.0, 0.0, offset.x(), 0.0, 1.0, offset.y(), 0.0, 0.0, 1.0}};
+    return composeLocalToSource(translation);
+}
+
+bool ImageCoordinateProvenance::composeLocalToSource(const Matrix3& localToPrevious) {
+    const double det = determinant(localToPrevious);
+    if (!finiteMatrix(localToPrevious) || !std::isfinite(det) || det == 0.0)
+        return false;
+    const Matrix3 composed = multiply(localToSourceMatrix(), localToPrevious);
+    const double composedDet = determinant(composed);
+    if (!finiteMatrix(composed) || !std::isfinite(composedDet) || composedDet == 0.0)
+        return false;
+    localToSource = composed;
+    hasLocalToSourceTransform = true;
+    const std::optional<QPointF> origin = mapLocalToSource(QPointF());
+    if (origin)
+        localOriginInSource = *origin;
+    return true;
+}
+
+ImageCoordinateProvenance::Matrix3 ImageCoordinateProvenance::localToSourceMatrix() const {
+    if (hasLocalToSourceTransform)
+        return localToSource;
+    return Matrix3{{1.0, 0.0, localOriginInSource.x(), 0.0, 1.0, localOriginInSource.y(), 0.0, 0.0, 1.0}};
+}
+
 ImageData::ImageData() : m_impl(std::make_unique<Impl>()) {}
 
 ImageData::ImageData(const QImage& image) : m_impl(std::make_unique<Impl>()) {
     setQImage(image);
+    establishCoordinateSource();
 }
 
 #ifdef DEEPLUX_HAS_OPENCV
 ImageData::ImageData(const cv::Mat& mat) : m_impl(std::make_unique<Impl>()) {
     setMat(mat);
+    establishCoordinateSource();
 }
 #endif
 
@@ -38,6 +164,7 @@ ImageData::ImageData(int width, int height, int channels) : m_impl(std::make_uni
         m_impl->valid = true;
     }
 #endif
+    establishCoordinateSource();
 }
 
 ImageData::ImageData(const ImageData& other) : m_impl(std::make_unique<Impl>(*other.m_impl)) {}
@@ -312,6 +439,43 @@ void ImageData::clearData() {
     m_impl->metadata.clear();
 }
 
+void ImageData::establishCoordinateSource(const QString& sourceImageId) {
+    if (!isValid() || width() <= 0 || height() <= 0) {
+        invalidateCoordinateProvenance();
+        return;
+    }
+    m_impl->coordinateProvenance.sourceImageId =
+        sourceImageId.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : sourceImageId;
+    m_impl->coordinateProvenance.sourceSize = QSize(width(), height());
+    m_impl->coordinateProvenance.localOriginInSource = QPointF(0.0, 0.0);
+    m_impl->coordinateProvenance.localToSource =
+        ImageCoordinateProvenance::Matrix3{{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};
+    m_impl->coordinateProvenance.hasLocalToSourceTransform = false;
+}
+
+void ImageData::setCoordinateProvenance(const ImageCoordinateProvenance& provenance) {
+    m_impl->coordinateProvenance = provenance.isValid() ? provenance : ImageCoordinateProvenance();
+}
+
+void ImageData::offsetCoordinateOrigin(int x, int y) {
+    if (!hasCoordinateProvenance())
+        return;
+    if (!m_impl->coordinateProvenance.offsetLocalOrigin(QPointF(x, y)))
+        invalidateCoordinateProvenance();
+}
+
+void ImageData::invalidateCoordinateProvenance() {
+    m_impl->coordinateProvenance = ImageCoordinateProvenance();
+}
+
+bool ImageData::hasCoordinateProvenance() const {
+    return m_impl->coordinateProvenance.isValid();
+}
+
+ImageCoordinateProvenance ImageData::coordinateProvenance() const {
+    return m_impl->coordinateProvenance;
+}
+
 void ImageData::setTimestamp(qint64 timestamp) {
     m_impl->timestamp = timestamp;
 }
@@ -335,7 +499,10 @@ QByteArray ImageData::toByteArray() const {
 ImageData ImageData::fromByteArray(const QByteArray& data) {
     QImage img;
     img.loadFromData(data);
-    return ImageData(img);
+    ImageData result(img);
+    // Byte serialization stores pixels only; it cannot preserve a derived image's parent frame.
+    result.invalidateCoordinateProvenance();
+    return result;
 }
 
 } // namespace DeepLux

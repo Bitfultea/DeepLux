@@ -1,8 +1,11 @@
 #pragma once
 
+#include "core/model/ImageData.h"
+
 #include <QImage>
 #include <QList>
 #include <QPointF>
+#include <QRectF>
 #include <QString>
 #include <QTransform>
 #include <QWidget>
@@ -41,12 +44,17 @@ public:
      *        不重新适配窗口；首次显示、控件 resize、用户显式“适配”、点击模块选择传 false。
      */
     void setImage(const QImage& image, bool preserveView = false);
+    void setImage(const QImage& image, const ImageCoordinateProvenance& provenance, bool preserveView = false);
     void clearImage();
+    void cancelPendingPointerInput(bool preservePan = false);
     bool hasImage() const {
         return m_hasImage;
     }
     QImage currentImage() const {
         return m_image;
+    }
+    ImageCoordinateProvenance coordinateProvenance() const {
+        return m_coordinateProvenance;
     }
 
     int imageWidth() const {
@@ -86,6 +94,7 @@ public:
 
 signals:
     void imageLoaded(const QImage& image);
+    void imageCleared();
     void zoomChanged(double factor);
     void roiCreated(const RoiData& roi);
     void mouseMoved(const QPointF& imagePoint);
@@ -101,8 +110,10 @@ protected:
 
 private:
     void updateTransform();
+    QRectF imageRectInWidget() const;
 
     QImage m_image;
+    ImageCoordinateProvenance m_coordinateProvenance;
     bool m_hasImage = false;
     int m_imageWidth = 0;
     int m_imageHeight = 0;

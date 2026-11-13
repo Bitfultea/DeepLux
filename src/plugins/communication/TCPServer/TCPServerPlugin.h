@@ -2,8 +2,9 @@
 
 #include "core/base/ModuleBase.h"
 
-#include <QTcpServer>
-#include <QTcpSocket>
+#include <functional>
+
+class QTcpSocket;
 
 namespace DeepLux {
 
@@ -13,8 +14,22 @@ class DEEPLUX_PLUGIN_API TCPServerPlugin : public ModuleBase {
     Q_INTERFACES(DeepLux::IModule)
 
 public:
+    struct ResponseWriteOutcome {
+        qint64 acceptedBytes = 0;
+        bool completed = false;
+        QString failureStage;
+        QString errorMessage;
+    };
+#ifdef DEEPLUX_ENABLE_TEST_HOOKS
+    using ResponseWriterTestHook = std::function<ResponseWriteOutcome(QTcpSocket&, const QByteArray&, int timeoutMs)>;
+#endif
+
     explicit TCPServerPlugin(QObject* parent = nullptr);
     ~TCPServerPlugin() override;
+
+#ifdef DEEPLUX_ENABLE_TEST_HOOKS
+    static void setResponseWriterTestHook(ResponseWriterTestHook hook);
+#endif
 
     QString moduleId() const override {
         return "com.deeplux.plugin.tcpserver";
@@ -37,29 +52,19 @@ public:
 
     bool initialize() override;
     QWidget* createConfigWidget() override;
+    ExecutionResult execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) override;
 
 protected:
     bool process(const ImageData& input, ImageData& output) override;
     bool doValidateParams(const QJsonObject& params, QString& error) const override;
     IModule* cloneImpl() const override;
 
-private slots:
-    void onNewConnection();
-    void onDisconnected();
-    void onReadyRead();
-
 private:
-    bool startServer();
-    void stopServer();
-    bool writeToClient(const QString& data);
-    QString readFromClient();
+    ResponseWriteOutcome writeResponse(QTcpSocket& socket, const QByteArray& bytes, int timeoutMs) const;
 
-    QTcpServer* m_server;
-    QTcpSocket* m_clientSocket;
-    quint16 m_port;
-    int m_timeout;
-    QString m_writeData;
-    QString m_readVariable;
+    qint64 m_responseAcceptedBytes = 0;
+    qint64 m_responseExpectedBytes = 0;
+    QString m_responseFailureStage;
 };
 
 } // namespace DeepLux

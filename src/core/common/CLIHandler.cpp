@@ -210,7 +210,8 @@ public:
         }
 
         // 打开工程
-        Project* project = ProjectManager::instance().openProject(projectPath);
+        Project* project =
+            ProjectManager::instance().openProjectChecked(projectPath, ProjectManager::UnsavedPolicy::Cancel);
         if (!project) {
             ctx.setError(QString("无法打开工程: %1").arg(projectPath));
             return 1;
@@ -299,7 +300,7 @@ public:
             }
         }
 
-        Project* project = ProjectManager::instance().newProject();
+        Project* project = ProjectManager::instance().newProjectChecked(ProjectManager::UnsavedPolicy::Cancel);
         project->setName(projectName);
 
         if (!savePath.isEmpty()) {
@@ -364,7 +365,7 @@ public:
         // 打开或获取工程
         Project* project = nullptr;
         if (QFileInfo::exists(projectPath)) {
-            project = ProjectManager::instance().openProject(projectPath);
+            project = ProjectManager::instance().openProjectChecked(projectPath, ProjectManager::UnsavedPolicy::Cancel);
         } else {
             ctx.setError(QString("工程文件不存在: %1").arg(projectPath));
             return 1;
@@ -429,7 +430,7 @@ public:
         // 打开工程
         Project* project = nullptr;
         if (QFileInfo::exists(projectPath)) {
-            project = ProjectManager::instance().openProject(projectPath);
+            project = ProjectManager::instance().openProjectChecked(projectPath, ProjectManager::UnsavedPolicy::Cancel);
         } else {
             ctx.setError(QString("工程文件不存在: %1").arg(projectPath));
             return 1;
@@ -503,7 +504,7 @@ public:
         // 打开工程
         Project* project = nullptr;
         if (QFileInfo::exists(projectPath)) {
-            project = ProjectManager::instance().openProject(projectPath);
+            project = ProjectManager::instance().openProjectChecked(projectPath, ProjectManager::UnsavedPolicy::Cancel);
         } else {
             ctx.setError(QString("工程文件不存在: %1").arg(projectPath));
             return 1;
@@ -557,7 +558,7 @@ public:
 
         Project* project = nullptr;
         if (QFileInfo::exists(projectPath)) {
-            project = ProjectManager::instance().openProject(projectPath);
+            project = ProjectManager::instance().openProjectChecked(projectPath, ProjectManager::UnsavedPolicy::Cancel);
         } else {
             ctx.setError(QString("工程文件不存在: %1").arg(projectPath));
             return 1;

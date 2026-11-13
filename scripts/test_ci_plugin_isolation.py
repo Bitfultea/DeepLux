@@ -25,6 +25,15 @@ def assert_sync_verification(name: str, step: dict[str, str]) -> None:
 
 
 def main() -> int:
+    mainwindow_wrapper = Path(__file__).resolve().with_name("run-mainwindow-test-isolated.sh")
+    wrapper_text = mainwindow_wrapper.read_text(encoding="utf-8")
+    assert 'env -u DEEPLUX_APP_DATA_DIR HOME="$test_home" bash "$project_dir/scripts/sync-plugins.sh"' in wrapper_text, (
+        "isolated MainWindow plugin sync must ignore the parent app-data override"
+    )
+    assert 'env -u DEEPLUX_APP_DATA_DIR HOME="$test_home" "$test_binary" "$@"' in wrapper_text, (
+        "isolated MainWindow test must use the same temporary HOME as plugin sync"
+    )
+
     workflow_path = Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
     workflow = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     jobs = workflow["jobs"]

@@ -1,8 +1,11 @@
 #include "core/agent/SamNativeSettings.h"
 #include "core/agent/SamPredictor.h"
+#include "core/io/LabelMeExporter.h"
 #include "core/io/YoloSegExporter.h"
+#include "core/manager/ConfigManager.h"
 #include "core/model/Annotation.h"
 #include "core/model/AnnotationMaskOps.h"
+#include "helpers/SamTestServer.h"
 #include "ui/ThemeManager.h"
 #include "ui/dialogs/SamAnnotatorDialog.h"
 #include "ui/widgets/AnnotationOverlayWidget.h"
@@ -14,8 +17,11 @@
 #include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QImage>
 #include <QItemSelectionModel>
 #include <QJsonArray>
@@ -32,6 +38,7 @@
 #include <QShortcut>
 #include <QSignalSpy>
 #include <QSpinBox>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QTest>
@@ -41,10 +48,12 @@
 #include <QtTest/QtTest>
 #include <atomic>
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <thread>
 
 using namespace DeepLux;
+using DeepLuxTest::SamTestServer;
 
 class TestSamAnnotatorDialog : public QObject {
     Q_OBJECT
@@ -54,10 +63,12 @@ private slots:
     void cleanupTestCase();
     void cleanup();
 
+    void environmentSetupOnlyStatusIsSanitizedAndCapturesGuiStates();
     void modeButtonsExist();
     void themeCanMatchMainWindowPalette();
     void shortcutsBound();
     void canOpenFromFile();
+    void testUserOpensImageFromSamDialogFilePicker();
     void canAcceptSnapshot();
     void modeSwitchUpdatesOverlay();
     void selectModeClickSelectsConfirmedObject();
@@ -68,6 +79,9 @@ private slots:
     void predictionResultCanBeConfirmed();
     void canAttachOverlayToMainViewImageWidget();
     void mainViewOverlayUsesMainViewCoordinates();
+    void mainViewOverlayCoordinatesMapThroughCropProvenance();
+    void guiPromptPredictionSessionRoundTripAndLabelMeExportPreserveLineage();
+    void concaveAnnotationPersistsCropLocalCoordinatesAndSourceBbox();
     void mainViewModeUsesReadableConfigLayout();
     void compactCommitButtonsDoNotOverlapModeRow();
     void categoryAndBackendRowsShareCompactSizing();
@@ -80,6 +94,8 @@ private slots:
     void categoryDropdownPrepopulated();
     void categoryCanBeAdded();
     void categoryCanBeRemoved();
+    void testUserAddsAndRemovesSamCategoryThroughGui();
+    void currentCategoryLabelUsesComboSelection();
     void currentCategoryLabelPrefersDropdownSelection();
     void openAnnotationButtonExists();
     void exportYoloButtonExists();
@@ -104,6 +120,14 @@ private slots:
     void splitFragmentedMaskRejected(); // 批3 复核二轮（P1）：碎片掩膜拆分上限
     void editWithoutImageSizeRejected();
     void editFallsBackToPolygonRasterization();
+    void agentMaskOperationsValidateAndUndo();
+    void activeAnnotationObjectsReportSourceBboxWhenVerified();
+    void sharedImageProvenanceRebindUpdatesSessionAndKeepsLocalState();
+    void sharedViewMousePromptsCancelWithoutLosingConfirmedAnnotation();
+    void sessionSaveAndReopenPreserveVerifiedSourceCoordinates();
+    void agentSplitMemoryBudgetRejectedBeforeMaterialization();
+    void agentMaskToolsRejectMissingImageAndUnavailableMasks();
+    void agentCategoryEditsAndObjectRelabelingPreserveSelectionAndUndo();
     // SAM 批2 复核二轮：会话重置协议与删除掩膜还原回归
     void undoAfterOpenAnnotationDoesNotCorruptSession();
     void switchImageSameSizeResetsAnnotationState();
@@ -124,6 +148,10 @@ private slots:
     // SAM 批4（C）：多掩膜候选循环——◀/▶ 切换预览、确认所用为所选、
     // candidates<=1 时循环行隐藏、确认/取消后候选清空
     void candidateCyclingSelectsAlternateRegion();
+    void agentPromptCancelPreservesUndoAndRejectsLatePrediction();
+    void agentPromptCancelStopsInvalidEmbeddingRetry();
+    void agentOpenSessionCancelsOldPredictionAndPinsNewImage();
+    void agentOpenSessionReplacesCancelledEmbeddingRetry();
     void standaloneImageViewportRemainsVisible();
 #ifdef DEEPLUX_HAS_ONNXRUNTIME
     void nativeModelSettingsDialogSavesSelection();
@@ -161,7 +189,6 @@ void TestSamAnnotatorDialog::initTestCase() {
     qputenv("DEEPLUX_APP_DATA_DIR", QFile::encodeName(m_testConfigDir.path()));
     qunsetenv("DEEPLUX_SAM_PACKAGE");
     qunsetenv("DEEPLUX_SAM_DEVICE");
-    SamNativeSettings::initialize();
 }
 
 void TestSamAnnotatorDialog::cleanupTestCase() {
@@ -251,6 +278,41 @@ void TestSamAnnotatorDialog::canOpenFromFile() {
     QVERIFY(dlg.imageWidget()->hasImage());
     QCOMPARE(dlg.imageWidget()->imageWidth(), 200);
     QCOMPARE(dlg.imageWidget()->imageHeight(), 150);
+}
+
+void TestSamAnnotatorDialog::testUserOpensImageFromSamDialogFilePicker() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString imagePath = dir.filePath(QStringLiteral("manual-sam-image.png"));
+    QImage image(36, 24, QImage::Format_RGB32);
+    image.fill(QColor(QStringLiteral("#2a6fdb")));
+    QVERIFY(image.save(imagePath));
+
+    SamAnnotatorDialog dlg;
+    dlg.show();
+    auto* openButton = dlg.findChild<QPushButton*>(QStringLiteral("SamOpenImageButton"));
+    QVERIFY(openButton != nullptr);
+    QVERIFY(openButton->isVisibleTo(&dlg));
+    QSignalSpy imageLoadedSpy(&dlg, &SamAnnotatorDialog::imageLoaded);
+
+    bool chooserShown = false;
+    QTimer::singleShot(0, &dlg, [&]() {
+        auto* chooser = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+        if (!chooser)
+            return;
+        chooserShown = true;
+        chooser->selectFile(imagePath);
+        QVERIFY(QMetaObject::invokeMethod(chooser, "accept", Qt::DirectConnection));
+    });
+    QTest::mouseClick(openButton, Qt::LeftButton);
+
+    QVERIFY(chooserShown);
+    QCOMPARE(imageLoadedSpy.count(), 1);
+    QCOMPARE(imageLoadedSpy.first().at(0).toString(), imagePath);
+    QVERIFY(dlg.imageWidget()->hasImage());
+    QCOMPARE(dlg.imageWidget()->imageWidth(), image.width());
+    QCOMPARE(dlg.imageWidget()->imageHeight(), image.height());
+    QCOMPARE(dlg.session().imagePath, imagePath);
 }
 
 void TestSamAnnotatorDialog::canAcceptSnapshot() {
@@ -391,31 +453,390 @@ void TestSamAnnotatorDialog::canAttachOverlayToMainViewImageWidget() {
 void TestSamAnnotatorDialog::mainViewOverlayUsesMainViewCoordinates() {
     HImageWidget mainView;
     mainView.resize(320, 240);
+    mainView.setFixedSize(320, 240);
     mainView.setImage(makeTestImage());
 
     SamAnnotatorDialog dlg;
     dlg.attachToImageWidget(&mainView, QStringLiteral("/tmp/main_view.png"));
-    dlg.positivePointButton()->setChecked(true);
+    mainView.show();
+    QCoreApplication::processEvents();
+    mainView.actualSize();
+    mainView.setZoom(2.0);
+
+    // 中键拖动由覆盖层转发给 HImageWidget；窗口偏移由固定尺寸和平移事件独立得出。
+    QTest::mousePress(dlg.overlayWidget(), Qt::MiddleButton, Qt::NoModifier, QPoint(10, 10));
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(25, 5), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(dlg.overlayWidget(), &panMove);
+    QTest::mouseRelease(dlg.overlayWidget(), Qt::MiddleButton, Qt::NoModifier, QPoint(25, 5));
 
     QCOMPARE(dlg.overlayWidget()->parentWidget(), &mainView);
     QCOMPARE(dlg.overlayWidget()->geometry(), mainView.rect());
-
-    bool clicked = false;
-    QPointF clickedPoint;
-    QObject::connect(dlg.overlayWidget(), &AnnotationOverlayWidget::widgetClicked, &dlg,
-                     [&](const QPointF& imagePoint, Qt::MouseButton) {
-                         clicked = true;
-                         clickedPoint = imagePoint;
-                     });
-
+    dlg.positivePointButton()->click();
     const QPointF expectedImagePoint(80.0, 60.0);
-    const QPoint widgetPoint = mainView.imageToWidget(expectedImagePoint).toPoint();
-    QVERIFY(dlg.overlayWidget()->rect().contains(widgetPoint));
-    QTest::mouseClick(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, widgetPoint);
+    const QPoint pointWidget(235, 160); // (60,45) + (15,-5) + 2*(80,60)
+    QVERIFY(dlg.overlayWidget()->rect().contains(pointWidget));
+    QTest::mouseClick(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, pointWidget);
+    QCOMPARE(dlg.overlayWidget()->positivePromptPoints(), QList<QPointF>{expectedImagePoint});
 
-    QVERIFY(clicked);
-    QVERIFY(qAbs(clickedPoint.x() - expectedImagePoint.x()) < 0.5);
-    QVERIFY(qAbs(clickedPoint.y() - expectedImagePoint.y()) < 0.5);
+    dlg.boxButton()->click();
+    QSignalSpy dragSpy(dlg.overlayWidget(), &AnnotationOverlayWidget::dragEnded);
+    const QPoint boxStartWidget(155, 100); // (60,45) + (15,-5) + 2*(40,30)
+    const QPoint boxEndWidget(275, 220);   // (60,45) + (15,-5) + 2*(100,90)
+    QTest::mousePress(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, boxStartWidget);
+    QMouseEvent boxMove(QEvent::MouseMove, boxEndWidget, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(dlg.overlayWidget(), &boxMove);
+    QTest::mouseRelease(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, boxEndWidget);
+    QCOMPARE(dragSpy.size(), 1);
+    const QList<QVariant> dragCoordinates = dragSpy.takeFirst();
+    QCOMPARE(dragCoordinates.at(0).toPointF(), QPointF(40.0, 30.0));
+    QCOMPARE(dragCoordinates.at(1).toPointF(), QPointF(100.0, 90.0));
+    QVERIFY(dlg.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+}
+
+void TestSamAnnotatorDialog::mainViewOverlayCoordinatesMapThroughCropProvenance() {
+    HImageWidget mainView;
+    mainView.resize(320, 240);
+    mainView.setFixedSize(320, 240);
+
+    ImageCoordinateProvenance provenance;
+    provenance.sourceImageId = QStringLiteral("slice164-parent");
+    provenance.sourceSize = QSize(320, 240);
+    provenance.localOriginInSource = QPointF(50.0, 40.0);
+    QVERIFY(provenance.isValid());
+    const QImage image = makeTestImage();
+    QCOMPARE(image.size(), QSize(200, 150));
+    mainView.setImage(image, provenance);
+
+    SamAnnotatorDialog dlg;
+    dlg.attachToImageWidget(&mainView, QStringLiteral("crop.png"));
+    mainView.show();
+    QCoreApplication::processEvents();
+    mainView.actualSize();
+    mainView.setZoom(2.0);
+
+    // At zoom 2, the 200x150 image is centered in the 320x240 view at (60,45).
+    // The real middle-button drag adds (15,-5), so this screen click maps to local (80,60).
+    QTest::mousePress(dlg.overlayWidget(), Qt::MiddleButton, Qt::NoModifier, QPoint(10, 10));
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(25, 5), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(dlg.overlayWidget(), &panMove);
+    QTest::mouseRelease(dlg.overlayWidget(), Qt::MiddleButton, Qt::NoModifier, QPoint(25, 5));
+
+    dlg.positivePointButton()->click();
+    QTest::mouseClick(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, QPoint(235, 160));
+    QCOMPARE(dlg.overlayWidget()->positivePromptPoints(), QList<QPointF>{QPointF(80.0, 60.0)});
+
+    const auto sourcePoint = mainView.coordinateProvenance().mapLocalToSource(QPointF(80.0, 60.0));
+    QVERIFY(sourcePoint.has_value());
+    QCOMPARE(sourcePoint->x(), 130.0);
+    QCOMPARE(sourcePoint->y(), 100.0);
+    QCOMPARE(mainView.coordinateProvenance().sourceImageId, QStringLiteral("slice164-parent"));
+
+    dlg.boxButton()->click();
+    QSignalSpy dragSpy(dlg.overlayWidget(), &AnnotationOverlayWidget::dragEnded);
+    QTest::mousePress(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, QPoint(155, 100));
+    QMouseEvent boxMove(QEvent::MouseMove, QPointF(275, 220), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(dlg.overlayWidget(), &boxMove);
+    QTest::mouseRelease(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, QPoint(275, 220));
+    QCOMPARE(dragSpy.size(), 1);
+    const QList<QVariant> dragCoordinates = dragSpy.takeFirst();
+    const QPointF localStart = dragCoordinates.at(0).toPointF();
+    const QPointF localEnd = dragCoordinates.at(1).toPointF();
+    QCOMPARE(localStart, QPointF(40.0, 30.0));
+    QCOMPARE(localEnd, QPointF(100.0, 90.0));
+
+    const auto sourceBox =
+        mainView.coordinateProvenance().mapRectToSourceBounds(QRectF(localStart, localEnd).normalized());
+    QVERIFY(sourceBox.has_value());
+    QCOMPARE(*sourceBox, QRectF(90.0, 70.0, 60.0, 60.0));
+}
+
+void TestSamAnnotatorDialog::guiPromptPredictionSessionRoundTripAndLabelMeExportPreserveLineage() {
+    SamTestServer server;
+    QVERIFY(server.listen());
+    server.includePredictCandidates = false;
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString imagePath = directory.filePath(QStringLiteral("slice195-source.png"));
+    const QImage image = makeTestImage();
+    QCOMPARE(image.size(), QSize(200, 150));
+    QVERIFY(image.save(imagePath, "PNG"));
+
+    HImageWidget mainView;
+    mainView.resize(320, 240);
+    mainView.setFixedSize(320, 240);
+    ImageCoordinateProvenance provenance;
+    provenance.sourceImageId = QStringLiteral("slice195-source-image");
+    provenance.sourceSize = QSize(800, 600);
+    const ImageCoordinateProvenance::Matrix3 localToSource{2.0, 0.0, 30.0, 0.0, 3.0, 40.0, 0.0, 0.0, 1.0};
+    QVERIFY(provenance.composeLocalToSource(localToSource));
+    QVERIFY(provenance.isValid());
+    mainView.setImage(image, provenance);
+    mainView.show();
+
+    SamAnnotatorDialog dialog;
+    dialog.attachToImageWidget(&mainView, imagePath);
+    dialog.show();
+    QCoreApplication::processEvents();
+    mainView.actualSize();
+    mainView.setZoom(2.0);
+
+    SamBackendClient* client = dialog.backendClient();
+    QVERIFY(client);
+    client->setTimeoutMs(3000);
+    client->setServerUrl(server.url());
+    QCOMPARE(dialog.backendImagePathForTest(), imagePath);
+    client->setImage(dialog.backendImagePathForTest());
+    QVERIFY2(DeepLuxTest::waitFor([&]() {
+                 return !client->currentEmbeddingId().isEmpty() && client->state() == SamBackendClient::State::Ready;
+             }),
+             "fake SAM image embedding must become ready");
+    QCOMPARE(server.requestLog.count(QStringLiteral("POST /set_image")), 1);
+    QCOMPARE(server.lastSetImagePath, imagePath);
+    QVERIFY(server.lastSetImageReadable);
+
+    dialog.addCategory(QStringLiteral("slice195-defect"));
+    dialog.categoryCombo()->setCurrentIndex(dialog.categoryCombo()->count() - 1);
+    QCOMPARE(dialog.currentCategoryLabel(), QStringLiteral("slice195-defect"));
+    dialog.positivePointButton()->click();
+    QCOMPARE(dialog.overlayWidget()->parentWidget(), &mainView);
+    const QPoint promptScreenPoint(140, 115); // centered actual-size origin (60,45) + 2 * local (40,35)
+    QCOMPARE(mainView.widgetToImage(promptScreenPoint), QPointF(40.0, 35.0));
+    const auto sourcePrompt = provenance.mapLocalToSource(QPointF(40.0, 35.0));
+    QVERIFY(sourcePrompt.has_value());
+    QCOMPARE(*sourcePrompt, QPointF(110.0, 145.0));
+    QTest::mouseClick(dialog.overlayWidget(), Qt::LeftButton, Qt::NoModifier, promptScreenPoint);
+    QCOMPARE(dialog.overlayWidget()->positivePromptPoints(), QList<QPointF>{QPointF(40.0, 35.0)});
+    QTRY_VERIFY_WITH_TIMEOUT(!dialog.overlayWidget()->previewPolygon().isEmpty(), 3000);
+    QCOMPARE(server.requestLog.count(QStringLiteral("POST /predict")), 1);
+    const QJsonObject predictBody = server.lastPredictBody;
+    QCOMPARE(predictBody.value(QStringLiteral("embedding_id")).toString(), client->currentEmbeddingId());
+    const QJsonArray expectedPositiveRequest{QJsonValue(QJsonArray{40.0, 35.0})};
+    QCOMPARE(predictBody.value(QStringLiteral("points_pos")).toArray(), expectedPositiveRequest);
+    QCOMPARE(predictBody.value(QStringLiteral("points_neg")).toArray(), QJsonArray{});
+    QVERIFY(!predictBody.contains(QStringLiteral("box")));
+
+    const QList<QPointF> expectedPolygon{QPointF(10, 10), QPointF(20, 10), QPointF(20, 20), QPointF(10, 20)};
+    QCOMPARE(dialog.overlayWidget()->previewPolygon(), expectedPolygon);
+    const QImage previewMask = dialog.overlayWidget()->previewMask();
+    QCOMPARE(previewMask.size(), QSize(2, 2));
+    QCOMPARE(previewMask.format(), QImage::Format_ARGB32);
+    for (int y = 0; y < previewMask.height(); ++y) {
+        for (int x = 0; x < previewMask.width(); ++x)
+            QCOMPARE(previewMask.pixelColor(x, y), QColor(Qt::white));
+    }
+    QPushButton* confirmButton = nullptr;
+    for (QPushButton* button : dialog.findChildren<QPushButton*>()) {
+        if (button->text() == QStringLiteral("确认")) {
+            confirmButton = button;
+            break;
+        }
+    }
+    QVERIFY(confirmButton);
+    QVERIFY(confirmButton->isEnabled());
+    QTest::mouseClick(confirmButton, Qt::LeftButton);
+
+    const AnnotationSession confirmed = dialog.session();
+    QCOMPARE(confirmed.annotations.size(), 1);
+    const AnnotationObject object = confirmed.annotations.first();
+    QVERIFY(!object.id.isEmpty());
+    QCOMPARE(object.label, QStringLiteral("slice195-defect"));
+    QCOMPARE(object.polygon, expectedPolygon);
+    QCOMPARE(object.bbox, QRectF(10, 10, 10, 10));
+    QCOMPARE(object.prompts.pointsPos, QList<QPointF>{QPointF(40.0, 35.0)});
+    QVERIFY(object.prompts.pointsNeg.isEmpty());
+    QVERIFY(!object.prompts.box.has_value());
+    QCOMPARE(object.score, 0.97);
+    QVERIFY(object.maskRle.isEmpty());
+    QCOMPARE(dialog.overlayWidget()->objectMask(object.id), previewMask);
+    QCOMPARE(confirmed.sourceCoordinateProvenance.sourceImageId, QStringLiteral("slice195-source-image"));
+    QCOMPARE(confirmed.sourceCoordinateProvenance.sourceSize, QSize(800, 600));
+    QCOMPARE(confirmed.sourceCoordinateProvenance.localToSourceMatrix(), localToSource);
+
+    const QString sessionPath = directory.filePath(QStringLiteral("slice195.deeplux-anno.json"));
+    QString error;
+    QVERIFY2(dialog.saveAnnotationFile(sessionPath, &error), qPrintable(error));
+    const AnnotationSession saved = AnnotationSession::load(sessionPath, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(saved.imageDigest, AnnotationSession::computeImageDigest(image));
+    QCOMPARE(saved.imageWidth, 200);
+    QCOMPARE(saved.imageHeight, 150);
+    QCOMPARE(saved.sourceCoordinateProvenance.sourceImageId, QStringLiteral("slice195-source-image"));
+    QCOMPARE(saved.sourceCoordinateProvenance.sourceSize, QSize(800, 600));
+    QCOMPARE(saved.sourceCoordinateProvenance.localToSourceMatrix(), localToSource);
+    QCOMPARE(saved.annotations.size(), 1);
+    QCOMPARE(saved.annotations.first().id, object.id);
+    QCOMPARE(saved.annotations.first().label, QStringLiteral("slice195-defect"));
+    QCOMPARE(saved.annotations.first().polygon, expectedPolygon);
+    QCOMPARE(saved.annotations.first().bbox, QRectF(10, 10, 10, 10));
+    QCOMPARE(saved.annotations.first().prompts.pointsPos, QList<QPointF>{QPointF(40.0, 35.0)});
+
+    SamAnnotatorDialog reopened;
+    QVERIFY2(reopened.openAnnotationFile(sessionPath, &error), qPrintable(error));
+    const AnnotationSession reopenedSession = reopened.session();
+    QCOMPARE(reopenedSession.imageDigest, saved.imageDigest);
+    QCOMPARE(reopenedSession.sourceCoordinateProvenance.sourceImageId, QStringLiteral("slice195-source-image"));
+    QCOMPARE(reopenedSession.sourceCoordinateProvenance.sourceSize, QSize(800, 600));
+    QCOMPARE(reopenedSession.sourceCoordinateProvenance.localToSourceMatrix(), localToSource);
+    QCOMPARE(reopenedSession.annotations.size(), 1);
+    QCOMPARE(reopenedSession.annotations.first().id, object.id);
+    QCOMPARE(reopenedSession.annotations.first().label, QStringLiteral("slice195-defect"));
+    QCOMPARE(reopenedSession.annotations.first().polygon, expectedPolygon);
+    QCOMPARE(reopenedSession.annotations.first().bbox, QRectF(10, 10, 10, 10));
+    QCOMPARE(reopenedSession.annotations.first().prompts.pointsPos, QList<QPointF>{QPointF(40.0, 35.0)});
+
+    const QString labelMePath = directory.filePath(QStringLiteral("slice195.labelme.json"));
+    QVERIFY2(LabelMeExporter::exportToFile(reopenedSession, labelMePath, &error), qPrintable(error));
+    QFile labelMeFile(labelMePath);
+    QVERIFY(labelMeFile.open(QIODevice::ReadOnly));
+    QJsonParseError labelMeParseError;
+    const QJsonObject labelMe = QJsonDocument::fromJson(labelMeFile.readAll(), &labelMeParseError).object();
+    QCOMPARE(labelMeParseError.error, QJsonParseError::NoError);
+    QCOMPARE(labelMe.value(QStringLiteral("imagePath")).toString(), QStringLiteral("slice195-source.png"));
+    QCOMPARE(labelMe.value(QStringLiteral("imageWidth")).toInt(), 200);
+    QCOMPARE(labelMe.value(QStringLiteral("imageHeight")).toInt(), 150);
+    const QJsonArray shapes = labelMe.value(QStringLiteral("shapes")).toArray();
+    QCOMPARE(shapes.size(), 1);
+    const QJsonObject shape = shapes.first().toObject();
+    QCOMPARE(shape.value(QStringLiteral("label")).toString(), QStringLiteral("slice195-defect"));
+    QCOMPARE(shape.value(QStringLiteral("shape_type")).toString(), QStringLiteral("polygon"));
+    const QJsonArray exportPoints = shape.value(QStringLiteral("points")).toArray();
+    QCOMPARE(exportPoints.size(), expectedPolygon.size());
+    for (qsizetype index = 0; index < exportPoints.size(); ++index) {
+        const QJsonArray point = exportPoints.at(index).toArray();
+        QCOMPARE(point.size(), 2);
+        QCOMPARE(point.at(0).toDouble(), expectedPolygon.at(index).x());
+        QCOMPARE(point.at(1).toDouble(), expectedPolygon.at(index).y());
+    }
+    QVERIFY(!labelMe.contains(QStringLiteral("sourceCoordinateProvenance")));
+}
+
+void TestSamAnnotatorDialog::concaveAnnotationPersistsCropLocalCoordinatesAndSourceBbox() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString imagePath = dir.filePath(QStringLiteral("crop.png"));
+    const QImage image = makeTestImage();
+    QVERIFY(image.save(imagePath, "PNG"));
+
+    HImageWidget mainView;
+    mainView.resize(320, 240);
+    mainView.setFixedSize(320, 240);
+    ImageCoordinateProvenance provenance;
+    provenance.sourceImageId = QStringLiteral("slice187-parent-image");
+    provenance.sourceSize = QSize(800, 600);
+    const ImageCoordinateProvenance::Matrix3 expectedSourceMatrix{{2.0, 0.0, 10.0, 0.0, 3.0, 5.0, 0.0, 0.0, 1.0}};
+    QVERIFY(provenance.composeLocalToSource(expectedSourceMatrix));
+    mainView.setImage(image, provenance);
+    SamAnnotatorDialog dlg;
+    dlg.attachToImageWidget(&mainView, imagePath);
+    mainView.show();
+    QCoreApplication::processEvents();
+    mainView.actualSize();
+    mainView.setZoom(2.0);
+
+    QTest::mousePress(dlg.overlayWidget(), Qt::MiddleButton, Qt::NoModifier, QPoint(10, 10));
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(25, 5), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(dlg.overlayWidget(), &panMove);
+    QTest::mouseRelease(dlg.overlayWidget(), Qt::MiddleButton, Qt::NoModifier, QPoint(25, 5));
+
+    dlg.positivePointButton()->click();
+    QTest::mouseClick(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, QPoint(235, 160));
+    QCOMPARE(dlg.overlayWidget()->positivePromptPoints(), QList<QPointF>{QPointF(80.0, 60.0)});
+
+    dlg.boxButton()->click();
+    QSignalSpy dragSpy(dlg.overlayWidget(), &AnnotationOverlayWidget::dragEnded);
+    QTest::mousePress(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, QPoint(155, 100));
+    QMouseEvent boxMove(QEvent::MouseMove, QPointF(275, 220), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(dlg.overlayWidget(), &boxMove);
+    QTest::mouseRelease(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, QPoint(275, 220));
+    QCOMPARE(dragSpy.size(), 1);
+    const QList<QVariant> boxCoordinates = dragSpy.takeFirst();
+    QCOMPARE(boxCoordinates.at(0).toPointF(), QPointF(40.0, 30.0));
+    QCOMPARE(boxCoordinates.at(1).toPointF(), QPointF(100.0, 90.0));
+
+    const QList<QPointF> polygon{QPointF(20, 20), QPointF(60, 20), QPointF(60, 30),
+                                 QPointF(35, 30), QPointF(35, 55), QPointF(20, 55)};
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onPredictionReady", Qt::DirectConnection, Q_ARG(QList<QPointF>, polygon),
+                                      Q_ARG(QRectF, QRectF(20, 20, 40, 35)), Q_ARG(double, 0.97),
+                                      Q_ARG(QString, QStringLiteral("fixture-rle")), Q_ARG(QImage, QImage())));
+    QCOMPARE(dlg.overlayWidget()->previewPolygon(), polygon);
+    if (dlg.categoryCombo()->count() > 0)
+        dlg.categoryCombo()->setCurrentIndex(0);
+    const QString label = dlg.currentCategoryLabel();
+    QPushButton* confirm = nullptr;
+    for (QPushButton* button : dlg.findChildren<QPushButton*>()) {
+        if (button->text() == QStringLiteral("确认")) {
+            confirm = button;
+            break;
+        }
+    }
+    QVERIFY(confirm);
+    QVERIFY(confirm->isEnabled());
+    QTest::mouseClick(confirm, Qt::LeftButton);
+    QCOMPARE(dlg.session().annotations.size(), 1);
+    const AnnotationObject beforeSave = dlg.session().annotations.first();
+    QCOMPARE(beforeSave.label, label);
+    QCOMPARE(beforeSave.bbox, QRectF(20, 20, 40, 35));
+    QCOMPARE(beforeSave.polygon, polygon);
+    QCOMPARE(beforeSave.prompts.pointsPos, QList<QPointF>{QPointF(80.0, 60.0)});
+    QVERIFY(beforeSave.prompts.box.has_value());
+    QCOMPARE(*beforeSave.prompts.box, QRectF(40, 30, 60, 60));
+
+    const QString sessionPath = dir.filePath(QStringLiteral("concave.deeplux-anno.json"));
+    QString error;
+    QVERIFY2(dlg.saveAnnotationFile(sessionPath, &error), qPrintable(error));
+    const AnnotationSession saved = AnnotationSession::load(sessionPath, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(saved.imageWidth, 200);
+    QCOMPARE(saved.imageHeight, 150);
+    QVERIFY(saved.sourceCoordinateProvenance.isValid());
+    QCOMPARE(saved.sourceCoordinateProvenance.sourceImageId, QStringLiteral("slice187-parent-image"));
+    QCOMPARE(saved.sourceCoordinateProvenance.sourceSize, QSize(800, 600));
+    QCOMPARE(saved.sourceCoordinateProvenance.localToSourceMatrix(), expectedSourceMatrix);
+    QCOMPARE(saved.annotations.size(), 1);
+    QCOMPARE(saved.annotations.first().id, beforeSave.id);
+    QCOMPARE(saved.annotations.first().label, label);
+    QCOMPARE(saved.annotations.first().bbox, QRectF(20, 20, 40, 35));
+    QCOMPARE(saved.annotations.first().polygon, polygon);
+    QCOMPARE(saved.annotations.first().prompts.pointsPos, QList<QPointF>{QPointF(80.0, 60.0)});
+    QVERIFY(saved.annotations.first().prompts.box.has_value());
+    QCOMPARE(*saved.annotations.first().prompts.box, QRectF(40, 30, 60, 60));
+
+    SamAnnotatorDialog reopened;
+    QVERIFY2(reopened.openAnnotationFile(sessionPath, &error), qPrintable(error));
+    const AnnotationSession reopenedSession = reopened.session();
+    QVERIFY(reopenedSession.sourceCoordinateProvenance.isValid());
+    QCOMPARE(reopenedSession.sourceCoordinateProvenance.sourceImageId, QStringLiteral("slice187-parent-image"));
+    QCOMPARE(reopenedSession.sourceCoordinateProvenance.sourceSize, QSize(800, 600));
+    QCOMPARE(reopenedSession.sourceCoordinateProvenance.localToSourceMatrix(), expectedSourceMatrix);
+    QCOMPARE(reopenedSession.annotations.size(), 1);
+    const AnnotationObject& reopenedObject = reopenedSession.annotations.first();
+    QCOMPARE(reopenedObject.id, beforeSave.id);
+    QCOMPARE(reopenedObject.label, label);
+    QCOMPARE(reopenedObject.bbox, QRectF(20, 20, 40, 35));
+    QCOMPARE(reopenedObject.polygon, polygon);
+    QCOMPARE(reopenedObject.prompts.pointsPos, QList<QPointF>{QPointF(80.0, 60.0)});
+    QVERIFY(reopenedObject.prompts.box.has_value());
+    QCOMPARE(*reopenedObject.prompts.box, QRectF(40, 30, 60, 60));
+
+    const QJsonObject objectsPage = reopened.listAgentAnnotationObjects(0, 1);
+    QCOMPARE(objectsPage.value(QStringLiteral("coordinateFrame")).toString(), QStringLiteral("ImageLocalPixel"));
+    QVERIFY(objectsPage.value(QStringLiteral("sourceCoordinateAvailable")).toBool());
+    const QJsonArray objects = objectsPage.value(QStringLiteral("objects")).toArray();
+    QCOMPARE(objects.size(), 1);
+    const QJsonObject object = objects.first().toObject();
+    QCOMPARE(object.value(QStringLiteral("objectId")).toString(), beforeSave.id);
+    QCOMPARE(object.value(QStringLiteral("label")).toString(), label);
+    QCOMPARE(object.value(QStringLiteral("bbox")).toObject().value(QStringLiteral("x")).toDouble(), 20.0);
+    QCOMPARE(object.value(QStringLiteral("bbox")).toObject().value(QStringLiteral("y")).toDouble(), 20.0);
+    QCOMPARE(object.value(QStringLiteral("sourceImageId")).toString(), QStringLiteral("slice187-parent-image"));
+    QCOMPARE(object.value(QStringLiteral("sourceImageSize")).toObject().value(QStringLiteral("width")).toInt(), 800);
+    QCOMPARE(object.value(QStringLiteral("sourceImageSize")).toObject().value(QStringLiteral("height")).toInt(), 600);
+    const QJsonObject sourceBbox = object.value(QStringLiteral("sourceBbox")).toObject();
+    QCOMPARE(sourceBbox.value(QStringLiteral("x")).toDouble(), 50.0);
+    QCOMPARE(sourceBbox.value(QStringLiteral("y")).toDouble(), 65.0);
+    QCOMPARE(sourceBbox.value(QStringLiteral("width")).toDouble(), 80.0);
+    QCOMPARE(sourceBbox.value(QStringLiteral("height")).toDouble(), 105.0);
 }
 
 void TestSamAnnotatorDialog::mainViewModeUsesReadableConfigLayout() {
@@ -657,6 +1078,231 @@ void TestSamAnnotatorDialog::environmentControlButtonsExist() {
     QVERIFY(dlg.restartServerButton()->text().contains(QStringLiteral("重启")));
 }
 
+void TestSamAnnotatorDialog::environmentSetupOnlyStatusIsSanitizedAndCapturesGuiStates() {
+    struct EnvironmentRestore {
+        QByteArray python = qgetenv("SAM_SERVER_PYTHON");
+        QByteArray model = qgetenv("DEEPLUX_SAM_MODEL");
+        ~EnvironmentRestore() {
+            python.isEmpty() ? qunsetenv("SAM_SERVER_PYTHON") : qputenv("SAM_SERVER_PYTHON", python);
+            model.isEmpty() ? qunsetenv("DEEPLUX_SAM_MODEL") : qputenv("DEEPLUX_SAM_MODEL", model);
+        }
+    } restore;
+    qunsetenv("SAM_SERVER_PYTHON");
+    qunsetenv("DEEPLUX_SAM_MODEL");
+
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    static QTemporaryDir isolatedAppData;
+    QVERIFY(isolatedAppData.isValid());
+    qputenv("DEEPLUX_APP_DATA_DIR", isolatedAppData.path().toLocal8Bit());
+    ConfigManager& config = ConfigManager::instance();
+    const bool configWasInitialized = config.isInitialized();
+    const QString configPath = config.configFilePath();
+    const bool configFileExisted = QFileInfo::exists(configPath);
+    QVERIFY(!configWasInitialized);
+    QVERIFY(!configFileExisted);
+    QByteArray configBytesBefore;
+    if (configFileExisted) {
+        QFile configFile(configPath);
+        QVERIFY(configFile.open(QIODevice::ReadOnly));
+        configBytesBefore = configFile.readAll();
+    }
+#ifdef Q_OS_WIN
+    // Windows 以扩展名判定可执行文件，测试桩必须带 .exe 才会被环境检查视为有效外部 Python。
+    const QString pythonPath = temp.filePath(QStringLiteral("python.exe"));
+#else
+    const QString pythonPath = temp.filePath(QStringLiteral("python"));
+#endif
+    QFile python(pythonPath);
+    QVERIFY(python.open(QIODevice::WriteOnly));
+    python.write("#!/bin/sh\nexit 0\n");
+    python.close();
+    QVERIFY(python.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    const QString modelPath = temp.filePath(QStringLiteral("sam_vit_b.pth"));
+    QFile model(modelPath);
+    QVERIFY(model.open(QIODevice::WriteOnly));
+    model.write("test weights metadata only");
+    model.close();
+
+    SamAnnotatorDialog dialog(nullptr, true);
+    QCOMPARE(config.isInitialized(), configWasInitialized);
+    QCOMPARE(QFileInfo::exists(configPath), configFileExisted);
+    if (configFileExisted) {
+        QFile configFile(configPath);
+        QVERIFY(configFile.open(QIODevice::ReadOnly));
+        QCOMPARE(configFile.readAll(), configBytesBefore);
+    }
+    QCOMPARE(qgetenv("SAM_SERVER_PYTHON"), QByteArray());
+    QCOMPARE(qgetenv("DEEPLUX_SAM_MODEL"), QByteArray());
+    auto* client = dialog.findChild<SamBackendClient*>(QStringLiteral("SamBackendClient"));
+    QVERIFY(client);
+    client->setModelPath(QString());
+    dialog.show();
+    QCoreApplication::processEvents();
+    const QJsonObject initial = dialog.environmentHandoffStatus();
+    QVERIFY(initial.value(QStringLiteral("userActionRequired")).toBool());
+    QVERIFY(!initial.value(QStringLiteral("modelLoaded")).toBool());
+    QCOMPARE(initial.value(QStringLiteral("environmentSource")).toString(), QStringLiteral("missing"));
+    QCOMPARE(initial.value(QStringLiteral("modelPathConfigured")).toBool(), false);
+    QCOMPARE(initial.value(QStringLiteral("nextAction")).toString(), QStringLiteral("initialize_environment"));
+    QLabel* handoffLabel = dialog.findChild<QLabel*>(QStringLiteral("SamEnvironmentHandoffLabel"));
+    QPushButton* initButton = dialog.findChild<QPushButton*>(QStringLiteral("SamInitializeEnvironmentButton"));
+    QPushButton* restartButton = dialog.findChild<QPushButton*>(QStringLiteral("SamRestartServerButton"));
+    QVERIFY(handoffLabel);
+    QVERIFY(initButton);
+    QVERIFY(restartButton);
+    QVERIFY(handoffLabel->text().contains(QStringLiteral("初始化环境")));
+    QVERIFY(initButton->isEnabled());
+    QVERIFY(!restartButton->isEnabled());
+    QVERIFY(!initial.contains(QStringLiteral("pythonPath")));
+    QVERIFY(!initial.contains(QStringLiteral("modelPath")));
+    QVERIFY(dialog.findChild<QLabel*>(QStringLiteral("SamEnvironmentHandoffLabel")));
+
+    const QString evidenceDir = QString::fromLocal8Bit(qgetenv("DEEPLUX_SLICE40_EVIDENCE_DIR"));
+    if (!evidenceDir.isEmpty()) {
+        QDir().mkpath(evidenceDir);
+        QVERIFY(dialog.grab().save(QDir(evidenceDir).filePath(QStringLiteral("sam-setup-before.png"))));
+    }
+
+    qputenv("SAM_SERVER_PYTHON", temp.filePath(QStringLiteral("missing-python")).toLocal8Bit());
+    QCOMPARE(dialog.environmentHandoffStatus().value(QStringLiteral("nextAction")).toString(),
+             QStringLiteral("fix_external_python"));
+    const bool repeatedCallConfigInitialized = config.isInitialized();
+    const bool repeatedCallConfigExisted = QFileInfo::exists(configPath);
+    QByteArray repeatedCallConfigBytes;
+    if (repeatedCallConfigExisted) {
+        QFile configFile(configPath);
+        QVERIFY(configFile.open(QIODevice::ReadOnly));
+        repeatedCallConfigBytes = configFile.readAll();
+    }
+    {
+        SamAnnotatorDialog invalidPythonDialog(nullptr, true);
+        const QJsonObject invalidPythonStatus = invalidPythonDialog.environmentHandoffStatus();
+        QCOMPARE(invalidPythonStatus.value(QStringLiteral("nextAction")).toString(),
+                 QStringLiteral("fix_external_python"));
+        QLabel* invalidLabel = invalidPythonDialog.findChild<QLabel*>(QStringLiteral("SamEnvironmentHandoffLabel"));
+        QPushButton* invalidInit =
+            invalidPythonDialog.findChild<QPushButton*>(QStringLiteral("SamInitializeEnvironmentButton"));
+        QPushButton* invalidRestart =
+            invalidPythonDialog.findChild<QPushButton*>(QStringLiteral("SamRestartServerButton"));
+        QPushButton* importModel = invalidPythonDialog.findChild<QPushButton*>(QStringLiteral("SamImportModelButton"));
+        QVERIFY(invalidLabel);
+        QVERIFY(invalidInit);
+        QVERIFY(invalidRestart);
+        QVERIFY(importModel);
+        QVERIFY(invalidLabel->text().contains(QStringLiteral("修正外部 Python")));
+        QVERIFY(!invalidInit->isEnabled());
+        QVERIFY(!invalidRestart->isEnabled());
+        QVERIFY(importModel->isEnabled());
+    }
+    QCOMPARE(config.isInitialized(), repeatedCallConfigInitialized);
+    QCOMPARE(QFileInfo::exists(configPath), repeatedCallConfigExisted);
+    if (repeatedCallConfigExisted) {
+        QFile configFile(configPath);
+        QVERIFY(configFile.open(QIODevice::ReadOnly));
+        QCOMPARE(configFile.readAll(), repeatedCallConfigBytes);
+    }
+    qputenv("SAM_SERVER_PYTHON", pythonPath.toLocal8Bit());
+    client->setModelPath(temp.filePath(QStringLiteral("missing-sam_vit_b.pth")));
+    const QJsonObject missingModel = dialog.environmentHandoffStatus();
+    QVERIFY(!missingModel.value(QStringLiteral("modelFileAvailable")).toBool());
+    QCOMPARE(missingModel.value(QStringLiteral("nextAction")).toString(), QStringLiteral("import_model"));
+    const QString unsupportedModelPath = temp.filePath(QStringLiteral("sam3-vit-b.pth"));
+    QFile unsupportedModel(unsupportedModelPath);
+    QVERIFY(unsupportedModel.open(QIODevice::WriteOnly));
+    unsupportedModel.write("metadata only");
+    unsupportedModel.close();
+    client->setModelPath(unsupportedModelPath);
+    QCOMPARE(dialog.environmentHandoffStatus().value(QStringLiteral("modelSupported")).toString(),
+             QStringLiteral("unsupported"));
+    QCOMPARE(dialog.environmentHandoffStatus().value(QStringLiteral("nextAction")).toString(),
+             QStringLiteral("import_model"));
+
+    auto* view = new HImageWidget;
+    view->setImage(makeTestImage());
+    dialog.attachToImageWidgetForEnvironmentSetup(view);
+    QVERIFY(dialog.environmentHandoffStatus().value(QStringLiteral("imageAvailable")).toBool());
+    QCOMPARE(dialog.backendImagePathForTest(), QString());
+
+    client->setModelPath(modelPath);
+    SamTestServer server;
+    QVERIFY(server.listen());
+    client->setServerUrl(server.url());
+    server.healthMode = QStringLiteral("sam");
+    client->healthCheck();
+    QTRY_COMPARE_WITH_TIMEOUT(client->state(), SamBackendClient::State::Ready, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!client->healthCheckInFlight(), 1000);
+    const QJsonObject ready = dialog.environmentHandoffStatus();
+    QVERIFY(ready.value(QStringLiteral("environmentConfigured")).toBool());
+    QVERIFY(ready.value(QStringLiteral("modelFileAvailable")).toBool());
+    QVERIFY(ready.value(QStringLiteral("modelLoaded")).toBool());
+    QCOMPARE(ready.value(QStringLiteral("serverMode")).toString(), QStringLiteral("sam"));
+    QVERIFY(!ready.contains(QStringLiteral("pythonPath")));
+    QVERIFY(!ready.contains(QStringLiteral("modelPath")));
+    QCOMPARE(ready.value(QStringLiteral("nextAction")).toString(), QStringLiteral("none"));
+    if (!evidenceDir.isEmpty())
+        QVERIFY(dialog.grab().save(QDir(evidenceDir).filePath(QStringLiteral("sam-setup-after.png"))));
+
+    view->clearImage();
+    const QJsonObject cleared = dialog.environmentHandoffStatus();
+    QVERIFY(!cleared.value(QStringLiteral("imageAvailable")).toBool());
+    QCOMPARE(cleared.value(QStringLiteral("nextAction")).toString(), QStringLiteral("open_image"));
+    view->setImage(makeTestImage());
+    QCoreApplication::processEvents();
+    QCOMPARE(dialog.backendImagePathForTest(), QString());
+    QVERIFY(!dialog.session().imageDigest.isEmpty());
+    QVERIFY(handoffLabel->text().contains(QStringLiteral("环境、模型和服务已就绪")));
+    delete view;
+    const QJsonObject destroyed = dialog.environmentHandoffStatus();
+    QVERIFY(!destroyed.value(QStringLiteral("imageAvailable")).toBool());
+    QCOMPARE(destroyed.value(QStringLiteral("nextAction")).toString(), QStringLiteral("open_image"));
+
+    server.healthMode = QStringLiteral("stub");
+    client->healthCheck();
+    QTRY_COMPARE_WITH_TIMEOUT(client->state(), SamBackendClient::State::Ready, 3000);
+    const QJsonObject stub = dialog.environmentHandoffStatus();
+    QCOMPARE(stub.value(QStringLiteral("serverMode")).toString(), QStringLiteral("stub"));
+    QVERIFY(!stub.value(QStringLiteral("modelLoaded")).toBool());
+    QCOMPARE(stub.value(QStringLiteral("nextAction")).toString(), QStringLiteral("verify_model_service"));
+
+    server.delayMs.insert(QStringLiteral("/health"), 100);
+    client->healthCheck();
+    const QJsonObject checking = dialog.environmentHandoffStatus();
+    QVERIFY(checking.value(QStringLiteral("healthCheckInFlight")).toBool());
+    QCOMPARE(checking.value(QStringLiteral("nextAction")).toString(), QStringLiteral("wait_for_status"));
+    QTRY_VERIFY_WITH_TIMEOUT(!client->healthCheckInFlight(), 3000);
+
+    QCOMPARE(server.requestLog.count(QStringLiteral("POST /set_image")), 0);
+    server.healthMode = QStringLiteral("sam");
+    client->healthCheck();
+    QTRY_COMPARE_WITH_TIMEOUT(client->state(), SamBackendClient::State::Ready, 3000);
+    QSignalSpy embeddingReadySpy(client, &SamBackendClient::embeddingReady);
+    client->setImage(QStringLiteral("temporary-test-image.png"));
+    QTRY_VERIFY_WITH_TIMEOUT(embeddingReadySpy.count() == 1, 3000);
+    server.delayMs.insert(QStringLiteral("/predict"), 300);
+    client->predict({QPointF(5, 5)}, {}, QRectF());
+    QCOMPARE(client->state(), SamBackendClient::State::Busy);
+    const QJsonObject busy = dialog.environmentHandoffStatus();
+    QCOMPARE(busy.value(QStringLiteral("serverState")).toString(), QStringLiteral("busy"));
+    QCOMPARE(busy.value(QStringLiteral("nextAction")).toString(), QStringLiteral("wait_for_status"));
+    QVERIFY(handoffLabel->text().contains(QStringLiteral("等待完成")));
+    QTRY_COMPARE_WITH_TIMEOUT(client->state(), SamBackendClient::State::Ready, 3000);
+    server.delayMs.remove(QStringLiteral("/predict"));
+
+    server.healthStatus = QStringLiteral("error");
+    server.delayMs.remove(QStringLiteral("/health"));
+    client->healthCheck();
+    QTRY_COMPARE_WITH_TIMEOUT(client->state(), SamBackendClient::State::Error, 3000);
+    const QJsonObject unavailable = dialog.environmentHandoffStatus();
+    QCOMPARE(unavailable.value(QStringLiteral("serverState")).toString(), QStringLiteral("error"));
+    QCOMPARE(unavailable.value(QStringLiteral("nextAction")).toString(), QStringLiteral("restart_sam"));
+
+    QCOMPARE(server.requestLog.count(QStringLiteral("POST /set_image")), 1);
+    QVERIFY(!server.requestLog.contains(QStringLiteral("POST /unload_image")));
+
+    QCOMPARE(qgetenv("DEEPLUX_SAM_MODEL"), QByteArray()); // setup-only never writes the process environment
+}
+
 void TestSamAnnotatorDialog::predictionMaskIsForwardedToOverlay() {
     SamAnnotatorDialog dlg;
     dlg.setImageSnapshot(makeTestImage(), QString());
@@ -717,6 +1363,35 @@ void TestSamAnnotatorDialog::categoryCanBeRemoved() {
     dlg.removeCategoryButton()->click();
     QVERIFY(!dlg.categories().contains(QStringLiteral("临时")));
     QCOMPARE(dlg.categoryCombo()->findText(QStringLiteral("临时")), -1);
+}
+
+void TestSamAnnotatorDialog::testUserAddsAndRemovesSamCategoryThroughGui() {
+    SamAnnotatorDialog dlg;
+    const QString category = QStringLiteral("slice22-临时类别");
+    const int initialCount = dlg.categoryCombo()->count();
+
+    dlg.categoryCombo()->setEditText(category);
+    dlg.addCategoryButton()->click();
+
+    QCOMPARE(dlg.categoryCombo()->count(), initialCount + 1);
+    QVERIFY(dlg.categories().contains(category));
+    QCOMPARE(dlg.categoryCombo()->itemText(initialCount), category);
+
+    dlg.categoryCombo()->setCurrentIndex(initialCount);
+    dlg.removeCategoryButton()->click();
+
+    QCOMPARE(dlg.categoryCombo()->count(), initialCount);
+    QVERIFY(!dlg.categories().contains(category));
+    for (int row = 0; row < dlg.categoryCombo()->count(); ++row)
+        QVERIFY(dlg.categoryCombo()->itemText(row) != category);
+}
+
+void TestSamAnnotatorDialog::currentCategoryLabelUsesComboSelection() {
+    SamAnnotatorDialog dlg;
+    if (dlg.categoryCombo()->count() > 0) {
+        dlg.categoryCombo()->setCurrentIndex(0);
+        QVERIFY(!dlg.currentCategoryLabel().isEmpty());
+    }
 }
 
 void TestSamAnnotatorDialog::currentCategoryLabelPrefersDropdownSelection() {
@@ -1293,6 +1968,850 @@ void TestSamAnnotatorDialog::editFallsBackToPolygonRasterization() {
     QCOMPARE(dlg.overlayWidget()->objectMask(id).size(), QSize(200, 150));
 }
 
+void TestSamAnnotatorDialog::agentMaskOperationsValidateAndUndo() {
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), QString());
+    const QString firstId = confirmObject(dlg, squarePolygon(20, 20, 20), QRectF(20, 20, 20, 20),
+                                          makeDisplayMask(200, 150, {QRect(20, 20, 20, 20)}));
+    const QString secondId = confirmObject(dlg, squarePolygon(38, 20, 20), QRectF(38, 20, 20, 20),
+                                           makeDisplayMask(200, 150, {QRect(38, 20, 20, 20)}));
+    const QImage splitMask = makeDisplayMask(200, 150, {QRect(80, 30, 10, 10), QRect(100, 30, 10, 10)});
+    const QString splitId = confirmObject(dlg, squarePolygon(80, 30, 10), QRectF(80, 30, 30, 10), splitMask);
+    QVERIFY(!firstId.isEmpty() && !secondId.isEmpty() && !splitId.isEmpty());
+
+    const QJsonObject firstPage = dlg.listAgentAnnotationObjects(0, 2);
+    QCOMPARE(firstPage.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+    QCOMPARE(firstPage.value(QStringLiteral("total")).toInt(), 3);
+    QCOMPARE(firstPage.value(QStringLiteral("objects")).toArray().size(), 2);
+    QVERIFY(firstPage.value(QStringLiteral("hasMore")).toBool());
+    QCOMPARE(firstPage.value(QStringLiteral("nextOffset")).toInt(), 2);
+    const QJsonObject lastPage =
+        dlg.listAgentAnnotationObjects(firstPage.value(QStringLiteral("nextOffset")).toInt(), 2);
+    QCOMPARE(lastPage.value(QStringLiteral("objects")).toArray().size(), 1);
+    QVERIFY(!lastPage.value(QStringLiteral("hasMore")).toBool());
+    QCOMPARE(
+        dlg.listAgentAnnotationObjects(std::numeric_limits<int>::max(), 50).value(QStringLiteral("status")).toString(),
+        QStringLiteral("ok"));
+
+    const AnnotationSession before = dlg.session();
+    auto edit = [&dlg](const QString& operation, const QJsonArray& ids, const QJsonObject& extra = {}) {
+        QJsonObject params{{QStringLiteral("operation"), operation}, {QStringLiteral("objectIds"), ids}};
+        for (auto it = extra.constBegin(); it != extra.constEnd(); ++it)
+            params.insert(it.key(), it.value());
+        return dlg.applyAgentMaskEdit(params);
+    };
+    const QJsonArray firstObject{firstId};
+    QCOMPARE(edit(QStringLiteral("dilate"), firstObject, {{QStringLiteral("radiusPx"), 2}})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("updated"));
+    QCOMPARE(dlg.session().annotations.first().bbox, QRectF(18, 18, 24, 24));
+    dlg.undoButton()->click();
+    QCOMPARE(dlg.session().annotations.first().maskRle, before.annotations.first().maskRle);
+    dlg.redoButton()->click();
+    QCOMPARE(dlg.session().annotations.first().bbox, QRectF(18, 18, 24, 24));
+
+    const AnnotationSession beforeErode = dlg.session();
+    QCOMPARE(edit(QStringLiteral("erode"), firstObject, {{QStringLiteral("radiusPx"), 1}})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("updated"));
+    dlg.undoButton()->click();
+    QCOMPARE(dlg.session().annotations.first().maskRle, beforeErode.annotations.first().maskRle);
+    dlg.redoButton()->click();
+
+    const AnnotationSession beforeErase = dlg.session();
+    const QJsonArray stroke{QJsonArray{25, 25}, QJsonArray{29, 25}, QJsonArray{33, 25}};
+    QCOMPARE(edit(QStringLiteral("erase_stroke"), firstObject,
+                  {{QStringLiteral("radiusPx"), 2}, {QStringLiteral("strokePoints"), stroke}})
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("updated"));
+    dlg.undoButton()->click();
+    QCOMPARE(dlg.session().annotations.first().maskRle, beforeErase.annotations.first().maskRle);
+    dlg.redoButton()->click();
+
+    const QJsonObject merged = edit(QStringLiteral("merge"), QJsonArray{firstId, secondId});
+    QCOMPARE(merged.value(QStringLiteral("status")).toString(), QStringLiteral("updated"));
+    QCOMPARE(dlg.session().annotations.size(), 2);
+    QCOMPARE(dlg.session().annotations.first().id, firstId);
+    dlg.undoButton()->click();
+    QCOMPARE(dlg.session().annotations.size(), 3);
+    QCOMPARE(dlg.session().annotations.at(1).id, secondId);
+    dlg.redoButton()->click();
+    dlg.undoButton()->click();
+
+    const QJsonObject split = edit(QStringLiteral("split"), QJsonArray{splitId});
+    QCOMPARE(split.value(QStringLiteral("status")).toString(), QStringLiteral("updated"));
+    QCOMPARE(split.value(QStringLiteral("newObjectIds")).toArray().size(), 1);
+    QCOMPARE(dlg.session().annotations.size(), 4);
+    dlg.undoButton()->click();
+    QCOMPARE(dlg.session().annotations.size(), 3);
+    QCOMPARE(dlg.session().annotations.at(2).id, splitId);
+    dlg.redoButton()->click();
+    QCOMPARE(dlg.session().annotations.size(), 4);
+
+    QList<QRect> componentRects;
+    for (int i = 0; i < 64; ++i)
+        componentRects.append(QRect(2 + (i % 8) * 4, 80 + (i / 8) * 4, 1, 1));
+    const QImage sixtyFourMask = makeDisplayMask(200, 150, componentRects);
+    const QString sixtyFourId = confirmObject(dlg, squarePolygon(2, 80, 1), QRectF(2, 80, 29, 29), sixtyFourMask);
+    const int beforeSixtyFourSplit = dlg.session().annotations.size();
+    const QJsonObject sixtyFourSplit = edit(QStringLiteral("split"), QJsonArray{sixtyFourId});
+    QCOMPARE(sixtyFourSplit.value(QStringLiteral("status")).toString(), QStringLiteral("updated"));
+    QCOMPARE(sixtyFourSplit.value(QStringLiteral("newObjectIds")).toArray().size(), 63);
+    QCOMPARE(dlg.session().annotations.size(), beforeSixtyFourSplit + 63);
+    dlg.undoButton()->click();
+    QCOMPARE(dlg.session().annotations.size(), beforeSixtyFourSplit);
+
+    componentRects.append(QRect(34, 80, 1, 1));
+    const QImage sixtyFiveMask = makeDisplayMask(200, 150, componentRects);
+    const QString sixtyFiveId = confirmObject(dlg, squarePolygon(2, 80, 1), QRectF(2, 80, 33, 29), sixtyFiveMask);
+    const int beforeRejectedSplit = dlg.session().annotations.size();
+    const QString selectionBeforeRejectedSplit = dlg.overlayWidget()->selectedId();
+    const QImage firstOverlayBeforeRejectedSplit = dlg.overlayWidget()->objectMask(firstId);
+    const bool undoEnabledBeforeRejectedSplit = dlg.undoButton()->isEnabled();
+    const QJsonObject sixtyFiveSplit = edit(QStringLiteral("split"), QJsonArray{sixtyFiveId});
+    QCOMPARE(sixtyFiveSplit.value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("MASK_RESOURCE_LIMIT_EXCEEDED"));
+    QCOMPARE(dlg.session().annotations.size(), beforeRejectedSplit);
+    QCOMPARE(dlg.overlayWidget()->selectedId(), selectionBeforeRejectedSplit);
+    QCOMPARE(dlg.overlayWidget()->objectMask(firstId), firstOverlayBeforeRejectedSplit);
+    QCOMPARE(dlg.undoButton()->isEnabled(), undoEnabledBeforeRejectedSplit);
+
+    const AnnotationSession beforeRejected = dlg.session();
+    const QString selectionBeforeRejected = dlg.overlayWidget()->selectedId();
+    const QImage firstOverlayBeforeRejected = dlg.overlayWidget()->objectMask(firstId);
+    const bool undoEnabledBeforeRejected = dlg.undoButton()->isEnabled();
+    const QJsonObject unknownParam = edit(QStringLiteral("dilate"), firstObject,
+                                          {{QStringLiteral("radiusPx"), 2}, {QStringLiteral("unexpected"), true}});
+    QCOMPARE(unknownParam.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    const QJsonObject badRadius = edit(QStringLiteral("dilate"), firstObject, {{QStringLiteral("radiusPx"), 0}});
+    QCOMPARE(badRadius.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    const QJsonObject missingRadius = edit(QStringLiteral("dilate"), firstObject);
+    QCOMPARE(missingRadius.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    const QJsonObject wrongRadiusType =
+        edit(QStringLiteral("dilate"), firstObject, {{QStringLiteral("radiusPx"), QStringLiteral("2")}});
+    QCOMPARE(wrongRadiusType.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    const QJsonObject badStroke = edit(QStringLiteral("erase_stroke"), firstObject,
+                                       {{QStringLiteral("radiusPx"), 2},
+                                        {QStringLiteral("strokePoints"), QJsonArray{QJsonValue(QJsonArray{-1, 25})}}});
+    QCOMPARE(badStroke.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    QCOMPARE(edit(QStringLiteral("merge"), QJsonArray{firstId, firstId}).value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("INVALID_PARAM"));
+    QCOMPARE(edit(QStringLiteral("split"), QJsonArray{QStringLiteral("missing-object")})
+                 .value(QStringLiteral("errorCode"))
+                 .toString(),
+             QStringLiteral("ANNOTATION_OBJECT_NOT_FOUND"));
+    QCOMPARE(edit(QStringLiteral("merge"), QJsonArray{firstId, splitId}).value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("MASK_OPERATION_REJECTED"));
+
+    const QJsonObject nonIntegerRadius =
+        edit(QStringLiteral("dilate"), firstObject, {{QStringLiteral("radiusPx"), 1.5}});
+    QCOMPARE(nonIntegerRadius.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    const QJsonObject malformedPoint = edit(
+        QStringLiteral("erase_stroke"), firstObject,
+        {{QStringLiteral("radiusPx"), 2}, {QStringLiteral("strokePoints"), QJsonArray{QJsonValue(QJsonArray{25})}}});
+    QCOMPARE(malformedPoint.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    const QJsonObject emptyStroke =
+        edit(QStringLiteral("erase_stroke"), firstObject,
+             {{QStringLiteral("radiusPx"), 2}, {QStringLiteral("strokePoints"), QJsonArray{}}});
+    QCOMPARE(emptyStroke.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    QJsonArray maxStroke;
+    for (int i = 0; i < 4096; ++i)
+        maxStroke.append(QJsonArray{5, 5}); // valid image coordinates; misses the object
+    const QJsonObject maxStrokeResult =
+        dlg.applyAgentMaskEdit(QJsonObject{{QStringLiteral("operation"), QStringLiteral("erase_stroke")},
+                                           {QStringLiteral("objectIds"), firstObject},
+                                           {QStringLiteral("radiusPx"), 2},
+                                           {QStringLiteral("strokePoints"), maxStroke}},
+                               true);
+    QCOMPARE(maxStrokeResult.value(QStringLiteral("status")).toString(), QStringLiteral("unchanged"));
+    maxStroke.append(QJsonArray{5, 5});
+    const QJsonObject tooManyStrokePoints =
+        dlg.applyAgentMaskEdit(QJsonObject{{QStringLiteral("operation"), QStringLiteral("erase_stroke")},
+                                           {QStringLiteral("objectIds"), firstObject},
+                                           {QStringLiteral("radiusPx"), 2},
+                                           {QStringLiteral("strokePoints"), maxStroke}},
+                               true);
+    QCOMPARE(tooManyStrokePoints.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    const QJsonObject nonFiniteStroke = dlg.applyAgentMaskEdit(
+        QJsonObject{{QStringLiteral("operation"), QStringLiteral("erase_stroke")},
+                    {QStringLiteral("objectIds"), firstObject},
+                    {QStringLiteral("radiusPx"), 2},
+                    {QStringLiteral("strokePoints"),
+                     QJsonArray{QJsonValue(QJsonArray{QJsonValue(std::numeric_limits<double>::quiet_NaN()), 25})}}},
+        true);
+    QCOMPARE(nonFiniteStroke.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    const QJsonObject infiniteStroke = dlg.applyAgentMaskEdit(
+        QJsonObject{{QStringLiteral("operation"), QStringLiteral("erase_stroke")},
+                    {QStringLiteral("objectIds"), firstObject},
+                    {QStringLiteral("radiusPx"), 2},
+                    {QStringLiteral("strokePoints"),
+                     QJsonArray{QJsonValue(QJsonArray{QJsonValue(std::numeric_limits<double>::infinity()), 25})}}},
+        true);
+    QCOMPARE(infiniteStroke.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    QCOMPARE(dlg.session().annotations.size(), beforeRejected.annotations.size());
+    for (int i = 0; i < beforeRejected.annotations.size(); ++i) {
+        QCOMPARE(dlg.session().annotations.at(i).id, beforeRejected.annotations.at(i).id);
+        QCOMPARE(dlg.session().annotations.at(i).maskRle, beforeRejected.annotations.at(i).maskRle);
+    }
+    QCOMPARE(dlg.overlayWidget()->selectedId(), selectionBeforeRejected);
+    QCOMPARE(dlg.overlayWidget()->objectMask(firstId), firstOverlayBeforeRejected);
+    QCOMPARE(dlg.undoButton()->isEnabled(), undoEnabledBeforeRejected);
+    dlg.undoButton()->click();
+    QCOMPARE(dlg.session().annotations.size(), beforeRejected.annotations.size() - 1);
+    dlg.redoButton()->click();
+    QCOMPARE(dlg.session().annotations.size(), beforeRejected.annotations.size());
+
+    const QString polygonOnlyId = confirmObject(dlg, squarePolygon(120, 90, 15), QRectF(120, 90, 15, 15), QImage());
+    QVERIFY(!polygonOnlyId.isEmpty());
+    const QString originalPolygonOnlyRle = dlg.session().annotations.last().maskRle;
+    QCOMPARE(originalPolygonOnlyRle, QString());
+    const QJsonObject polygonFallback =
+        edit(QStringLiteral("dilate"), QJsonArray{polygonOnlyId}, {{QStringLiteral("radiusPx"), 1}});
+    QCOMPARE(polygonFallback.value(QStringLiteral("status")).toString(), QStringLiteral("updated"));
+    QVERIFY(!dlg.session().annotations.last().maskRle.isEmpty());
+    dlg.undoButton()->click();
+    QCOMPARE(dlg.session().annotations.last().maskRle, originalPolygonOnlyRle);
+    dlg.redoButton()->click();
+
+    dlg.categoryCombo()->setCurrentIndex(-1);
+    dlg.categoryCombo()->setEditText(QString(32760, QLatin1Char('a')));
+    QVERIFY(!confirmObject(dlg, squarePolygon(150, 20, 5), QRectF(150, 20, 5, 5),
+                           makeDisplayMask(200, 150, {QRect(150, 20, 5, 5)}))
+                 .isEmpty());
+    dlg.categoryCombo()->setEditText(QString(32760, QLatin1Char('b')));
+    QVERIFY(!confirmObject(dlg, squarePolygon(160, 20, 5), QRectF(160, 20, 5, 5),
+                           makeDisplayMask(200, 150, {QRect(160, 20, 5, 5)}))
+                 .isEmpty());
+    const QJsonObject cappedPage = dlg.listAgentAnnotationObjects(0, 50);
+    QCOMPARE(cappedPage.value(QStringLiteral("errorCode")).toString(), QStringLiteral("RESPONSE_LIMIT_EXCEEDED"));
+    QCOMPARE(dlg.listAgentAnnotationObjects(0, 1).value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+}
+
+void TestSamAnnotatorDialog::activeAnnotationObjectsReportSourceBboxWhenVerified() {
+    const QImage image = makeTestImage();
+    ImageCoordinateProvenance provenance;
+    provenance.sourceImageId = QStringLiteral("source-image-fixture");
+    provenance.sourceSize = QSize(320, 240);
+    provenance.localOriginInSource = QPointF(10, 20);
+    HImageWidget viewportImage;
+    viewportImage.setImage(image, provenance);
+    SamAnnotatorDialog dlg(nullptr, true);
+    dlg.attachToImageWidgetForEnvironmentSetup(&viewportImage);
+    QVERIFY(!confirmObject(dlg, squarePolygon(20, 30, 10), QRectF(20, 30, 10, 10),
+                           makeDisplayMask(200, 150, {QRect(20, 30, 10, 10)}))
+                 .isEmpty());
+
+    QJsonObject result = dlg.listAgentAnnotationObjects(0, 10);
+    QCOMPARE(result.value(QStringLiteral("coordinateFrame")).toString(), QStringLiteral("ImageLocalPixel"));
+    QVERIFY(result.value(QStringLiteral("sourceCoordinateAvailable")).toBool());
+    const QJsonObject object = result.value(QStringLiteral("objects")).toArray().first().toObject();
+    QCOMPARE(object.value(QStringLiteral("bbox")).toObject().value(QStringLiteral("x")).toDouble(), 20.0);
+    QCOMPARE(object.value(QStringLiteral("bbox")).toObject().value(QStringLiteral("y")).toDouble(), 30.0);
+    QCOMPARE(object.value(QStringLiteral("sourceImageId")).toString(), QStringLiteral("source-image-fixture"));
+    QCOMPARE(object.value(QStringLiteral("sourceImageSize")).toObject().value(QStringLiteral("width")).toInt(), 320);
+    const QJsonObject sourceBbox = object.value(QStringLiteral("sourceBbox")).toObject();
+    QCOMPARE(sourceBbox.value(QStringLiteral("x")).toDouble(), 30.0);
+    QCOMPARE(sourceBbox.value(QStringLiteral("y")).toDouble(), 50.0);
+    QCOMPARE(sourceBbox.value(QStringLiteral("width")).toDouble(), 10.0);
+    QCOMPARE(sourceBbox.value(QStringLiteral("height")).toDouble(), 10.0);
+
+    viewportImage.setImage(image, ImageCoordinateProvenance());
+    result = dlg.listAgentAnnotationObjects(0, 10);
+    QVERIFY(!result.value(QStringLiteral("sourceCoordinateAvailable")).toBool());
+    const QJsonObject unavailableObject = result.value(QStringLiteral("objects")).toArray().first().toObject();
+    QVERIFY(!unavailableObject.contains(QStringLiteral("sourceImageId")));
+    QVERIFY(!unavailableObject.contains(QStringLiteral("sourceImageSize")));
+    QVERIFY(!unavailableObject.contains(QStringLiteral("sourceBbox")));
+
+    ImageCoordinateProvenance affineProvenance;
+    affineProvenance.sourceImageId = QStringLiteral("affine-source");
+    affineProvenance.sourceSize = QSize(320, 240);
+    QVERIFY(affineProvenance.composeLocalToSource({{2.0, 0.0, 5.0, 0.0, 3.0, 7.0, 0.0, 0.0, 1.0}}));
+    viewportImage.setImage(image, affineProvenance);
+    result = dlg.listAgentAnnotationObjects(0, 10);
+    const QJsonObject affineObject = result.value(QStringLiteral("objects")).toArray().first().toObject();
+    const QJsonObject affineSourceBbox = affineObject.value(QStringLiteral("sourceBbox")).toObject();
+    QCOMPARE(affineSourceBbox.value(QStringLiteral("x")).toDouble(), 45.0);
+    QCOMPARE(affineSourceBbox.value(QStringLiteral("y")).toDouble(), 97.0);
+    QCOMPARE(affineSourceBbox.value(QStringLiteral("width")).toDouble(), 20.0);
+    QCOMPARE(affineSourceBbox.value(QStringLiteral("height")).toDouble(), 30.0);
+
+    ImageCoordinateProvenance horizonProvenance;
+    horizonProvenance.sourceImageId = QStringLiteral("horizon-source");
+    horizonProvenance.sourceSize = QSize(320, 240);
+    QVERIFY(horizonProvenance.composeLocalToSource({{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -25.0}}));
+    QVERIFY(horizonProvenance.mapLocalToSource(QPointF(20.0, 30.0)));
+    QVERIFY(horizonProvenance.mapLocalToSource(QPointF(30.0, 40.0)));
+    QVERIFY(!horizonProvenance.mapRectToSourceBounds(QRectF(20.0, 30.0, 10.0, 10.0)));
+    viewportImage.setImage(image, horizonProvenance);
+    result = dlg.listAgentAnnotationObjects(0, 10);
+    const QJsonObject horizonObject = result.value(QStringLiteral("objects")).toArray().first().toObject();
+    QVERIFY(horizonObject.value(QStringLiteral("bbox")).isObject());
+    QVERIFY(!horizonObject.contains(QStringLiteral("sourceBbox")));
+}
+
+void TestSamAnnotatorDialog::sharedImageProvenanceRebindUpdatesSessionAndKeepsLocalState() {
+    HImageWidget mainView;
+    mainView.resize(320, 240);
+    mainView.setFixedSize(320, 240);
+
+    const QImage image = makeTestImage();
+    QImage changedImage = image.copy();
+    changedImage.setPixelColor(0, 0, QColor(Qt::magenta));
+
+    ImageCoordinateProvenance provenanceA;
+    provenanceA.sourceImageId = QStringLiteral("slice165-source-A");
+    provenanceA.sourceSize = QSize(320, 240);
+    provenanceA.localOriginInSource = QPointF(50.0, 40.0);
+    QVERIFY(provenanceA.isValid());
+    mainView.setImage(image, provenanceA);
+
+    SamAnnotatorDialog dlg(nullptr, true);
+    dlg.attachToImageWidgetForEnvironmentSetup(&mainView);
+    mainView.show();
+    QCoreApplication::processEvents();
+
+    QString oldObjectId;
+    QList<QPointF> expectedPrompts;
+    bool expectPreview = true;
+    QJsonObject expectedPromptSnapshot;
+    QImage expectedMask;
+    int expectedUndoCount = 0;
+    int expectedUndoIndex = 0;
+    const auto prepareOldState = [&]() {
+        expectedPrompts.clear();
+        expectPreview = true;
+        oldObjectId = confirmObject(dlg, squarePolygon(40, 30, 20), QRectF(40, 30, 20, 20),
+                                    makeDisplayMask(200, 150, {QRect(40, 30, 20, 20)}));
+        QVERIFY(!oldObjectId.isEmpty());
+        QVERIFY(dlg.undoStackCount() > 0);
+
+        mainView.actualSize();
+        mainView.setZoom(2.0);
+        QTest::mousePress(dlg.overlayWidget(), Qt::MiddleButton, Qt::NoModifier, QPoint(10, 10));
+        QMouseEvent panMove(QEvent::MouseMove, QPointF(25, 5), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+        QApplication::sendEvent(dlg.overlayWidget(), &panMove);
+        QTest::mouseRelease(dlg.overlayWidget(), Qt::MiddleButton, Qt::NoModifier, QPoint(25, 5));
+
+        dlg.positivePointButton()->click();
+        QTest::mouseClick(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, QPoint(235, 160));
+        expectedPrompts.append(QPointF(80.0, 60.0));
+        QCOMPARE(dlg.overlayWidget()->positivePromptPoints(), expectedPrompts);
+        dlg.boxButton()->click();
+        QSignalSpy dragSpy(dlg.overlayWidget(), &AnnotationOverlayWidget::dragEnded);
+        QTest::mousePress(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, QPoint(155, 100));
+        QMouseEvent boxMove(QEvent::MouseMove, QPointF(275, 220), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(dlg.overlayWidget(), &boxMove);
+        QTest::mouseRelease(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, QPoint(275, 220));
+        QCOMPARE(dragSpy.size(), 1);
+
+        QVERIFY(QMetaObject::invokeMethod(&dlg, "onPredictionReady", Qt::DirectConnection,
+                                          Q_ARG(QList<QPointF>, squarePolygon(40, 30, 20)),
+                                          Q_ARG(QRectF, QRectF(40, 30, 20, 20)), Q_ARG(double, 0.9),
+                                          Q_ARG(QString, QStringLiteral("preview-rle")), Q_ARG(QImage, QImage())));
+        QVERIFY(!dlg.overlayWidget()->previewPolygon().isEmpty());
+        QCOMPARE(dlg.session().annotations.size(), 1);
+        expectedPromptSnapshot = dlg.agentPromptStateSnapshot();
+        expectedMask = dlg.overlayWidget()->objectMask(oldObjectId);
+        expectedUndoCount = dlg.undoStackCount();
+        expectedUndoIndex = dlg.undoStackIndex();
+    };
+    const auto verifyOldStatePreserved = [&]() {
+        QCOMPARE(dlg.overlayWidget()->positivePromptPoints(), expectedPrompts);
+        QCOMPARE(dlg.agentPromptStateSnapshot(), expectedPromptSnapshot);
+        QCOMPARE(dlg.session().annotations.size(), 1);
+        QCOMPARE(dlg.undoStackCount(), expectedUndoCount);
+        QCOMPARE(dlg.undoStackIndex(), expectedUndoIndex);
+        QCOMPARE(!dlg.overlayWidget()->previewPolygon().isEmpty(), expectPreview);
+        QCOMPARE(dlg.overlayWidget()->objectMask(oldObjectId), expectedMask);
+    };
+    const auto verifyOldStateCleared = [&]() {
+        QVERIFY(dlg.overlayWidget()->positivePromptPoints().isEmpty());
+        QVERIFY(dlg.overlayWidget()->negativePromptPoints().isEmpty());
+        QVERIFY(dlg.overlayWidget()->previewPolygon().isEmpty());
+        QCOMPARE(dlg.session().annotations.size(), 0);
+        QVERIFY(dlg.overlayWidget()->objectMask(oldObjectId).isNull());
+        QCOMPARE(dlg.undoStackCount(), 0);
+        QCOMPARE(dlg.undoStackIndex(), 0);
+    };
+
+    prepareOldState();
+
+    ImageCoordinateProvenance equivalentA;
+    equivalentA.sourceImageId = provenanceA.sourceImageId;
+    equivalentA.sourceSize = provenanceA.sourceSize;
+    QVERIFY(equivalentA.composeLocalToSource({{1.0, 0.0, 50.0, 0.0, 1.0, 40.0, 0.0, 0.0, 1.0}}));
+    QCOMPARE(equivalentA.localToSourceMatrix(), provenanceA.localToSourceMatrix());
+    mainView.setImage(image, equivalentA);
+    verifyOldStatePreserved();
+
+    mainView.setImage(changedImage, equivalentA);
+    verifyOldStateCleared();
+    QCOMPARE(dlg.session().sourceCoordinateProvenance.sourceImageId, equivalentA.sourceImageId);
+    QCOMPARE(dlg.session().imageDigest, AnnotationSession::computeImageDigest(changedImage));
+
+    mainView.setImage(image, equivalentA);
+    prepareOldState();
+    ImageCoordinateProvenance changedSize = equivalentA;
+    changedSize.sourceSize = QSize(400, 300);
+    mainView.setImage(image, changedSize);
+    verifyOldStatePreserved();
+    QCOMPARE(dlg.session().sourceCoordinateProvenance.sourceSize, QSize(400, 300));
+
+    ImageCoordinateProvenance changedTransform = changedSize;
+    QVERIFY(changedTransform.composeLocalToSource({{1.0, 0.0, 10.0, 0.0, 1.0, 5.0, 0.0, 0.0, 1.0}}));
+    mainView.setImage(image, changedTransform);
+    verifyOldStatePreserved();
+    QCOMPARE(dlg.session().sourceCoordinateProvenance.localOriginInSource, QPointF(60.0, 45.0));
+    QJsonObject remappedObjects = dlg.listAgentAnnotationObjects(0, 10);
+    QJsonObject remappedSourceBbox = remappedObjects.value(QStringLiteral("objects"))
+                                         .toArray()
+                                         .first()
+                                         .toObject()
+                                         .value(QStringLiteral("sourceBbox"))
+                                         .toObject();
+    QCOMPARE(remappedSourceBbox.value(QStringLiteral("x")).toDouble(), 100.0);
+    QCOMPARE(remappedSourceBbox.value(QStringLiteral("y")).toDouble(), 75.0);
+
+    ImageCoordinateProvenance changedId = changedTransform;
+    changedId.sourceImageId = QStringLiteral("slice165-source-B");
+    mainView.setImage(image, changedId);
+    verifyOldStatePreserved();
+    QCOMPARE(dlg.session().sourceCoordinateProvenance.sourceImageId, changedId.sourceImageId);
+    remappedObjects = dlg.listAgentAnnotationObjects(0, 10);
+    remappedSourceBbox = remappedObjects.value(QStringLiteral("objects"))
+                             .toArray()
+                             .first()
+                             .toObject()
+                             .value(QStringLiteral("sourceBbox"))
+                             .toObject();
+    QCOMPARE(remappedObjects.value(QStringLiteral("objects"))
+                 .toArray()
+                 .first()
+                 .toObject()
+                 .value(QStringLiteral("sourceImageId"))
+                 .toString(),
+             changedId.sourceImageId);
+    QCOMPARE(remappedSourceBbox.value(QStringLiteral("x")).toDouble(), 100.0);
+    QCOMPARE(remappedSourceBbox.value(QStringLiteral("y")).toDouble(), 75.0);
+
+    mainView.actualSize();
+    mainView.setZoom(2.0);
+    QTest::mousePress(dlg.overlayWidget(), Qt::MiddleButton, Qt::NoModifier, QPoint(10, 10));
+    QMouseEvent newPanMove(QEvent::MouseMove, QPointF(25, 5), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(dlg.overlayWidget(), &newPanMove);
+    QTest::mouseRelease(dlg.overlayWidget(), Qt::MiddleButton, Qt::NoModifier, QPoint(25, 5));
+    dlg.positivePointButton()->click();
+    QTest::mouseClick(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, QPoint(255, 180));
+    expectedPrompts.append(QPointF(90.0, 70.0));
+    QCOMPARE(dlg.overlayWidget()->positivePromptPoints(), expectedPrompts);
+    expectPreview = false;
+    expectedPromptSnapshot = dlg.agentPromptStateSnapshot();
+    expectedMask = dlg.overlayWidget()->objectMask(oldObjectId);
+    expectedUndoCount = dlg.undoStackCount();
+    expectedUndoIndex = dlg.undoStackIndex();
+    const auto sourcePointB = mainView.coordinateProvenance().mapLocalToSource(QPointF(90.0, 70.0));
+    QVERIFY(sourcePointB.has_value());
+    QCOMPARE(sourcePointB->x(), 150.0);
+    QCOMPARE(sourcePointB->y(), 115.0);
+
+    mainView.setImage(image, ImageCoordinateProvenance());
+    verifyOldStatePreserved();
+    QVERIFY(!dlg.session().sourceCoordinateProvenance.isValid());
+    const QJsonObject invalidSourceObjects = dlg.listAgentAnnotationObjects(0, 10);
+    QVERIFY(!invalidSourceObjects.value(QStringLiteral("sourceCoordinateAvailable")).toBool());
+
+    mainView.setImage(image, provenanceA);
+    verifyOldStatePreserved();
+    QCOMPARE(dlg.session().sourceCoordinateProvenance.sourceImageId, provenanceA.sourceImageId);
+
+    mainView.setImage(changedImage, provenanceA);
+    verifyOldStateCleared();
+    dlg.undoButton()->click();
+    dlg.redoButton()->click();
+    QCOMPARE(dlg.session().annotations.size(), 0);
+
+    prepareOldState();
+    mainView.setImage(image, changedId);
+    verifyOldStateCleared();
+    QCOMPARE(dlg.session().sourceCoordinateProvenance.sourceImageId, changedId.sourceImageId);
+    QCOMPARE(dlg.session().imageDigest, AnnotationSession::computeImageDigest(image));
+}
+
+void TestSamAnnotatorDialog::sharedViewMousePromptsCancelWithoutLosingConfirmedAnnotation() {
+    HImageWidget mainView;
+    mainView.resize(320, 240);
+    mainView.setFixedSize(320, 240);
+
+    const QImage image = makeTestImage();
+    ImageCoordinateProvenance provenance;
+    provenance.sourceImageId = QStringLiteral("slice166-parent");
+    provenance.sourceSize = QSize(320, 240);
+    provenance.localOriginInSource = QPointF(50.0, 40.0);
+    QVERIFY(provenance.isValid());
+    mainView.setImage(image, provenance);
+
+    SamAnnotatorDialog dlg(nullptr, true);
+    dlg.attachToImageWidgetForEnvironmentSetup(&mainView);
+    mainView.show();
+    QCoreApplication::processEvents();
+
+    const QString objectId = confirmObject(dlg, squarePolygon(40, 30, 20), QRectF(40, 30, 20, 20),
+                                           makeDisplayMask(200, 150, {QRect(40, 30, 20, 20)}));
+    QVERIFY(!objectId.isEmpty());
+    const QImage confirmedMask = dlg.overlayWidget()->objectMask(objectId);
+    QVERIFY(!confirmedMask.isNull());
+    QVERIFY(dlg.undoStackCount() > 0);
+
+    mainView.actualSize();
+    mainView.setZoom(2.0);
+    QTest::mousePress(dlg.overlayWidget(), Qt::MiddleButton, Qt::NoModifier, QPoint(10, 10));
+    QMouseEvent panMove(QEvent::MouseMove, QPointF(25, 5), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+    QApplication::sendEvent(dlg.overlayWidget(), &panMove);
+    QTest::mouseRelease(dlg.overlayWidget(), Qt::MiddleButton, Qt::NoModifier, QPoint(25, 5));
+
+    dlg.positivePointButton()->click();
+    QTest::mouseClick(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, QPoint(235, 160));
+    QCOMPARE(dlg.overlayWidget()->positivePromptPoints(), QList<QPointF>{QPointF(80.0, 60.0)});
+    const auto positiveSource = provenance.mapLocalToSource(QPointF(80.0, 60.0));
+    QVERIFY(positiveSource.has_value());
+    QCOMPARE(*positiveSource, QPointF(130.0, 100.0));
+
+    dlg.negativePointButton()->click();
+    QTest::mouseClick(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, QPoint(215, 140));
+    QCOMPARE(dlg.overlayWidget()->negativePromptPoints(), QList<QPointF>{QPointF(70.0, 50.0)});
+    const auto negativeSource = provenance.mapLocalToSource(QPointF(70.0, 50.0));
+    QVERIFY(negativeSource.has_value());
+    QCOMPARE(*negativeSource, QPointF(120.0, 90.0));
+
+    dlg.boxButton()->click();
+    QSignalSpy dragSpy(dlg.overlayWidget(), &AnnotationOverlayWidget::dragEnded);
+    QTest::mousePress(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, QPoint(155, 100));
+    QMouseEvent boxMove(QEvent::MouseMove, QPointF(275, 220), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(dlg.overlayWidget(), &boxMove);
+    QTest::mouseRelease(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, QPoint(275, 220));
+    QCOMPARE(dragSpy.size(), 1);
+    const QList<QVariant> dragCoordinates = dragSpy.takeFirst();
+    const QPointF boxStart = dragCoordinates.at(0).toPointF();
+    const QPointF boxEnd = dragCoordinates.at(1).toPointF();
+    QCOMPARE(boxStart, QPointF(40.0, 30.0));
+    QCOMPARE(boxEnd, QPointF(100.0, 90.0));
+    const auto sourceBox = provenance.mapRectToSourceBounds(QRectF(boxStart, boxEnd).normalized());
+    QVERIFY(sourceBox.has_value());
+    QCOMPARE(*sourceBox, QRectF(90.0, 70.0, 60.0, 60.0));
+
+    QVERIFY(QMetaObject::invokeMethod(&dlg, "onPredictionReady", Qt::DirectConnection,
+                                      Q_ARG(QList<QPointF>, squarePolygon(40, 30, 20)),
+                                      Q_ARG(QRectF, QRectF(40, 30, 20, 20)), Q_ARG(double, 0.9),
+                                      Q_ARG(QString, QStringLiteral("slice166-preview")), Q_ARG(QImage, QImage())));
+    QVERIFY(!dlg.overlayWidget()->previewPolygon().isEmpty());
+    QCOMPARE(dlg.session().annotations.size(), 1);
+    const int undoCountBeforeCancel = dlg.undoStackCount();
+    const int undoIndexBeforeCancel = dlg.undoStackIndex();
+
+    QCOMPARE(dlg.cancelAgentPrompt().value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+    QVERIFY(dlg.overlayWidget()->positivePromptPoints().isEmpty());
+    QVERIFY(dlg.overlayWidget()->negativePromptPoints().isEmpty());
+    QVERIFY(dlg.overlayWidget()->previewPolygon().isEmpty());
+    QCOMPARE(dlg.previewCandidateCount(), 0);
+    QVERIFY(!dlg.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+    QVERIFY(!dlg.agentPromptStatus().value(QStringLiteral("predictionInFlight")).toBool());
+    QCOMPARE(dlg.cancelAgentPrompt().value(QStringLiteral("status")).toString(), QStringLiteral("unchanged"));
+
+    QCOMPARE(dlg.session().annotations.size(), 1);
+    QCOMPARE(dlg.session().annotations.first().id, objectId);
+    QCOMPARE(dlg.overlayWidget()->objectMask(objectId), confirmedMask);
+    QCOMPARE(dlg.undoStackCount(), undoCountBeforeCancel);
+    QCOMPARE(dlg.undoStackIndex(), undoIndexBeforeCancel);
+
+    dlg.positivePointButton()->click();
+    QTest::mouseClick(dlg.overlayWidget(), Qt::LeftButton, Qt::NoModifier, QPoint(255, 180));
+    QCOMPARE(dlg.overlayWidget()->positivePromptPoints(), QList<QPointF>{QPointF(90.0, 70.0)});
+    const auto postCancelSource = mainView.coordinateProvenance().mapLocalToSource(QPointF(90.0, 70.0));
+    QVERIFY(postCancelSource.has_value());
+    QCOMPARE(*postCancelSource, QPointF(140.0, 110.0));
+    QCOMPARE(dlg.session().annotations.size(), 1);
+    QCOMPARE(dlg.session().annotations.first().id, objectId);
+}
+
+void TestSamAnnotatorDialog::sessionSaveAndReopenPreserveVerifiedSourceCoordinates() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString imagePath = dir.filePath(QStringLiteral("lineage.png"));
+    const QImage image = makeTestImage();
+    QVERIFY(image.save(imagePath, "PNG"));
+
+    SamAnnotatorDialog sourceDialog;
+    sourceDialog.setImageSnapshot(image, imagePath);
+    ImageCoordinateProvenance provenance;
+    provenance.sourceImageId = QStringLiteral("crop-calibrated-parent");
+    provenance.sourceSize = QSize(800, 600);
+    QVERIFY(provenance.composeLocalToSource(
+        ImageCoordinateProvenance::Matrix3{{2.0, 0.0, 10.0, 0.0, 3.0, 5.0, 0.0, 0.0, 1.0}}));
+    sourceDialog.imageWidget()->setImage(image, provenance);
+    QVERIFY(!confirmObject(sourceDialog, squarePolygon(20, 30, 10), QRectF(20, 30, 10, 10),
+                           makeDisplayMask(image.width(), image.height(), {QRect(20, 30, 10, 10)}))
+                 .isEmpty());
+
+    const QString sessionPath = dir.filePath(QStringLiteral("lineage.deeplux-anno.json"));
+    QString error;
+    QVERIFY2(sourceDialog.saveAnnotationFile(sessionPath, &error), qPrintable(error));
+    const AnnotationSession saved = AnnotationSession::load(sessionPath, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(saved.sourceCoordinateProvenance.isValid());
+
+    SamAnnotatorDialog reopened;
+    QVERIFY2(reopened.openAnnotationFile(sessionPath, &error), qPrintable(error));
+    const QJsonObject item =
+        reopened.listAgentAnnotationObjects(0, 1).value(QStringLiteral("objects")).toArray().first().toObject();
+    QCOMPARE(item.value(QStringLiteral("bbox")).toObject().value(QStringLiteral("x")).toDouble(), 20.0);
+    QCOMPARE(item.value(QStringLiteral("sourceImageId")).toString(), QStringLiteral("crop-calibrated-parent"));
+    QCOMPARE(item.value(QStringLiteral("sourceImageSize")).toObject().value(QStringLiteral("width")).toInt(), 800);
+    const QJsonObject sourceBbox = item.value(QStringLiteral("sourceBbox")).toObject();
+    QCOMPARE(sourceBbox.value(QStringLiteral("x")).toDouble(), 50.0);
+    QCOMPARE(sourceBbox.value(QStringLiteral("y")).toDouble(), 95.0);
+    QCOMPARE(sourceBbox.value(QStringLiteral("width")).toDouble(), 20.0);
+    QCOMPARE(sourceBbox.value(QStringLiteral("height")).toDouble(), 30.0);
+
+    QJsonObject legacy = saved.toJson();
+    legacy.remove(QStringLiteral("sourceCoordinates"));
+    const QString legacyPath = dir.filePath(QStringLiteral("legacy.deeplux-anno.json"));
+    QFile legacyFile(legacyPath);
+    QVERIFY(legacyFile.open(QIODevice::WriteOnly));
+    QVERIFY(legacyFile.write(QJsonDocument(legacy).toJson()) > 0);
+    legacyFile.close();
+    SamAnnotatorDialog legacyDialog;
+    QVERIFY2(legacyDialog.openAnnotationFile(legacyPath, &error), qPrintable(error));
+    const QJsonObject legacyItem =
+        legacyDialog.listAgentAnnotationObjects(0, 1).value(QStringLiteral("objects")).toArray().first().toObject();
+    QVERIFY(!legacyItem.contains(QStringLiteral("sourceBbox")));
+    QVERIFY(!legacyItem.contains(QStringLiteral("sourceImageId")));
+
+    legacy.insert(QStringLiteral("imageDigest"), QString());
+    legacy.insert(QStringLiteral("sourceCoordinates"), saved.toJson().value(QStringLiteral("sourceCoordinates")));
+    const QString noDigestPath = dir.filePath(QStringLiteral("no-digest.deeplux-anno.json"));
+    QFile noDigestFile(noDigestPath);
+    QVERIFY(noDigestFile.open(QIODevice::WriteOnly));
+    QVERIFY(noDigestFile.write(QJsonDocument(legacy).toJson()) > 0);
+    noDigestFile.close();
+    SamAnnotatorDialog noDigestDialog;
+    QVERIFY2(noDigestDialog.openAnnotationFile(noDigestPath, &error), qPrintable(error));
+    const QJsonObject noDigestItem =
+        noDigestDialog.listAgentAnnotationObjects(0, 1).value(QStringLiteral("objects")).toArray().first().toObject();
+    QVERIFY(!noDigestItem.contains(QStringLiteral("sourceBbox")));
+    QVERIFY(!noDigestItem.contains(QStringLiteral("sourceImageId")));
+
+    QJsonObject horizonSession = saved.toJson();
+    QJsonObject horizonCoordinates = horizonSession.value(QStringLiteral("sourceCoordinates")).toObject();
+    horizonCoordinates.insert(QStringLiteral("localToSource"),
+                              QJsonArray{2.0, 0.0, 10.0, 0.0, 3.0, 5.0, 0.0, 0.1, -3.5});
+    horizonSession.insert(QStringLiteral("sourceCoordinates"), horizonCoordinates);
+    const QString horizonPath = dir.filePath(QStringLiteral("horizon.deeplux-anno.json"));
+    QFile horizonFile(horizonPath);
+    QVERIFY(horizonFile.open(QIODevice::WriteOnly));
+    QVERIFY(horizonFile.write(QJsonDocument(horizonSession).toJson()) > 0);
+    horizonFile.close();
+    SamAnnotatorDialog horizonDialog;
+    QVERIFY2(horizonDialog.openAnnotationFile(horizonPath, &error), qPrintable(error));
+    const QJsonObject horizonItem =
+        horizonDialog.listAgentAnnotationObjects(0, 1).value(QStringLiteral("objects")).toArray().first().toObject();
+    QCOMPARE(horizonItem.value(QStringLiteral("bbox")).toObject().value(QStringLiteral("x")).toDouble(), 20.0);
+    QVERIFY(!horizonItem.contains(QStringLiteral("sourceBbox")));
+}
+
+void TestSamAnnotatorDialog::agentMaskToolsRejectMissingImageAndUnavailableMasks() {
+    const QJsonObject editParams{{QStringLiteral("operation"), QStringLiteral("dilate")},
+                                 {QStringLiteral("objectIds"), QJsonArray{QStringLiteral("object-1")}},
+                                 {QStringLiteral("radiusPx"), 1}};
+    SamAnnotatorDialog noImage;
+    QCOMPARE(noImage.listAgentAnnotationObjects(0, 20).value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("NO_IMAGE"));
+    QCOMPARE(noImage.applyAgentMaskEdit(editParams).value(QStringLiteral("errorCode")).toString(),
+             QStringLiteral("NO_IMAGE"));
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString imagePath = directory.filePath(QStringLiteral("bound.png"));
+    QVERIFY(makeTestImage().save(imagePath, "PNG"));
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(makeTestImage(), imagePath);
+    QCOMPARE(dlg.listAgentAnnotationObjects(0, 20).value(QStringLiteral("total")).toInt(), 0);
+    AnnotationSession invalid = dlg.session();
+    AnnotationObject object;
+    object.id = QStringLiteral("no-mask-object");
+    object.label = QStringLiteral("no-mask");
+    object.maskRle = QStringLiteral("invalid-rle");
+    invalid.annotations.append(object);
+    const QString sessionPath = directory.filePath(QStringLiteral("invalid-mask.deeplux-anno.json"));
+    QString error;
+    QVERIFY2(invalid.save(sessionPath, &error), qPrintable(error));
+    QVERIFY2(dlg.openAnnotationFile(sessionPath, &error), qPrintable(error));
+    const bool undoEnabledBeforeRejectedEdit = dlg.undoButton()->isEnabled();
+    QJsonObject invalidEditParams = editParams;
+    invalidEditParams.insert(QStringLiteral("objectIds"), QJsonArray{object.id});
+    const QJsonObject result = dlg.applyAgentMaskEdit(invalidEditParams);
+    QCOMPARE(result.value(QStringLiteral("errorCode")).toString(), QStringLiteral("ANNOTATION_MASK_UNAVAILABLE"));
+    QCOMPARE(dlg.session().annotations.size(), 1);
+    QCOMPARE(dlg.session().annotations.first().id, object.id);
+    QCOMPARE(dlg.undoButton()->isEnabled(), undoEnabledBeforeRejectedEdit);
+}
+
+void TestSamAnnotatorDialog::agentCategoryEditsAndObjectRelabelingPreserveSelectionAndUndo() {
+    SamAnnotatorDialog withoutImage;
+    QCOMPARE(withoutImage.listAgentAnnotationCategories(0, 20).value(QStringLiteral("status")).toString(),
+             QStringLiteral("ok"));
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString imagePath = directory.filePath(QStringLiteral("image.png"));
+    const QImage image = makeTestImage();
+    QVERIFY(image.save(imagePath, "PNG"));
+
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(image, imagePath);
+    AnnotationSession session = dlg.session();
+    session.imagePath = imagePath;
+    session.imageWidth = image.width();
+    session.imageHeight = image.height();
+    session.imageDigest = AnnotationSession::computeImageDigest(image);
+    AnnotationObject first;
+    first.id = QStringLiteral("category-object-1");
+    first.label = QStringLiteral("缺陷");
+    first.bbox = QRectF(4, 5, 8, 9);
+    first.score = 0.75;
+    first.maskRle = QStringLiteral("first-rle");
+    first.prompts.pointsPos = {QPointF(7, 8)};
+    AnnotationObject second = first;
+    second.id = QStringLiteral("category-object-2");
+    second.label = QStringLiteral("划痕");
+    second.score = 0.9;
+    second.maskRle = QStringLiteral("second-rle");
+    session.annotations = {first, second};
+    const QString sessionPath = directory.filePath(QStringLiteral("categories.deeplux-anno.json"));
+    QString error;
+    QVERIFY2(session.save(sessionPath, &error), qPrintable(error));
+    QVERIFY2(dlg.openAnnotationFile(sessionPath, &error), qPrintable(error));
+
+    const QJsonObject listed = dlg.listAgentAnnotationCategories(0, 1);
+    QCOMPARE(listed.value(QStringLiteral("status")).toString(), QStringLiteral("ok"));
+    QCOMPARE(listed.value(QStringLiteral("categories")).toArray().size(), dlg.categories().size());
+    QCOMPARE(listed.value(QStringLiteral("total")).toInt(), 2);
+    QCOMPARE(listed.value(QStringLiteral("hasMore")).toBool(), true);
+    QCOMPARE(listed.value(QStringLiteral("nextOffset")).toInt(), 1);
+    QVERIFY(!QJsonDocument(listed).toJson().contains("maskRle"));
+
+    const QJsonObject added =
+        dlg.applyAgentCategoryEdit(QJsonObject{{QStringLiteral("operation"), QStringLiteral("add_category")},
+                                               {QStringLiteral("category"), QStringLiteral("  新类别  ")}});
+    QCOMPARE(added.value(QStringLiteral("status")).toString(), QStringLiteral("updated"));
+    QVERIFY(dlg.categories().contains(QStringLiteral("新类别")));
+    const QJsonObject duplicate =
+        dlg.applyAgentCategoryEdit(QJsonObject{{QStringLiteral("operation"), QStringLiteral("add_category")},
+                                               {QStringLiteral("category"), QStringLiteral("新类别")}});
+    QCOMPARE(duplicate.value(QStringLiteral("errorCode")).toString(), QStringLiteral("CATEGORY_ALREADY_EXISTS"));
+    const QJsonObject tooLong =
+        dlg.applyAgentCategoryEdit(QJsonObject{{QStringLiteral("operation"), QStringLiteral("add_category")},
+                                               {QStringLiteral("category"), QString(43, QChar(0x754c))}});
+    QCOMPARE(tooLong.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    const QJsonObject utf8Boundary =
+        dlg.applyAgentCategoryEdit(QJsonObject{{QStringLiteral("operation"), QStringLiteral("add_category")},
+                                               {QStringLiteral("category"), QString(42, QChar(0x754c))}});
+    QCOMPARE(utf8Boundary.value(QStringLiteral("status")).toString(), QStringLiteral("updated"));
+
+    dlg.objectList()->setCurrentRow(1);
+    dlg.objectList()->selectionModel()->select(dlg.objectList()->model()->index(0, 0), QItemSelectionModel::Select);
+    const QJsonObject changed =
+        dlg.applyAgentCategoryEdit(QJsonObject{{QStringLiteral("operation"), QStringLiteral("set_object_label")},
+                                               {QStringLiteral("objectIds"), QJsonArray{first.id, second.id}},
+                                               {QStringLiteral("label"), QStringLiteral("  缺陷  ")}});
+    QCOMPARE(changed.value(QStringLiteral("status")).toString(), QStringLiteral("updated"));
+    QCOMPARE(changed.value(QStringLiteral("affectedObjectIds")).toArray().size(), 1);
+    QCOMPARE(changed.value(QStringLiteral("affectedObjectIds")).toArray().first().toString(), second.id);
+    QCOMPARE(dlg.session().annotations.at(0).label, QStringLiteral("缺陷"));
+    QCOMPARE(dlg.session().annotations.at(1).label, QStringLiteral("缺陷"));
+    QCOMPARE(dlg.session().annotations.at(1).score, second.score);
+    QCOMPARE(dlg.session().annotations.at(1).maskRle, second.maskRle);
+    QCOMPARE(dlg.session().annotations.at(1).prompts.pointsPos, second.prompts.pointsPos);
+    QCOMPARE(dlg.objectList()->selectedItems().size(), 2);
+    QCOMPARE(dlg.objectList()->currentItem()->data(Qt::UserRole).toString(), second.id);
+
+    const int undoIndexBeforeUnchanged = dlg.undoStackIndex();
+    const bool undoAvailable = dlg.undoButton()->isEnabled();
+    const QJsonObject unchanged =
+        dlg.applyAgentCategoryEdit(QJsonObject{{QStringLiteral("operation"), QStringLiteral("set_object_label")},
+                                               {QStringLiteral("objectIds"), QJsonArray{first.id, second.id}},
+                                               {QStringLiteral("label"), QStringLiteral("缺陷")}});
+    QCOMPARE(unchanged.value(QStringLiteral("status")).toString(), QStringLiteral("unchanged"));
+    QCOMPARE(dlg.undoStackIndex(), undoIndexBeforeUnchanged);
+    QCOMPARE(dlg.undoButton()->isEnabled(), undoAvailable);
+
+    dlg.undoButton()->click();
+    QCOMPARE(dlg.session().annotations.at(1).label, second.label);
+    QCOMPARE(dlg.objectList()->selectedItems().size(), 2);
+    QCOMPARE(dlg.objectList()->currentItem()->data(Qt::UserRole).toString(), second.id);
+    dlg.redoButton()->click();
+    QCOMPARE(dlg.session().annotations.at(1).label, QStringLiteral("缺陷"));
+    QCOMPARE(dlg.objectList()->selectedItems().size(), 2);
+    QCOMPARE(dlg.objectList()->currentItem()->data(Qt::UserRole).toString(), second.id);
+
+    const QJsonObject removed =
+        dlg.applyAgentCategoryEdit(QJsonObject{{QStringLiteral("operation"), QStringLiteral("remove_category")},
+                                               {QStringLiteral("category"), QStringLiteral(" 缺陷 ")}});
+    QCOMPARE(removed.value(QStringLiteral("status")).toString(), QStringLiteral("updated"));
+    QCOMPARE(dlg.session().annotations.first().label, QStringLiteral("缺陷"));
+    const QJsonObject missing =
+        dlg.applyAgentCategoryEdit(QJsonObject{{QStringLiteral("operation"), QStringLiteral("remove_category")},
+                                               {QStringLiteral("category"), QStringLiteral("缺陷")}});
+    QCOMPARE(missing.value(QStringLiteral("errorCode")).toString(), QStringLiteral("CATEGORY_NOT_FOUND"));
+    const QJsonObject invalidLabel =
+        dlg.applyAgentCategoryEdit(QJsonObject{{QStringLiteral("operation"), QStringLiteral("set_object_label")},
+                                               {QStringLiteral("objectIds"), QJsonArray{first.id}},
+                                               {QStringLiteral("label"), QStringLiteral("not a category")}});
+    QCOMPARE(invalidLabel.value(QStringLiteral("errorCode")).toString(), QStringLiteral("CATEGORY_NOT_FOUND"));
+    const QJsonObject duplicateIds =
+        dlg.applyAgentCategoryEdit(QJsonObject{{QStringLiteral("operation"), QStringLiteral("set_object_label")},
+                                               {QStringLiteral("objectIds"), QJsonArray{first.id, first.id}},
+                                               {QStringLiteral("label"), QStringLiteral("划痕")}});
+    QCOMPARE(duplicateIds.value(QStringLiteral("errorCode")).toString(), QStringLiteral("INVALID_PARAM"));
+    for (int index = 0; index < 251; ++index) {
+        QCOMPARE(dlg.applyAgentCategoryEdit(
+                        QJsonObject{{QStringLiteral("operation"), QStringLiteral("add_category")},
+                                    {QStringLiteral("category"), QStringLiteral("category-%1").arg(index)}})
+                     .value(QStringLiteral("status"))
+                     .toString(),
+                 QStringLiteral("updated"));
+    }
+    const QJsonObject categoryLimit =
+        dlg.applyAgentCategoryEdit(QJsonObject{{QStringLiteral("operation"), QStringLiteral("add_category")},
+                                               {QStringLiteral("category"), QStringLiteral("category-over-limit")}});
+    QCOMPARE(categoryLimit.value(QStringLiteral("errorCode")).toString(), QStringLiteral("CATEGORY_LIMIT_EXCEEDED"));
+}
+
+void TestSamAnnotatorDialog::agentSplitMemoryBudgetRejectedBeforeMaterialization() {
+    QImage image(2000, 1500, QImage::Format_RGB32);
+    image.fill(Qt::black);
+    SamAnnotatorDialog dlg;
+    dlg.setImageSnapshot(image, QString());
+    QList<QRect> dots;
+    for (int i = 0; i < 12; ++i) {
+        for (int j = 0; j < 5; ++j)
+            dots.append(QRect(10 + i * 40, 10 + j * 40, 2, 2));
+    }
+    const QString id =
+        confirmObject(dlg, squarePolygon(10, 10, 20), QRectF(10, 10, 500, 200), makeDisplayMask(2000, 1500, dots));
+    QVERIFY(!id.isEmpty());
+    const AnnotationSession before = dlg.session();
+    const QJsonObject result = dlg.applyAgentMaskEdit(QJsonObject{
+        {QStringLiteral("operation"), QStringLiteral("split")}, {QStringLiteral("objectIds"), QJsonArray{id}}});
+    QCOMPARE(result.value(QStringLiteral("errorCode")).toString(), QStringLiteral("MASK_RESOURCE_LIMIT_EXCEEDED"));
+    QCOMPARE(dlg.session().annotations.size(), before.annotations.size());
+    QCOMPARE(dlg.session().annotations.first().id, before.annotations.first().id);
+    QCOMPARE(dlg.session().annotations.first().maskRle, before.annotations.first().maskRle);
+}
+
 // 批2 复核二轮（P1-1）：换载会话 B 后，会话 A 的快照式撤销命令必须已失效——
 // 否则 Ctrl+Z 会用 A 的整表快照覆盖 B（数据损坏）
 void TestSamAnnotatorDialog::undoAfterOpenAnnotationDoesNotCorruptSession() {
@@ -1778,6 +3297,456 @@ void TestSamAnnotatorDialog::candidateCyclingSelectsAlternateRegion() {
     QCOMPARE(dlg.candidateLabel()->text(), QStringLiteral("候选 0/0"));
 }
 
+void TestSamAnnotatorDialog::agentPromptCancelPreservesUndoAndRejectsLatePrediction() {
+    SamTestServer server;
+    QVERIFY(server.listen());
+    server.delayMs.insert(QStringLiteral("/predict"), 250);
+
+    SamAnnotatorDialog dlg;
+    const QImage image = makeTestImage();
+    dlg.setImageSnapshot(image, QString());
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString imagePath = directory.filePath(QStringLiteral("agent-prompt.png"));
+    QVERIFY(image.save(imagePath));
+
+    const QString confirmedObjectId =
+        confirmObject(dlg, squarePolygon(6, 7, 8), QRectF(6, 7, 8, 8), makeDisplayMask(200, 150, {QRect(6, 7, 8, 8)}));
+    QVERIFY(!confirmedObjectId.isEmpty());
+    dlg.objectList()->setCurrentRow(0);
+    const QImage confirmedMaskBefore = dlg.overlayWidget()->objectMask(confirmedObjectId);
+    QVERIFY(!confirmedMaskBefore.isNull());
+
+    SamBackendClient* client = dlg.backendClient();
+    QVERIFY(client != nullptr);
+    client->setServerUrl(server.url());
+    client->setTimeoutMs(3000);
+    client->setImage(imagePath);
+    QTRY_VERIFY_WITH_TIMEOUT(!client->currentEmbeddingId().isEmpty(), 3000);
+
+    server.delayMs.insert(QStringLiteral("/set_image"), 300);
+    dlg.positivePointButton()->setChecked(true);
+    const auto clickPrompt = [&dlg](const QPointF& point, Qt::MouseButton button) {
+        return QMetaObject::invokeMethod(&dlg, "onOverlayClicked", Qt::DirectConnection, Q_ARG(QPointF, point),
+                                         Q_ARG(Qt::MouseButton, button));
+    };
+    const auto dragPromptBox = [&dlg](const QPointF& start, const QPointF& end) {
+        return QMetaObject::invokeMethod(&dlg, "onOverlayDragEnded", Qt::DirectConnection, Q_ARG(QPointF, start),
+                                         Q_ARG(QPointF, end));
+    };
+    QVERIFY(clickPrompt(QPointF(20, 20), Qt::LeftButton));
+    QVERIFY(clickPrompt(QPointF(30, 31), Qt::RightButton));
+    QVERIFY(dragPromptBox(QPointF(40, 41), QPointF(50, 51)));
+    QTRY_VERIFY_WITH_TIMEOUT(server.requestLog.count(QStringLiteral("POST /predict")) >= 1, 3000);
+    const QJsonObject initialStatus = dlg.agentPromptStatus();
+    QVERIFY(initialStatus.value(QStringLiteral("hasPrompt")).toBool());
+    QVERIFY(initialStatus.value(QStringLiteral("predictionInFlight")).toBool());
+    const QJsonObject firstRequestState = dlg.agentPromptStateSnapshot();
+    const qint64 oldRequestId = firstRequestState.value(QStringLiteral("requestId")).toString().toLongLong();
+    QVERIFY(oldRequestId > 0);
+    const QString oldGeneration = firstRequestState.value(QStringLiteral("promptGeneration")).toString();
+    const int stackIndex = dlg.undoStackIndex();
+    const int stackCount = dlg.undoStackCount();
+
+    QCOMPARE(dlg.cancelAgentPrompt().value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+    QCOMPARE(dlg.undoStackIndex(), stackIndex);
+    QCOMPARE(dlg.undoStackCount(), stackCount);
+    QCOMPARE(dlg.session().annotations.size(), 1);
+    QCOMPARE(dlg.session().annotations.first().id, confirmedObjectId);
+    QCOMPARE(dlg.overlayWidget()->selectedId(), confirmedObjectId);
+    QCOMPARE(dlg.overlayWidget()->objectMask(confirmedObjectId), confirmedMaskBefore);
+    QVERIFY(!dlg.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+    QVERIFY(!dlg.agentPromptStatus().value(QStringLiteral("predictionInFlight")).toBool());
+
+    // 取消前的点、负点、框命令仍占据栈位置，但取消 epoch 使其 undo/redo 回调成为 no-op。
+    for (int index = 0; index < 3; ++index)
+        dlg.undoButton()->click();
+    QVERIFY(!dlg.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+    for (int index = 0; index < 3; ++index)
+        dlg.redoButton()->click();
+    QVERIFY(!dlg.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+    for (int index = 0; index < 3; ++index)
+        dlg.undoButton()->click();
+    dlg.undoButton()->click();
+    QVERIFY(dlg.session().annotations.isEmpty());
+    dlg.redoButton()->click();
+    QCOMPARE(dlg.session().annotations.size(), 1);
+    QCOMPARE(dlg.session().annotations.first().id, confirmedObjectId);
+    for (int index = 0; index < 3; ++index)
+        dlg.redoButton()->click();
+    QVERIFY(!dlg.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+
+    // 以相同坐标重新创建提示，必须使用新 generation 和请求 ID。
+    QVERIFY(clickPrompt(QPointF(20, 20), Qt::LeftButton));
+    QVERIFY(clickPrompt(QPointF(30, 31), Qt::RightButton));
+    QVERIFY(dragPromptBox(QPointF(40, 41), QPointF(50, 51)));
+    QVERIFY(dlg.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+    dlg.undoButton()->click(); // 框、负点、正点按栈序撤销。
+    QVERIFY(dlg.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+    dlg.undoButton()->click();
+    QVERIFY(dlg.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+    dlg.undoButton()->click();
+    QVERIFY(!dlg.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+    dlg.redoButton()->click();
+    QVERIFY(dlg.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+    dlg.redoButton()->click();
+    QVERIFY(dlg.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+    dlg.redoButton()->click();
+    QVERIFY(dlg.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+    const QJsonObject newRequestState = dlg.agentPromptStateSnapshot();
+    QVERIFY(newRequestState.value(QStringLiteral("promptGeneration")).toString() != oldGeneration);
+    const qint64 newRequestId = newRequestState.value(QStringLiteral("requestId")).toString().toLongLong();
+    QVERIFY(newRequestId > oldRequestId);
+    const QString stateDigestBeforeStale = newRequestState.value(QStringLiteral("stateDigest")).toString();
+
+    qRegisterMetaType<QList<QPointF>>("QList<QPointF>");
+    const QList<QPointF> stalePolygon{QPointF(1, 2), QPointF(10, 2), QPointF(10, 12), QPointF(1, 12)};
+    QVERIFY(QMetaObject::invokeMethod(client, "predictionReadyForRequest", Qt::DirectConnection,
+                                      Q_ARG(qint64, oldRequestId), Q_ARG(QList<QPointF>, stalePolygon),
+                                      Q_ARG(QRectF, QRectF(1, 2, 9, 10)), Q_ARG(double, 0.91),
+                                      Q_ARG(QString, QStringLiteral("stale_private_rle")), Q_ARG(QImage, QImage())));
+    QCOMPARE(dlg.agentPromptStateSnapshot().value(QStringLiteral("stateDigest")).toString(), stateDigestBeforeStale);
+    QCOMPARE(dlg.previewCandidateCount(), 0);
+    QCOMPARE(client->pendingPredictionRequestId(), newRequestId);
+    const QString statusTextBeforeStaleError = dlg.statusLabel()->text();
+    QVERIFY(QMetaObject::invokeMethod(client, "predictionErrorForRequest", Qt::DirectConnection,
+                                      Q_ARG(qint64, oldRequestId), Q_ARG(QString, QStringLiteral("stale failure"))));
+    QCOMPARE(dlg.statusLabel()->text(), statusTextBeforeStaleError);
+    QCOMPARE(client->pendingPredictionRequestId(), newRequestId);
+
+    // /predict 的真实新响应最终可更新当前代次。
+    QTRY_COMPARE_WITH_TIMEOUT(dlg.previewCandidateCount(), 3, 3000);
+    QVERIFY(dlg.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+    QVERIFY(dlg.agentPromptStatus().value(QStringLiteral("candidateCount")).toInt() == 3);
+}
+
+void TestSamAnnotatorDialog::agentPromptCancelStopsInvalidEmbeddingRetry() {
+    const QByteArray oldAppData = qgetenv("DEEPLUX_APP_DATA_DIR");
+    const bool hadAppData = qEnvironmentVariableIsSet("DEEPLUX_APP_DATA_DIR");
+    const QByteArray oldServerPython = qgetenv("SAM_SERVER_PYTHON");
+    const bool hadServerPython = qEnvironmentVariableIsSet("SAM_SERVER_PYTHON");
+    QTemporaryDir isolatedAppData;
+    QVERIFY(isolatedAppData.isValid());
+    struct EnvironmentRestore {
+        QByteArray appData;
+        bool hadAppData = false;
+        QByteArray serverPython;
+        bool hadServerPython = false;
+        ~EnvironmentRestore() {
+            if (hadAppData)
+                qputenv("DEEPLUX_APP_DATA_DIR", appData);
+            else
+                qunsetenv("DEEPLUX_APP_DATA_DIR");
+            if (hadServerPython)
+                qputenv("SAM_SERVER_PYTHON", serverPython);
+            else
+                qunsetenv("SAM_SERVER_PYTHON");
+        }
+    } environmentRestore{oldAppData, hadAppData, oldServerPython, hadServerPython};
+    qputenv("DEEPLUX_APP_DATA_DIR", isolatedAppData.path().toLocal8Bit());
+    qunsetenv("SAM_SERVER_PYTHON");
+
+    for (const bool failRetry : {false, true}) {
+        SamTestServer server;
+        QVERIFY(server.listen());
+        server.predictStatus = QStringLiteral("invalid_embedding");
+
+        SamAnnotatorDialog dlg;
+        const QImage image = makeTestImage();
+        dlg.setImageSnapshot(image, QString());
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString imagePath = directory.filePath(QStringLiteral("agent-prompt-retry.png"));
+        QVERIFY(image.save(imagePath));
+
+        SamBackendClient* client = dlg.backendClient();
+        QVERIFY(client != nullptr);
+        client->stopServerProcess();
+        client->setServerUrl(server.url());
+        client->setTimeoutMs(3000);
+        client->setImage(imagePath);
+        QTRY_VERIFY_WITH_TIMEOUT(!client->currentEmbeddingId().isEmpty(), 3000);
+        server.delayMs.insert(QStringLiteral("/set_image"), 500);
+        if (failRetry)
+            server.failSetImageRequests.insert(2);
+
+        dlg.positivePointButton()->setChecked(true);
+        QVERIFY(QMetaObject::invokeMethod(&dlg, "onOverlayClicked", Qt::DirectConnection,
+                                          Q_ARG(QPointF, QPointF(20, 20)), Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+        QTRY_COMPARE_WITH_TIMEOUT(server.requestLog.count(QStringLiteral("POST /set_image")), 2, 3000);
+        QVERIFY(dlg.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+        QCOMPARE(client->pendingPredictionRequestId(), qint64(0));
+        QVERIFY(!dlg.agentPromptStatus().value(QStringLiteral("predictionInFlight")).toBool());
+        QCOMPARE(dlg.cancelAgentPrompt().value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+
+        QSignalSpy embeddingReadySpy(client, &SamBackendClient::embeddingReady);
+        QSignalSpy errorSpy(client, &SamBackendClient::errorOccurred);
+        QTRY_COMPARE_WITH_TIMEOUT(server.responseLog.count(QStringLiteral("POST /set_image")), 2, 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(!client->hasPendingSetImageRequest(), 3000);
+        QCOMPARE(server.requestLog.count(QStringLiteral("POST /predict")), 1);
+        if (failRetry) {
+            QVERIFY(client->currentEmbeddingId().isEmpty());
+            QCOMPARE(client->state(), SamBackendClient::State::Error);
+            QCOMPARE(embeddingReadySpy.count(), 0);
+            QCOMPARE(errorSpy.count(), 1);
+
+            // 旧 embedding 已因 invalid_embedding 失效；失败后必须显式重新加载当前图。
+            client->setImage(imagePath);
+            QTRY_VERIFY_WITH_TIMEOUT(!client->currentEmbeddingId().isEmpty(), 3000);
+            QCOMPARE(embeddingReadySpy.count(), 1);
+        } else {
+            QVERIFY(!client->currentEmbeddingId().isEmpty());
+            QCOMPARE(client->state(), SamBackendClient::State::Ready);
+            QCOMPARE(embeddingReadySpy.count(), 1);
+            QCOMPARE(errorSpy.count(), 0);
+        }
+
+        // 新一代提示只在有效 embedding 就绪后发起；已取消提示的 retry 不得重放。
+        server.predictStatus = QStringLiteral("ok");
+        const QString activeEmbedding = client->currentEmbeddingId();
+        QVERIFY(QMetaObject::invokeMethod(&dlg, "onOverlayClicked", Qt::DirectConnection,
+                                          Q_ARG(QPointF, QPointF(22, 22)), Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+        QTRY_COMPARE_WITH_TIMEOUT(dlg.previewCandidateCount(), 3, 3000);
+        const QJsonObject newPromptSnapshot = dlg.agentPromptStateSnapshot();
+        QCOMPARE(server.requestLog.count(QStringLiteral("POST /predict")), 2);
+        QCOMPARE(server.lastPredictBody.value(QStringLiteral("embedding_id")).toString(), activeEmbedding);
+        QCOMPARE(dlg.agentPromptStateSnapshot(), newPromptSnapshot);
+        QCOMPARE(dlg.previewCandidateCount(), 3);
+        QVERIFY(dlg.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+        QCOMPARE(client->currentEmbeddingId(), activeEmbedding);
+        QCOMPARE(client->pendingPredictionRequestId(), qint64(0));
+    }
+}
+
+void TestSamAnnotatorDialog::agentOpenSessionCancelsOldPredictionAndPinsNewImage() {
+    SamTestServer server;
+    QVERIFY(server.listen());
+    server.delayMs.insert(QStringLiteral("/predict"), 600);
+
+    SamAnnotatorDialog dialog;
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString oldImagePath = directory.filePath(QStringLiteral("old-image.png"));
+    const QString newImagePath = directory.filePath(QStringLiteral("new-image.png"));
+    const QString guiImagePath = directory.filePath(QStringLiteral("gui-image.png"));
+    QImage oldImage(64, 48, QImage::Format_RGB32);
+    oldImage.fill(QColor("#1b6ac9"));
+    QImage newImage(64, 48, QImage::Format_RGB32);
+    newImage.fill(QColor("#d94332"));
+    QImage guiImage(64, 48, QImage::Format_RGB32);
+    guiImage.fill(QColor("#27a85c"));
+    QVERIFY(oldImage.save(oldImagePath));
+    QVERIFY(newImage.save(newImagePath));
+    QVERIFY(guiImage.save(guiImagePath));
+    const QString modelPath = directory.filePath(QStringLiteral("sam_vit_b_test-placeholder.pth"));
+    QFile modelFile(modelPath);
+    QVERIFY(modelFile.open(QIODevice::WriteOnly));
+    QCOMPARE(modelFile.write("test model placeholder"), qint64(22));
+    modelFile.close();
+    dialog.setImageSnapshot(oldImage, oldImagePath);
+
+    SamBackendClient* client = dialog.backendClient();
+    QVERIFY(client != nullptr);
+    client->stopServerProcess();
+    client->setModelPath(modelPath);
+    client->setServerUrl(server.url());
+    client->setTimeoutMs(3000);
+    client->setImage(oldImagePath);
+    QTRY_VERIFY_WITH_TIMEOUT(!client->currentEmbeddingId().isEmpty(), 3000);
+    const int initialSetImageCount = server.setImageCount;
+    QCOMPARE(client->currentEmbeddingId(), QStringLiteral("emb-%1").arg(initialSetImageCount));
+
+    dialog.positivePointButton()->setChecked(true);
+    QVERIFY(QMetaObject::invokeMethod(&dialog, "onOverlayClicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(20, 20)), Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    QTRY_COMPARE_WITH_TIMEOUT(server.requestLog.count(QStringLiteral("POST /predict")), 1, 3000);
+    QVERIFY(dialog.agentPromptStatus().value(QStringLiteral("predictionInFlight")).toBool());
+    QVERIFY(client->pendingPredictionRequestId() > 0);
+
+    const QByteArray previousServerPython = qgetenv("SAM_SERVER_PYTHON");
+    const bool hadServerPython = qEnvironmentVariableIsSet("SAM_SERVER_PYTHON");
+    const QByteArray previousSamModel = qgetenv("DEEPLUX_SAM_MODEL");
+    const bool hadSamModel = qEnvironmentVariableIsSet("DEEPLUX_SAM_MODEL");
+    struct EnvironmentRestore {
+        QByteArray serverPython;
+        bool hadServerPython = false;
+        QByteArray model;
+        bool hadModel = false;
+        ~EnvironmentRestore() {
+            if (hadServerPython)
+                qputenv("SAM_SERVER_PYTHON", serverPython);
+            else
+                qunsetenv("SAM_SERVER_PYTHON");
+            if (hadModel)
+                qputenv("DEEPLUX_SAM_MODEL", model);
+            else
+                qunsetenv("DEEPLUX_SAM_MODEL");
+        }
+    } environmentRestore{previousServerPython, hadServerPython, previousSamModel, hadSamModel};
+    qputenv("SAM_SERVER_PYTHON", QCoreApplication::applicationFilePath().toLocal8Bit());
+    qputenv("DEEPLUX_SAM_MODEL", modelPath.toLocal8Bit());
+
+    AnnotationSession openedSession;
+    openedSession.imagePath = newImagePath;
+    openedSession.imageWidth = newImage.width();
+    openedSession.imageHeight = newImage.height();
+    openedSession.imageDigest = AnnotationSession::computeImageDigest(newImage);
+    QString error;
+    QVERIFY2(
+        dialog.openAgentAnnotationSessionSnapshot(openedSession, newImage, true, false, QStringLiteral("test"), &error),
+        qPrintable(error));
+    QCOMPARE(client->pendingPredictionRequestId(), qint64(0));
+    QTRY_COMPARE_WITH_TIMEOUT(client->currentEmbeddingId(), QStringLiteral("emb-2"), 3000);
+    QCOMPARE(server.setImageCount, 2);
+    QCOMPARE(client->state(), SamBackendClient::State::Ready);
+    QCOMPARE(server.lastSetImage, newImage);
+    const QString agentPinnedPath = dialog.backendImagePathForTest();
+    QVERIFY(!agentPinnedPath.isEmpty());
+    QVERIFY(QFileInfo::exists(agentPinnedPath));
+    QVERIFY(QFileInfo(agentPinnedPath).canonicalFilePath() != QFileInfo(newImagePath).canonicalFilePath());
+    QCOMPARE(server.lastSetImagePath, agentPinnedPath);
+
+    // 即使旧 /predict 在服务端延迟返回，其结果也不能重新污染刚打开的会话。
+    QTest::qWait(700);
+    QCOMPARE(client->currentEmbeddingId(), QStringLiteral("emb-2"));
+    QCOMPARE(client->pendingPredictionRequestId(), qint64(0));
+    QCOMPARE(client->state(), SamBackendClient::State::Ready);
+    QCOMPARE(server.setImageCount, 2);
+    QCOMPARE(dialog.previewCandidateCount(), 0);
+    QVERIFY(!dialog.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+
+    // 新提示必须携带新 embedding，证明后续推理使用的是已打开会话的像素快照。
+    server.delayMs.remove(QStringLiteral("/predict"));
+    QVERIFY(QMetaObject::invokeMethod(&dialog, "onOverlayClicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(22, 22)), Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    QTRY_COMPARE_WITH_TIMEOUT(server.requestLog.count(QStringLiteral("POST /predict")), 2, 3000);
+    QCOMPARE(server.lastPredictBody.value(QStringLiteral("embedding_id")).toString(), QStringLiteral("emb-2"));
+    QTRY_COMPARE_WITH_TIMEOUT(dialog.previewCandidateCount(), 3, 3000);
+
+    // 离开 Agent 固定快照回到 GUI 原图时，旧临时 PNG 应立即释放。
+    const int setImageCountBeforeGuiSwitch = server.setImageCount;
+    server.delayMs.insert(QStringLiteral("/set_image"), 400);
+    dialog.setImageSnapshot(guiImage, guiImagePath);
+    QVERIFY(!QFileInfo::exists(agentPinnedPath));
+    QCOMPARE(dialog.backendImagePathForTest(), guiImagePath);
+    QTRY_COMPARE_WITH_TIMEOUT(server.setImageCount, setImageCountBeforeGuiSwitch + 1, 3000);
+    QVERIFY(client->currentEmbeddingId().isEmpty());
+    QCOMPARE(client->state(), SamBackendClient::State::LoadingModel);
+
+    // 在 GUI 图像 set_image 尚未完成时批准的新快照必须取代该请求。
+    server.delayMs.remove(QStringLiteral("/set_image"));
+    QVERIFY2(dialog.openAgentAnnotationSessionSnapshot(openedSession, newImage, true, false,
+                                                       QStringLiteral("test-clear"), &error),
+             qPrintable(error));
+    QTRY_COMPARE_WITH_TIMEOUT(server.setImageCount, setImageCountBeforeGuiSwitch + 2, 3000);
+    const QString clearedSnapshotPath = dialog.backendImagePathForTest();
+    QVERIFY(QFileInfo::exists(clearedSnapshotPath));
+    QCOMPARE(server.lastSetImagePath, clearedSnapshotPath);
+    QCOMPARE(server.lastSetImage, newImage);
+    QTRY_COMPARE_WITH_TIMEOUT(client->currentEmbeddingId(), QStringLiteral("emb-%1").arg(server.setImageCount), 3000);
+    QTest::qWait(450); // 迟到的 GUI 图像 set_image 响应不得覆盖新的 embedding。
+    QCOMPARE(client->currentEmbeddingId(), QStringLiteral("emb-%1").arg(server.setImageCount));
+
+    dialog.setImageSnapshot(QImage(), QString());
+    QVERIFY(!QFileInfo::exists(clearedSnapshotPath));
+    QVERIFY(dialog.backendImagePathForTest().isEmpty());
+}
+
+void TestSamAnnotatorDialog::agentOpenSessionReplacesCancelledEmbeddingRetry() {
+    SamTestServer server;
+    QVERIFY(server.listen());
+    server.predictStatus = QStringLiteral("invalid_embedding");
+    server.delayMs.insert(QStringLiteral("/set_image"), 400);
+
+    SamAnnotatorDialog dialog;
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString oldImagePath = directory.filePath(QStringLiteral("retry-old-image.png"));
+    const QString newImagePath = directory.filePath(QStringLiteral("retry-new-image.png"));
+    QImage oldImage(64, 48, QImage::Format_RGB32);
+    oldImage.fill(QColor("#3277cf"));
+    QImage newImage(64, 48, QImage::Format_RGB32);
+    newImage.fill(QColor("#e34a31"));
+    QVERIFY(oldImage.save(oldImagePath));
+    QVERIFY(newImage.save(newImagePath));
+    const QString modelPath = directory.filePath(QStringLiteral("sam_vit_b_test-placeholder.pth"));
+    QFile modelFile(modelPath);
+    QVERIFY(modelFile.open(QIODevice::WriteOnly));
+    QCOMPARE(modelFile.write("test model placeholder"), qint64(22));
+    modelFile.close();
+    dialog.setImageSnapshot(oldImage, oldImagePath);
+
+    SamBackendClient* client = dialog.backendClient();
+    QVERIFY(client != nullptr);
+    client->stopServerProcess();
+    client->setModelPath(modelPath);
+    client->setServerUrl(server.url());
+    client->setTimeoutMs(3000);
+    client->setImage(oldImagePath);
+    QTRY_VERIFY_WITH_TIMEOUT(!client->currentEmbeddingId().isEmpty(), 3000);
+    const int initialSetImageCount = server.setImageCount;
+    const int delayedSetImageResponses = server.delayedResponseLog.count(QStringLiteral("POST /set_image"));
+    QCOMPARE(client->currentEmbeddingId(), QStringLiteral("emb-%1").arg(initialSetImageCount));
+
+    dialog.positivePointButton()->setChecked(true);
+    QVERIFY(QMetaObject::invokeMethod(&dialog, "onOverlayClicked", Qt::DirectConnection,
+                                      Q_ARG(QPointF, QPointF(20, 20)), Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+    QTRY_COMPARE_WITH_TIMEOUT(server.requestLog.count(QStringLiteral("POST /predict")), 1, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(server.setImageCount, initialSetImageCount + 1, 3000);
+    QVERIFY(client->currentEmbeddingId().isEmpty());
+    QVERIFY(client->hasPendingSetImageRequest());
+    QCOMPARE(dialog.cancelAgentPrompt().value(QStringLiteral("status")).toString(), QStringLiteral("cancelled"));
+    QCOMPARE(client->state(), SamBackendClient::State::NotStarted);
+    QVERIFY(client->hasPendingSetImageRequest());
+
+    const QByteArray oldServerPython = qgetenv("SAM_SERVER_PYTHON");
+    const bool hadServerPython = qEnvironmentVariableIsSet("SAM_SERVER_PYTHON");
+    const QByteArray oldSamModel = qgetenv("DEEPLUX_SAM_MODEL");
+    const bool hadSamModel = qEnvironmentVariableIsSet("DEEPLUX_SAM_MODEL");
+    struct EnvironmentRestore {
+        QByteArray serverPython;
+        bool hadServerPython = false;
+        QByteArray model;
+        bool hadModel = false;
+        ~EnvironmentRestore() {
+            if (hadServerPython)
+                qputenv("SAM_SERVER_PYTHON", serverPython);
+            else
+                qunsetenv("SAM_SERVER_PYTHON");
+            if (hadModel)
+                qputenv("DEEPLUX_SAM_MODEL", model);
+            else
+                qunsetenv("DEEPLUX_SAM_MODEL");
+        }
+    } environmentRestore{oldServerPython, hadServerPython, oldSamModel, hadSamModel};
+    qputenv("SAM_SERVER_PYTHON", QCoreApplication::applicationFilePath().toLocal8Bit());
+    qputenv("DEEPLUX_SAM_MODEL", modelPath.toLocal8Bit());
+
+    server.delayMs.remove(QStringLiteral("/set_image"));
+    AnnotationSession openedSession;
+    openedSession.imagePath = newImagePath;
+    openedSession.imageWidth = newImage.width();
+    openedSession.imageHeight = newImage.height();
+    openedSession.imageDigest = AnnotationSession::computeImageDigest(newImage);
+    QString error;
+    QVERIFY2(dialog.openAgentAnnotationSessionSnapshot(openedSession, newImage, true, false,
+                                                       QStringLiteral("test-retry-replacement"), &error),
+             qPrintable(error));
+    QTRY_COMPARE_WITH_TIMEOUT(server.setImageCount, initialSetImageCount + 2, 3000);
+    const QString pinnedPath = dialog.backendImagePathForTest();
+    QVERIFY(QFileInfo::exists(pinnedPath));
+    QCOMPARE(server.lastSetImagePath, pinnedPath);
+    QCOMPARE(server.lastSetImage, newImage);
+    QTRY_COMPARE_WITH_TIMEOUT(client->currentEmbeddingId(), QStringLiteral("emb-%1").arg(initialSetImageCount + 2),
+                              3000);
+    // 服务端明确记录旧 retry 的延迟响应定时器触发（即便客户端已断开），embedding 仍不能回滚。
+    QTRY_COMPARE_WITH_TIMEOUT(server.delayedResponseLog.count(QStringLiteral("POST /set_image")),
+                              delayedSetImageResponses + 1, 3000);
+    QCOMPARE(client->currentEmbeddingId(), QStringLiteral("emb-%1").arg(initialSetImageCount + 2));
+    QCOMPARE(client->state(), SamBackendClient::State::Ready);
+    QCOMPARE(server.requestLog.count(QStringLiteral("POST /predict")), 1);
+    QVERIFY(!dialog.agentPromptStatus().value(QStringLiteral("hasPrompt")).toBool());
+}
 #ifdef DEEPLUX_HAS_ONNXRUNTIME
 void TestSamAnnotatorDialog::nativeModelSettingsDialogSavesSelection() {
     const QString packagePath = QStringLiteral(TEST_SAM_PACKAGE_DIR);
@@ -1785,7 +3754,7 @@ void TestSamAnnotatorDialog::nativeModelSettingsDialogSavesSelection() {
 
     SamAnnotatorDialog dlg;
     auto* backend = dlg.findChild<QComboBox*>(QStringLiteral("SamBackendMode"));
-    auto* settingsButton = dlg.findChild<QPushButton*>(QStringLiteral("SamModelActionButton"));
+    auto* settingsButton = dlg.importModelButton();
     QVERIFY(backend);
     QVERIFY(settingsButton);
     backend->setCurrentIndex(backend->findData(QStringLiteral("native")));

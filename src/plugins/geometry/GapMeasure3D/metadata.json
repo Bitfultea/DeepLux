@@ -13,7 +13,7 @@
                 "step": 1,
                 "decimals": 0,
                 "order": 10,
-                "label": "截面中心X"
+                "label": "截面中心X（当前输入高度图局部像素）"
             },
             "roiCenterY": {
                 "min": 0,
@@ -21,7 +21,7 @@
                 "step": 1,
                 "decimals": 0,
                 "order": 20,
-                "label": "截面中心Y"
+                "label": "截面中心Y（当前输入高度图局部像素）"
             },
             "roiLength": {
                 "min": 5,
@@ -53,7 +53,7 @@
                 "step": 0.0001,
                 "decimals": 6,
                 "order": 60,
-                "label": "Z 比例"
+                "label": "Z 高度缩放（单位取决于输入高度值和标定）"
             },
             "smoothSigma": {
                 "min": 0,
@@ -131,6 +131,26 @@
                 "order": 150,
                 "label": "未检出输出值"
             }
+        },
+        "results": {
+            "gap_width": {
+                "label": "间隙宽度",
+                "unit": "mm",
+                "precision": 3,
+                "order": 10
+            },
+            "gap_offset_width": {
+                "label": "偏移后宽度",
+                "unit": "mm",
+                "precision": 3,
+                "order": 20
+            },
+            "corner_dx_mm": {
+                "label": "拐角水平距离",
+                "unit": "mm",
+                "precision": 3,
+                "order": 30
+            }
         }
     },
     "ports": {
@@ -174,14 +194,14 @@
             },
             {
                 "id": "corner_dz_mm",
-                "displayName": "拐角垂直距离(mm)",
+                "displayName": "拐角垂直距离",
                 "type": "Number",
                 "required": false,
                 "multiple": false
             },
             {
                 "id": "corner_dist_mm",
-                "displayName": "拐角欧氏距离(mm)",
+                "displayName": "拐角欧氏距离（数值）",
                 "type": "Number",
                 "required": false,
                 "multiple": false

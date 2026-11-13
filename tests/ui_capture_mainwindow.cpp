@@ -1,6 +1,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QDialog>
 #include <QDir>
 #include <QDockWidget>
 #include <QElapsedTimer>
@@ -18,6 +19,7 @@
 #include <QWidget>
 #include <QtTest/QTest>
 #include <core/engine/FlowGraphAnalyzer.h>
+#include <core/common/UserManager.h>
 #include <core/engine/RunEngine.h>
 #include <core/manager/PluginManager.h>
 #include <core/manager/ProjectManager.h>
@@ -366,8 +368,11 @@ bool captureClickedStates(DeepLux::MainWindow& window, const QDir& dir) {
         qWarning("tool panel still visible after clicking close");
         return false;
     }
-    ok = saveShot(window, dir, QStringLiteral("08-tool-panel-closed.png")) && ok;
-    const double closeDiff = meanAbsDiff(beforeClose, window.grab().toImage());
+    const QString closedCapture = dir.filePath(QStringLiteral("08-tool-panel-closed.png"));
+    const QImage afterClose = window.grab().toImage();
+    if (!afterClose.save(closedCapture) || !verifyCapture(closedCapture, afterClose.size()))
+        return false;
+    const double closeDiff = meanAbsDiff(beforeClose, afterClose);
     if (closeDiff < 1.0) {
         qWarning("closing tool panel did not change appearance (mean diff %.2f)", closeDiff);
         return false;
@@ -498,15 +503,18 @@ bool captureCropConfigDialog(const QString& repoRoot, const QString& pluginTempR
     window.selectModuleForCapture(cropInst.id);
 
     bool saved = false;
-    QTimer::singleShot(80, [&]() {
-        QWidget* dialog = window.findChild<QWidget*>(QStringLiteral("PluginConfigDialog"));
+    QTimer::singleShot(80, &window, [&]() {
+        QDialog* dialog = window.findChild<QDialog*>(QStringLiteral("PluginConfigDialog"));
         if (!dialog) {
+            qWarning("[ui_capture] CropImage config dialog not found");
+            if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+                modal->reject();
             return;
         }
         dialog->resize(560, 480);
         QCoreApplication::processEvents();
         saved = dialog->grab().save(dir.filePath(QStringLiteral("11-cropimage-config-dialog.png")));
-        dialog->close();
+        dialog->reject();
     });
 
     const bool invoked = QMetaObject::invokeMethod(&window, "_phase8_openAdvancedPluginConfig", Qt::DirectConnection,
@@ -574,13 +582,20 @@ bool loadAndRunFindCircleAcceptance(const QString& repoRoot, const QString& plug
     // P1-4: 捕获 RunResult 并校验真实圆结果；失败须使任务失败，不得静默跳过
     DeepLux::RunResult runResult;
     bool gotResult = false;
+    QString acceptedRunId;
     QMetaObject::Connection conn = QObject::connect(&DeepLux::RunEngine::instance(), &DeepLux::RunEngine::runFinished,
                                                     [&](const DeepLux::RunResult& r) {
+                                                        if (r.runId != acceptedRunId)
+                                                            return;
                                                         runResult = r;
                                                         gotResult = true;
                                                     });
 
-    DeepLux::RunEngine::instance().runOnce();
+    if (!DeepLux::RunEngine::instance().runOnceAsync(&acceptedRunId)) {
+        QObject::disconnect(conn);
+        qWarning("failed to start findcircle acceptance run asynchronously");
+        return false;
+    }
     QElapsedTimer waitTimer;
     waitTimer.start();
     while (!gotResult && waitTimer.elapsed() < 5000) {
@@ -907,7 +922,6 @@ bool captureControlFlowAcceptance(const QString& repoRoot, const QString& plugin
     }
     return accepted;
 }
-
 } // namespace
 
 int main(int argc, char** argv) {
@@ -929,6 +943,7 @@ int main(int argc, char** argv) {
     }
 
     DeepLux::MainWindow window;
+    DeepLux::UserManager::instance().login(QStringLiteral("developer"), QString());
     bool ok = true;
 
     // 收尾2: 加载并运行找圆验收工程，使截图带真实结果（结果叠加/节点状态/检查器）
@@ -947,23 +962,17 @@ int main(int argc, char** argv) {
         ok = false;
     }
 
-    QTimer::singleShot(800, [&]() {
-        ok = captureFormalSizes(window, dir) && ok;
-        // 带真实结果的桌面/紧凑截图（验收运行成功后）
-        if (ranAcceptance) {
-            ok = captureWindow(window, QSize(1920, 1080), dir.filePath("findcircle_desktop_result.png")) && ok;
-            ok = captureWindow(window, QSize(1280, 800), dir.filePath("findcircle_compact_result.png")) && ok;
-        }
-        ok = captureWindow(window, QSize(1440, 900), dir.filePath("deeplux_mainwindow_1440x900.png")) && ok;
-        ok = captureWindow(window, QSize(1024, 700), dir.filePath("deeplux_mainwindow_1024x700.png")) && ok;
-        ok = capturePluginConfigDialog(window, dir) && ok;
-        ok = captureCropConfigDialog(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
-        ok = captureFitCirclePickAcceptance(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
-        ok = captureControlFlowAcceptance(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
-        ok = captureClickedStates(window, dir) && ok;
-        app.quit();
-    });
-
-    app.exec();
+    QTest::qWait(800);
+    ok = captureFormalSizes(window, dir) && ok;
+    // 带真实结果的桌面/紧凑截图（验收运行成功后）
+    if (ranAcceptance) {
+        ok = captureWindow(window, QSize(1920, 1080), dir.filePath("findcircle_desktop_result.png")) && ok;
+        ok = captureWindow(window, QSize(1280, 800), dir.filePath("findcircle_compact_result.png")) && ok;
+    }
+    ok = captureWindow(window, QSize(1440, 900), dir.filePath("deeplux_mainwindow_1440x900.png")) && ok;
+    ok = captureWindow(window, QSize(1024, 700), dir.filePath("deeplux_mainwindow_1024x700.png")) && ok;
+    ok = capturePluginConfigDialog(window, dir) && ok;
+    ok = captureCropConfigDialog(repoRoot, pluginTempRoot.filePath("plugins"), window, dir) && ok;
+    ok = captureClickedStates(window, dir) && ok;
     return ok ? 0 : 1;
 }

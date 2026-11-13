@@ -11,6 +11,8 @@
 #include <QDockWidget>
 #include <QElapsedTimer>
 #include <QHash>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMainWindow>
@@ -21,6 +23,7 @@
 #include <QSet>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QStringList>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTimer>
@@ -30,9 +33,11 @@
 #include <QUndoCommand>
 #include <QUndoStack>
 #include <QUuid>
+#include <QUrl>
 #include <QVector>
 
 class QDialog;
+class QMessageBox;
 class QVBoxLayout;
 
 namespace DeepLux {
@@ -47,6 +52,11 @@ class ProcessTreeController;
 class FlowLayoutCoordinator;
 class ModuleInspectorPanel;
 class SamAnnotatorDialog;
+class SystemParamView;
+class LoginDialog;
+class AgentSettingsDialog;
+class KnowledgeBaseDialog;
+class GlobalVarView;
 
 class IModule;
 struct PointCloudData;
@@ -68,9 +78,7 @@ public:
     Q_INVOKABLE void registerFlowModule(const QString& instanceId, IModule* module);
 
     // 测试辅助：Agent 聊天面板（批3 复核四轮 P2-5 草稿恢复回归）
-    AgentChatPanel* agentChatPanel() const {
-        return m_agentChatPanel;
-    }
+    AgentChatPanel* agentChatPanel() const;
 
     // 测试辅助：重置检查器关闭状态
     void resetInspectorClosed();
@@ -106,6 +114,7 @@ private slots:
     void onStepRun();
     void onStop();
     void executeFlowOnce();
+    void resetFlowRunPresentation();
     void onUserLogin();
     void onGlobalVar();
     void onCameraSettings();
@@ -131,6 +140,7 @@ private slots:
     void onDataSourceRemoved(const QString& id);
     void onDataSourceVisibilityChanged(const QString& dataSourceId, bool visible);
     void onDisplayDataSource(const QString& dataSourceId);
+    QJsonObject executeAgentDataSourceViewAction(const QString& toolName, const QJsonObject& params);
     void onDisplayDataSourceInNewViewport(const QString& dataSourceId);
     void onRemoveDataSource(const QString& dataSourceId);
     void onShowDataSourceInFolder(const QString& dataSourceId);
@@ -142,6 +152,24 @@ private slots:
     void _phase8_toggleFocusMode();
 
 private:
+    void handlePoint3DPicked(double x, double y, double z);
+    void setInspectorVisibility(bool visible);
+    QJsonObject closeViewportById(const QString& viewportId);
+    QJsonObject copyDataSourcePathById(const QString& dataSourceId);
+    QJsonObject executeAgentQuickMeasurementAction(const QString& toolName, const QJsonObject& params);
+    void applyAgentSettings(const AgentSettingsDialog& dialog);
+    QJsonObject quickMeasurementConfirmationSnapshot(const QJsonObject& params) const;
+    QJsonObject executeAgentActiveAnnotationAction(const QString& toolName, const QJsonObject& params);
+    QJsonObject activeAnnotationSessionOpenConfirmationSnapshot(const QJsonObject& params) const;
+    QJsonObject activeAnnotationMaskConfirmationSnapshot(const QJsonObject& params) const;
+    QJsonObject activeAnnotationCategoryConfirmationSnapshot(const QJsonObject& params) const;
+    QJsonObject activeAnnotationPromptCancelConfirmationSnapshot(const QJsonObject& params) const;
+    QJsonObject activeAnnotationSessionSaveConfirmationSnapshot(const QJsonObject& params) const;
+    QJsonObject currentAgentQuickMeasurementStatus() const;
+    bool agentQuickMeasurementTargetStillValid(QString* reason = nullptr) const;
+    void cancelAgentQuickMeasurement(const QString& status, const QString& reason);
+    void completeAgentQuickMeasurement();
+
     void setupUi();
     void setupMenuBar();
     void setupToolBar();
@@ -156,7 +184,12 @@ private:
     QIcon createIcon(const QString& name);
 
 protected:
+    virtual bool openDesktopUrl(const QUrl& url) const;
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void schedulePendingToolboxDrop(const QString& pluginName, const QString& instanceName, QTreeWidgetItem* item,
+                                    const QString& token, Project* targetProject);
+    void commitPendingToolboxDrop(const QString& pluginName, const QString& instanceName, QTreeWidgetItem* item,
+                                  const QString& token, Project* targetProject);
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
     void closeEvent(QCloseEvent* event) override;
@@ -180,6 +213,11 @@ protected:
     bool m_isCycleMode = false;
     bool m_isStepMode = false;
     bool m_closeWhenRunFinishes = false;
+    bool m_closeAwaitingServiceJob = false;
+    bool m_cameraShutdownStarted = false;
+    bool m_cameraShutdownReady = false;
+    QMetaObject::Connection m_cameraShutdownConnection;
+    QMetaObject::Connection m_cameraShutdownFailureConnection;
     QTimer* m_cycleTimer = nullptr;
 
     // 流程执行时间和高亮
@@ -192,7 +230,7 @@ protected:
 
     // 底部面板
     QDockWidget* m_logDock = nullptr;
-    QTableWidget* m_logTable = nullptr;
+    QPointer<QTableWidget> m_logTable;
     QComboBox* m_logFilterCombo = nullptr;
     int m_logFilterLevel = 0; // 0=全部, 1=Debug, 2=Info, 3=Warning, 4=Error
 
@@ -200,7 +238,7 @@ protected:
     QTabWidget* m_logTerminalTabs = nullptr;
     TerminalWidget* m_terminalWidget = nullptr;
     AgentActionLogWidget* m_agentActionLogWidget = nullptr;
-    AgentChatPanel* m_agentChatPanel = nullptr;
+    QPointer<AgentChatPanel> m_agentChatPanel;
     int m_agentChatTabIndex = -1;
 
     // 顶部工程上下文与状态栏
@@ -238,8 +276,14 @@ protected:
     void showProcessModuleOutput(QTreeWidgetItem* item, bool userInitiated = false);
     void displayImage(const ImageData& image, const QString& label = QString(), const QString& moduleId = QString());
     bool importFile(const QString& filePath);
-    bool importImageFile(const QString& filePath, const QString& existingDataSourceId = QString());
-    bool importPointCloudFile(const QString& filePath, const QString& existingDataSourceId = QString());
+    bool importImageFile(const QString& filePath, const QString& existingDataSourceId = QString(),
+                         bool rebuildPrimaryDisplay = true);
+    bool importPointCloudFile(const QString& filePath, const QString& existingDataSourceId = QString(),
+                              bool rebuildPrimaryDisplay = true);
+    bool displayDataSourceById(const QString& dataSourceId, QString* errorCode = nullptr);
+    bool displayDataSourceInDedicatedViewportById(const QString& dataSourceId, QString* errorCode = nullptr,
+                                                  QString* viewportId = nullptr, bool* created = nullptr);
+    bool setDataSourceVisibilityById(const QString& dataSourceId, bool visible, QString* errorCode = nullptr);
     void clearCentralDisplay();
     ViewportWidget* primaryDataSourceViewport();
     void rebuildPrimaryDataSourceDisplay();
@@ -263,6 +307,8 @@ protected:
     QString ensureMeasurementInputForMode(const QString& mode, const QString& consumerInstanceId);
     IModule* measurementInputForPicking(QString& instanceId);
     bool requestMeasurementInputForRun();
+    bool bindMeasurementPickViewport(const QString& viewportId);
+    void clearPendingMeasurementPick();
     void finishMeasurementPick(const QString& instanceId, const QJsonObject& params, bool is3D);
     void refreshMeasurementOverlay(const QJsonObject& params, int visibleSteps);
     void refreshMeasurementOverlay3D(const QJsonObject& params, int visibleSteps);
@@ -278,13 +324,40 @@ protected:
     QMap<QString, int> m_measurementPickCount;
     QString m_activeMeasurementInputId;
     QString m_pendingMeasurementInputId;
+    QString m_pendingMeasurementViewportId;
+    struct MeasurementViewportSnapshot {
+        QPointer<ViewportWidget> viewport;
+        quint64 contentGeneration = 0;
+    };
+    QHash<QString, MeasurementViewportSnapshot> m_pendingMeasurementViewports;
+    QString m_pendingMeasurementCycleSessionId;
+    quint64 m_measurementPickContinuationGeneration = 0;
 
     // 快速测量（无需流程）
     bool m_quickMeasureActive = false;
     int m_quickMeasureType = 0;
     QList<QPointF> m_quickMeasurePoints;
-    QList<QVector3D> m_quickMeasurePoints3D;
+    QList<Eigen::Vector3d> m_quickMeasurePoints3D;
     QAction* m_quickMeasureAction = nullptr;
+    struct AgentQuickMeasurementRequest {
+        QString requestId;
+        QString status;
+        QString reason;
+        QString viewportId;
+        QString dimension;
+        QString measurementType;
+        QString coordinateSystem;
+        QStringList steps;
+        QJsonArray pickedCoordinates;
+        int completedSteps = 0;
+        int measurementTypeIndex = -1;
+        quintptr viewportIdentity = 0;
+        quint64 projectRuntimeIdentity = 0;
+        quint64 viewportContentGeneration = 0;
+    };
+    AgentQuickMeasurementRequest m_agentQuickMeasurement;
+    QMetaObject::Connection m_agentQuickMeasureRoiConnection;
+    QList<QMetaObject::Connection> m_guiQuickMeasureRoiConnections;
 
     // 流程画布（图形化节点编辑器）
     FlowCanvas* m_flowCanvas = nullptr;
@@ -302,7 +375,7 @@ protected:
     QList<int> m_focusSavedRightSplitterSizes;
 
     // 右侧检查器面板
-    ModuleInspectorPanel* m_inspectorPanel = nullptr;
+    QPointer<ModuleInspectorPanel> m_inspectorPanel;
 
     // 当前唯一选中的模块实例 ID
     QString m_selectedModuleId;
@@ -341,6 +414,12 @@ protected:
     DisplayFrame m_latestDisplayFrame;
     bool m_hasDisplayFrame = false;
     QPointer<SamAnnotatorDialog> m_samAnnotatorDialog;
+    QPointer<SystemParamView> m_agentSystemSettingsDialog;
+    QPointer<LoginDialog> m_agentLoginDialog;
+    QPointer<AgentSettingsDialog> m_agentPreferencesDialog;
+    QPointer<QMessageBox> m_agentAboutDialog;
+    QPointer<KnowledgeBaseDialog> m_agentKnowledgeBaseDialog;
+    QPointer<GlobalVarView> m_agentGlobalVarDialog;
 
     // 3D 渲染模式（视图菜单内）
     QAction* m_renderSeparator = nullptr;
@@ -355,6 +434,12 @@ protected:
     // ===== 阶段 5: 参数编辑撤销栈 =====
     // 仅服务手动 UI 编辑的撤销栈（不合并 Agent 自己的撤销栈）
     QUndoStack* m_paramUndoStack = nullptr;
+    QPointer<Project> m_positionDragProject;
+    QString m_positionDragInstanceId;
+    int m_positionDragStartX = 0;
+    int m_positionDragStartY = 0;
+    quint64 m_positionDragGuiGeneration = 0;
+    bool m_positionDragActive = false;
     // 参数修改后标记为脏的模块集合
     QSet<QString> m_dirtyModuleIds;
 
@@ -364,6 +449,7 @@ protected:
 
     // 设置参数并推入撤销栈
     void pushParamCommand(const QString& instanceId, const QString& key, const QVariant& value);
+    bool rejectBusyFlowEdit(const QString& action);
     void markModuleDirty(const QString& instanceId);
 
     // ===== 阶段 9: 自适应布局与状态保存 =====

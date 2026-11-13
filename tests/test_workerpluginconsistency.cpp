@@ -248,11 +248,27 @@ ExecutionResult executeOnce(IModule* module, const PortValueMap& inputs, PortVal
 
 Snapshot snapshotOf(IModule* module, const PortValueMap& inputs, qint64 frameId) {
     Snapshot snapshot;
+    PortValueMap isolatedInputs = inputs;
+    for (auto it = isolatedInputs.begin(); it != isolatedInputs.end(); ++it) {
+        if (!it.value().canConvert<ImageData>())
+            continue;
+        ImageData image = it.value().value<ImageData>();
+        if (image.hasMat())
+            image.setMat(image.toMat().clone());
+        it.value() = QVariant::fromValue(std::move(image));
+    }
     PortValueMap outputs;
-    const ExecutionResult result = executeOnce(module, inputs, outputs, frameId);
+    const ExecutionResult result = executeOnce(module, isolatedInputs, outputs, frameId);
     snapshot.success = result.success;
     snapshot.errorCode = result.errorCode;
     snapshot.userMessage = result.userMessage;
+    for (auto it = outputs.begin(); it != outputs.end(); ++it) {
+        if (!it.value().canConvert<ImageData>())
+            continue;
+        ImageData image = it.value().value<ImageData>();
+        image.setQImage(image.toQImage().copy());
+        it.value() = QVariant::fromValue(std::move(image));
+    }
     snapshot.outputs = outputs;
     return snapshot;
 }

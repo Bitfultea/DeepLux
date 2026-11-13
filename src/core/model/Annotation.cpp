@@ -2,6 +2,7 @@
 
 #include <QCryptographicHash>
 #include <QFile>
+#include <QIODevice>
 #include <QImage>
 #include <QJsonDocument>
 #include <QRectF>
@@ -257,6 +258,19 @@ QJsonObject AnnotationSession::toJson() const {
     json["imageHeight"] = imageHeight;
     json["imageDigest"] = imageDigest; // 批3 复核二轮（P1-4）：图像内容摘要（可空=旧文件）
     json["modelName"] = modelName;
+    if (sourceCoordinateProvenance.isValid()) {
+        const auto matrix = sourceCoordinateProvenance.localToSourceMatrix();
+        QJsonArray matrixJson;
+        for (double value : matrix)
+            matrixJson.append(value);
+        json["sourceCoordinates"] =
+            QJsonObject{{QStringLiteral("version"), 1},
+                        {QStringLiteral("sourceImageId"), sourceCoordinateProvenance.sourceImageId},
+                        {QStringLiteral("sourceImageSize"),
+                         QJsonObject{{QStringLiteral("width"), sourceCoordinateProvenance.sourceSize.width()},
+                                     {QStringLiteral("height"), sourceCoordinateProvenance.sourceSize.height()}}},
+                        {QStringLiteral("localToSource"), matrixJson}};
+    }
 
     QJsonArray annArr;
     for (const AnnotationObject& obj : annotations) {
@@ -275,6 +289,37 @@ AnnotationSession AnnotationSession::fromJson(const QJsonObject& json) {
     session.imageDigest = json["imageDigest"].toString();
     session.modelName = json["modelName"].toString();
 
+    const QJsonObject source = json.value(QStringLiteral("sourceCoordinates")).toObject();
+    const QJsonObject sourceSize = source.value(QStringLiteral("sourceImageSize")).toObject();
+    const QJsonArray matrixJson = source.value(QStringLiteral("localToSource")).toArray();
+    const auto isInteger = [](const QJsonValue& value) {
+        return value.isDouble() && std::isfinite(value.toDouble()) &&
+               value.toDouble() == std::floor(value.toDouble()) && value.toDouble() > 0.0 &&
+               value.toDouble() <= std::numeric_limits<int>::max();
+    };
+    const QJsonValue version = source.value(QStringLiteral("version"));
+    if (version.isDouble() && std::isfinite(version.toDouble()) && version.toDouble() == 1.0 &&
+        source.value(QStringLiteral("sourceImageId")).isString() &&
+        !source.value(QStringLiteral("sourceImageId")).toString().isEmpty() &&
+        isInteger(sourceSize.value(QStringLiteral("width"))) && isInteger(sourceSize.value(QStringLiteral("height"))) &&
+        matrixJson.size() == 9) {
+        ImageCoordinateProvenance provenance;
+        provenance.sourceImageId = source.value(QStringLiteral("sourceImageId")).toString();
+        provenance.sourceSize = QSize(sourceSize.value(QStringLiteral("width")).toInt(),
+                                      sourceSize.value(QStringLiteral("height")).toInt());
+        ImageCoordinateProvenance::Matrix3 matrix{};
+        bool validMatrix = true;
+        for (int i = 0; i < matrixJson.size(); ++i) {
+            if (!matrixJson[i].isDouble() || !std::isfinite(matrixJson[i].toDouble())) {
+                validMatrix = false;
+                break;
+            }
+            matrix[size_t(i)] = matrixJson[i].toDouble();
+        }
+        if (validMatrix && provenance.composeLocalToSource(matrix))
+            session.sourceCoordinateProvenance = provenance;
+    }
+
     QJsonArray annArr = json["annotations"].toArray();
     for (const QJsonValue& v : annArr) {
         session.annotations.append(AnnotationObject::fromJson(v.toObject()));
@@ -291,41 +336,90 @@ AnnotationSession AnnotationSession::load(const QString& filePath, QString* erro
         return AnnotationSession();
     }
 
-    QJsonParseError parseError;
-    QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+    const QByteArray data = file.readAll();
+    if (file.error() != QFileDevice::NoError) {
+        if (error)
+            *error = QStringLiteral("Cannot read file: %1 (%2)").arg(filePath, file.errorString());
+        return AnnotationSession();
+    }
     file.close();
+    return loadFromBytes(data, nullptr, error, filePath);
+}
+
+AnnotationSession AnnotationSession::loadFromDevice(QIODevice& device, qint64 maxBytes, LoadResult* result,
+                                                    QString* error, const QString& context) {
+    auto fail = [result, error](LoadResult code, const QString& message) {
+        if (result)
+            *result = code;
+        if (error)
+            *error = message;
+        return AnnotationSession();
+    };
+    if (result)
+        *result = LoadResult::IoError;
+    if (!device.isOpen() || !device.isReadable() || maxBytes < 0 || maxBytes == std::numeric_limits<qint64>::max())
+        return fail(LoadResult::IoError, QStringLiteral("Annotation session input is not readable"));
+
+    QByteArray data;
+    constexpr qint64 kReadChunkBytes = 64 * 1024;
+    while (qint64(data.size()) <= maxBytes) {
+        const qint64 remainingWithSentinel = maxBytes + 1 - qint64(data.size());
+        const qint64 requestBytes = std::min(kReadChunkBytes, remainingWithSentinel);
+        const QByteArray chunk = device.read(requestBytes);
+        if (chunk.isEmpty()) {
+            if (device.atEnd())
+                break;
+            return fail(LoadResult::IoError, QStringLiteral("Could not read annotation session input"));
+        }
+        data.append(chunk);
+    }
+    if (qint64(data.size()) > maxBytes)
+        return fail(LoadResult::SizeLimitExceeded, QStringLiteral("Annotation session exceeds the input size limit"));
+
+    return loadFromBytes(data, result, error, context);
+}
+
+AnnotationSession AnnotationSession::loadFromBytes(const QByteArray& data, LoadResult* result, QString* error,
+                                                   const QString& context) {
+    if (result)
+        *result = LoadResult::InvalidSession;
+    const auto withContext = [&context](const QString& message) {
+        return context.isEmpty() ? message : QStringLiteral("%1: %2").arg(message, context);
+    };
+    QJsonParseError parseError;
+    QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
 
     if (parseError.error != QJsonParseError::NoError) {
         if (error)
-            *error = parseError.errorString();
+            *error = withContext(parseError.errorString());
         return AnnotationSession();
     }
 
     // 批3 复核二轮（P1-5）+ 三轮（P1-2）：严格 schema 校验失败关闭——
     // 旧实现把合法 JSON 数组经 doc.object() 静默当空会话载入、把 [42] 元素
     // toObject() 成空标注；畸形文件被当合法会话后，追加保存会覆盖原文件
-    auto failLoad = [error](const QString& message) {
+    auto failLoad = [error, &withContext](const QString& message) {
         if (error)
-            *error = message;
+            *error = withContext(message);
         return AnnotationSession();
     };
     if (!doc.isObject())
-        return failLoad(QStringLiteral("Not a JSON object (invalid annotation session): %1").arg(filePath));
+        return failLoad(QStringLiteral("Not a JSON object (invalid annotation session)"));
     const QJsonObject obj = doc.object();
     // annotations 必须存在且为数组，逐元素严格校验
     if (!obj.contains(QLatin1String("annotations")) || !obj.value(QLatin1String("annotations")).isArray())
-        return failLoad(QStringLiteral("Field 'annotations' must be present and be an array: %1").arg(filePath));
+        return failLoad(QStringLiteral("Field 'annotations' must be present and be an array"));
     const QJsonArray annArr = obj.value(QLatin1String("annotations")).toArray();
     QString fieldError;
     QSet<QString> seenIds;
     for (int i = 0; i < annArr.size(); ++i) {
         if (!validateObjectJson(annArr[i], i, &fieldError))
-            return failLoad(QStringLiteral("%1: %2").arg(fieldError, filePath));
+            return failLoad(fieldError);
         // 批3 复核四轮（P1-2）：id 唯一性——findById/removeById/掩膜缓存均以 id
         // 为键，重复 id 会导致掩膜覆盖与编辑对象错配（只操作第一个同名对象）
         const QString id = annArr[i].toObject().value(QLatin1String("id")).toString();
         if (seenIds.contains(id))
-            return failLoad(QStringLiteral("annotations[%1].id duplicated (%2): %3").arg(i).arg(id, filePath));
+            return failLoad(QStringLiteral("annotations[%1].id duplicated").arg(i));
         seenIds.insert(id);
     }
     // 尺寸：非负整数值且不超 int 表示范围（批3 复核四轮 P2-3：2147483648 经
@@ -335,14 +429,13 @@ AnnotationSession AnnotationSession::load(const QString& filePath, QString* erro
         if (v.isUndefined() || v.isNull())
             continue;
         if (!isIntegralNumber(v) || v.toDouble() < 0.0 || v.toDouble() > double(std::numeric_limits<int>::max()))
-            return failLoad(
-                QStringLiteral("Field '%1' must be an integer in [0, INT_MAX]: %2").arg(QLatin1String(key), filePath));
+            return failLoad(QStringLiteral("Field '%1' must be an integer in [0, INT_MAX]").arg(QLatin1String(key)));
     }
     // 字符串字段类型受控
     for (const char* key : {"imagePath", "imageDigest", "modelName"}) {
         const QJsonValue v = obj.value(QLatin1String(key));
         if (!v.isUndefined() && !v.isNull() && !v.isString())
-            return failLoad(QStringLiteral("Field '%1' must be a string: %2").arg(QLatin1String(key), filePath));
+            return failLoad(QStringLiteral("Field '%1' must be a string").arg(QLatin1String(key)));
     }
     // 批3 复核四轮（P2-3）：imageDigest 为空或 64 位十六进制（SHA-256 hex，
     // computeImageDigest 产物口径），拒绝任意短串冒充摘要
@@ -353,9 +446,11 @@ AnnotationSession AnnotationSession::load(const QString& filePath, QString* erro
                                   return c.isDigit() || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
                               });
         if (!validHex)
-            return failLoad(QStringLiteral("Field 'imageDigest' must be empty or 64 hex characters: %1").arg(filePath));
+            return failLoad(QStringLiteral("Field 'imageDigest' must be empty or 64 hex characters"));
     }
 
+    if (result)
+        *result = LoadResult::Success;
     return fromJson(obj);
 }
 

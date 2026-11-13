@@ -2,9 +2,7 @@
 
 #include "core/base/ModuleBase.h"
 
-#include <QEventLoop>
 #include <QTcpSocket>
-#include <QTimer>
 
 namespace DeepLux {
 
@@ -16,6 +14,7 @@ class DEEPLUX_PLUGIN_API PLCWritePlugin : public ModuleBase {
 public:
     explicit PLCWritePlugin(QObject* parent = nullptr);
     ~PLCWritePlugin() override;
+    using ModuleBase::execute;
 
     QString moduleId() const override {
         return "com.deeplux.plugin.plcwrite";
@@ -38,6 +37,7 @@ public:
 
     bool initialize() override;
     QWidget* createConfigWidget() override;
+    ExecutionResult execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) override;
 
     int lastWaitMs() const {
         return m_lastWaitMs;
@@ -48,25 +48,14 @@ protected:
     bool doValidateParams(const QJsonObject& params, QString& error) const override;
     IModule* cloneImpl() const override;
 
-private slots:
-    void onConnected();
-    void onDisconnected();
-    void onError(QAbstractSocket::SocketError error);
-    void onReadyRead();
-    void onConnectTimeout();
-    void onReadTimeout();
-
 private:
-    bool connectToHost();
-    void disconnectFromHost();
+    bool connectToHost(QTcpSocket& socket);
+    void disconnectFromHost(QTcpSocket& socket);
     QByteArray buildWriteRequest(quint16 transactionId, quint8 unitId, quint16 startAddress,
                                  const QVector<quint16>& values);
     bool parseWriteResponse(const QByteArray& data);
 
-    QTcpSocket* m_socket;
     QByteArray m_readBuffer;
-    QEventLoop* m_connectLoop;
-    QEventLoop* m_readLoop;
     QString m_host;
     quint16 m_port;
     quint8 m_slaveId;
@@ -75,7 +64,7 @@ private:
     QString m_valueSource;
     int m_timeout;
     int m_lastWaitMs = 0;
-    bool m_readTimedOut = false;
+    bool m_writeRequestAccepted = false;
     quint16 m_transactionId = 0;
 };
 

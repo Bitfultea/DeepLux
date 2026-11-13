@@ -71,11 +71,16 @@ bool JigsawPuzzlePlugin::process(const ImageData& input, ImageData& output) {
         // 暂时忽略碎片数据，使用输入图像进行分割
     }
 
+    const int pieceWidth = mat.cols / m_cols;
+    const int pieceHeight = mat.rows / m_rows;
+    if (pieceWidth <= 0 || pieceHeight <= 0) {
+        output = ImageData();
+        emit errorOccurred(tr("图像尺寸不足以按当前行列数切分"));
+        return false;
+    }
+
     if (pieces.empty()) {
         // 将输入图像分割成碎片
-        int pieceWidth = mat.cols / m_cols;
-        int pieceHeight = mat.rows / m_rows;
-
         for (int i = 0; i < m_rows; ++i) {
             for (int j = 0; j < m_cols; ++j) {
                 cv::Rect roi(j * pieceWidth, i * pieceHeight, pieceWidth, pieceHeight);
@@ -85,14 +90,14 @@ bool JigsawPuzzlePlugin::process(const ImageData& input, ImageData& output) {
     }
 
     // 简单拼接 - 按顺序排列碎片
-    int pieceWidth = pieces[0].cols;
-    int pieceHeight = pieces[0].rows;
-    cv::Mat result(m_rows * pieceHeight, m_cols * pieceWidth, pieces[0].type());
+    const int assembledPieceWidth = pieces[0].cols;
+    const int assembledPieceHeight = pieces[0].rows;
+    cv::Mat result(m_rows * assembledPieceHeight, m_cols * assembledPieceWidth, pieces[0].type());
 
     for (size_t i = 0; i < pieces.size() && i < static_cast<size_t>(m_rows * m_cols); ++i) {
         int row = i / m_cols;
         int col = i % m_cols;
-        cv::Rect roi(col * pieceWidth, row * pieceHeight, pieceWidth, pieceHeight);
+        cv::Rect roi(col * assembledPieceWidth, row * assembledPieceHeight, assembledPieceWidth, assembledPieceHeight);
         pieces[i].copyTo(result(roi));
     }
 

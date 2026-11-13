@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 
-if(UNIX AND NOT APPLE)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_subdirectory(V4L2Camera)
     if(ENABLE_CAMERA_HIKVISION)
         add_subdirectory(HikvisionCamera)

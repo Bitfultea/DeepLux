@@ -5,7 +5,9 @@
 #include <QComboBox>
 #include <QLabel>
 #include <QSpinBox>
+#include <QStringList>
 #include <QVBoxLayout>
+#include <cmath>
 
 #ifdef DEEPLUX_HAS_OPENCV
 #include <opencv2/opencv.hpp>
@@ -126,11 +128,41 @@ cv::Mat PerProcessingPlugin::applyMorphology(const cv::Mat& input, int operation
 }
 
 bool PerProcessingPlugin::doValidateParams(const QJsonObject& params, QString& error) const {
-    int kernelSize = params["kernelSize"].toInt();
-    if (kernelSize < 1) {
-        error = tr("核大小必须大于0");
+    static const QStringList processTypes = {
+        QStringLiteral("GaussianBlur"), QStringLiteral("MedianBlur"), QStringLiteral("BilateralFilter"),
+        QStringLiteral("Sobel"),        QStringLiteral("Laplacian"),  QStringLiteral("Canny"),
+        QStringLiteral("Dilate"),       QStringLiteral("Erode"),      QStringLiteral("Open"),
+        QStringLiteral("Close"),        QStringLiteral("Gradient")};
+    const QJsonValue processType = params.value(QStringLiteral("processType"));
+    if (!processType.isString() || !processTypes.contains(processType.toString())) {
+        error = tr("不支持的处理类型: %1").arg(processType.toString());
         return false;
     }
+
+    const auto finiteNumber = [&params](const QString& key, double min, double max) {
+        const QJsonValue value = params.value(key);
+        if (!value.isDouble())
+            return false;
+        const double number = value.toDouble();
+        return std::isfinite(number) && number >= min && number <= max;
+    };
+    const QJsonValue kernelValue = params.value(QStringLiteral("kernelSize"));
+    const double kernelSize = kernelValue.toDouble();
+    if (!finiteNumber(QStringLiteral("kernelSize"), 1.0, 31.0) || std::floor(kernelSize) != kernelSize) {
+        error = tr("kernelSize 必须为 1–31 的整数");
+        return false;
+    }
+    if (!finiteNumber(QStringLiteral("sigmaX"), 0.0, 100.0)) {
+        error = tr("sigmaX 必须为 [0,100] 的有限数");
+        return false;
+    }
+    const QJsonValue iterationsValue = params.value(QStringLiteral("iterations"));
+    const double iterations = iterationsValue.toDouble();
+    if (!finiteNumber(QStringLiteral("iterations"), 1.0, 10.0) || std::floor(iterations) != iterations) {
+        error = tr("iterations 必须为 1–10 的整数");
+        return false;
+    }
+    error.clear();
     return true;
 }
 

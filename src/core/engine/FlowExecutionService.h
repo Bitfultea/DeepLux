@@ -33,13 +33,26 @@ public:
     enum class JobType { None, Single, Cycle, Step, Resume };
     enum class State { Idle, Running, Paused, Stopping };
 
+    // Immutable execution contract copied when a job is accepted. maxCycles==0 means unbounded;
+    // requests carrying destructive-output authorization must specify a positive bound.
+    struct JobRequest {
+        QString runId;
+        QString sessionId;
+        int maxCycles = 0;
+        int intervalMs = 100;
+        QJsonObject authorization;
+    };
+
     static FlowExecutionService& instance();
 
     // 启动入口（设计 §4.1）：仅 Idle 接受；Paused 只接受 continueRun() 或 stop()。
     bool startSingle();
+    bool startSingle(JobRequest* request);
     bool startCycle();
+    bool startCycle(JobRequest* request);
     bool stepOnce();
-    bool continueRun();
+    bool stepOnce(JobRequest* request);
+    bool continueRun(const QJsonObject& authorization = {});
     bool pauseRun();
     // 任何状态下安全、幂等、立即返回；覆盖空闲/暂停/循环轮间等待。
     void stop();
@@ -69,6 +82,13 @@ public:
     quint64 lastFailedJobSerial() const {
         return m_failedJobSerial.load(std::memory_order_acquire);
     }
+    QString lastSessionId() const {
+        QMutexLocker locker(&m_mutex);
+        return m_lastSessionId;
+    }
+    RunObservation currentRunObservation() const;
+    RunObservation currentSessionObservation() const;
+    JobRequest activeJobRequestSnapshot() const;
 
     // B7：启动握手在 GUI 线程上的最长等待。超时后撤回尚未出队的命令（已出队则请求停止），
     // 保证 closeEvent/启动路径不被拖住，且不会留下“稍后执行”的 pending job。
@@ -77,6 +97,9 @@ public:
 #ifdef DEEPLUX_BUILD_TESTS
 private:
     friend class FlowExecutionServiceTestAccess;
+    void setAfterStartSettledHookForTest(std::function<void()> hook);
+    void clearAfterStartSettledHookForTest();
+
     // 后台执行（B7）测试注入：worker 在 beginExternalJob 之前的启动协议内执行该钩子，
     // 用于确定性验证启动握手的等待上限与超时语义（生产构建该钩子恒为空）。
     void setStartHandshakeHookForTest(std::function<void()> hook);
@@ -158,11 +181,11 @@ private:
     ~FlowExecutionService() override;
 
     // 命令槽（设计 §4.1：不排队，深度 1）：锁内校验 + 入队 + 唤醒工作线程。
-    bool enqueue(JobType job);
+    bool enqueue(JobType job, JobRequest* request = nullptr);
     void ensureThreadLocked();
     // faultyJob（可空）在每轮出队后写入当前命令，供 run() 的入口兜底判断出错的 job。
     void workerLoop(JobType* faultyJob = nullptr);
-    void runJob(JobType job);
+    void runJob(JobType job, const JobRequest& request);
     // T2.5：workerLoop() 自身 C++ 异常的最后一道保险（job 级异常已由 runJob() 收敛）。
     // 由 WorkerThread::run() 调用；负责把 Service 复位到可再次启动的 Idle 并上报 jobFailed。
     // faultyJob 由 workerLoop() 在出队时记录（出错时正在处理的命令）；仅在 m_job 尚未置位
@@ -173,9 +196,12 @@ private:
     // 模块边界暂停后等待 continueRun()/stop()；Resumed 时已恢复被暂停段。
     ResumeOutcome waitForResumeOrStop(const RunEngine::JobToken& token, QString& error);
 
-    void runSingleJob(const RunEngine::JobToken& token, bool& stopped, bool& failed, QString& error);
-    void runCycleJob(const RunEngine::JobToken& token, bool& stopped, bool& failed, QString& error);
-    void runStepJob(const RunEngine::JobToken& token, bool& stopped, bool& failed, QString& error);
+    void runSingleJob(const RunEngine::JobToken& token, const JobRequest& request, bool& stopped, bool& failed,
+                      QString& error);
+    void runCycleJob(const RunEngine::JobToken& token, const JobRequest& request, bool& stopped, bool& failed,
+                     QString& error);
+    void runStepJob(const RunEngine::JobToken& token, const JobRequest& request, bool& stopped, bool& failed,
+                    QString& error);
 
     bool stopRequested() const;
     bool pauseRequested() const;
@@ -331,10 +357,15 @@ private:
     std::function<void()> m_testStartHook;
     // T2.1 整改：worker 退出屏障（仅测试注入）；为空时生产行为不变。
     std::function<void()> m_testWorkerExitBarrier;
+    std::function<void()> m_testAfterStartSettledHook;
 #else
-    std::aligned_storage_t<sizeof(std::function<void()>), alignof(std::function<void()>)> m_reservedTestHookSlots[2];
+    std::aligned_storage_t<sizeof(std::function<void()>), alignof(std::function<void()>)> m_reservedTestHookSlots[3];
 #endif
     JobType m_pendingJob = JobType::None;
+    JobRequest m_pendingRequest;
+    JobRequest m_activeRequest;
+    QString m_lastRunId;
+    QString m_lastSessionId;
     RunEngine::JobToken m_leaseToken;
     std::atomic<int> m_state{static_cast<int>(State::Idle)};
     std::atomic<int> m_job{static_cast<int>(JobType::None)};
