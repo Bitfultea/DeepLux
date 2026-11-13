@@ -5280,7 +5280,12 @@ void TestMainWindow::testG6MeasurementInputCancelsImageChangeAndLateRelease() {
     QTest::mouseRelease(imageWidget, Qt::LeftButton, Qt::NoModifier, staleReleasePosition);
     QCoreApplication::processEvents();
 
-    QCOMPARE(project->toJson(), initialProject);
+    const QJsonObject currentProject = project->toJson();
+    if (currentProject != initialProject) {
+        qWarning().noquote() << "G6 project before:" << QJsonDocument(initialProject).toJson(QJsonDocument::Compact);
+        qWarning().noquote() << "G6 project after:" << QJsonDocument(currentProject).toJson(QJsonDocument::Compact);
+    }
+    QCOMPARE(currentProject, initialProject);
     QCOMPARE(sourcePickSpy.size(), 0);
     QCOMPARE(runStartedSpy.count(), 0);
     QCOMPARE(runFinishedSpy.count(), 0);
@@ -13296,7 +13301,14 @@ void TestMainWindow::testProjectOperationSlotsEnforceProductPermissionsAndRechec
     QVERIFY(permissionWarningShown);
     QVERIFY(!saveAsShown);
     QCOMPARE(manager.currentProject(), original);
-    QCOMPARE(original->toJson(), before);
+    const QJsonObject currentProject = original->toJson();
+    if (currentProject != before) {
+        qWarning().noquote() << "Permission test project before:"
+                             << QJsonDocument(before).toJson(QJsonDocument::Compact);
+        qWarning().noquote() << "Permission test project after:"
+                             << QJsonDocument(currentProject).toJson(QJsonDocument::Compact);
+    }
+    QCOMPARE(currentProject, before);
     QVERIFY(original->isModified());
     QVERIFY(original->filePath().isEmpty());
 }

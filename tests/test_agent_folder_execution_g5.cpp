@@ -3800,6 +3800,14 @@ private slots:
         QVERIFY(!firstTickSessionId.isEmpty());
         QVERIFY2(firstTickSwapError.isEmpty(), qPrintable(firstTickSwapError));
         QCOMPARE(QFileInfo(alias).symLinkTarget(), QFileInfo(rootB).canonicalFilePath());
+        if (firstTickRunFinished.count() > 1) {
+            qWarning() << "bounded-cycle unexpected runFinished count:" << firstTickRunFinished.count();
+            for (const QList<QVariant>& arguments : firstTickRunFinished) {
+                const RunResult result = qvariant_cast<RunResult>(arguments.at(0));
+                qWarning() << "bounded-cycle runFinished:" << result.runId << result.success << result.errorCode
+                           << result.failedModule << result.errorMessage;
+            }
+        }
         QTRY_COMPARE_WITH_TIMEOUT(firstTickRunFinished.count(), 1, 5000);
         QCOMPARE(firstTickStarted.count(), 1);
         QCOMPARE(firstTickFinished.count(), 1);
