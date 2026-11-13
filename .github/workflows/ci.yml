@@ -116,7 +116,7 @@ jobs:
             fi
           fi
           git diff --check "$BASE" HEAD
-          FILES=$(git diff --name-only "$BASE" HEAD -- 'src/*.cpp' 'src/*.h' 'tests/*.cpp' 'tests/*.h' \
+          FILES=$(git diff --name-only --diff-filter=ACMRT "$BASE" HEAD -- 'src/*.cpp' 'src/*.h' 'tests/*.cpp' 'tests/*.h' \
                     'src/**/*.cpp' 'src/**/*.h' 'tests/**/*.cpp' 'tests/**/*.h')
           if [ -z "$FILES" ]; then echo "No C++ files changed; format gate passes."; exit 0; fi
           echo "Checking changed files:"; echo "$FILES"
