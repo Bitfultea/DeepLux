@@ -13,7 +13,9 @@
 #include <core/common/Logger.h>
 #include <core/engine/RunEngine.h>
 #include <core/model/Project.h>
+#include <memory>
 #include <thread>
+#include <utility>
 
 using namespace DeepLux;
 
@@ -5034,6 +5036,62 @@ void TestRunEngine::testControlJoinPoliciesArePerPort() {
 // 阶段 E2: Parallel 接入主循环测试
 // ---------------------------------------------------------------------------
 
+struct ParallelBatchBarrier {
+    QSemaphore releaseBoth;
+    std::atomic<int> entered{0};
+    std::atomic<int> completed{0};
+    std::atomic<bool> overlapProven{false};
+};
+
+class ThreadSafeBarrierModule : public ModuleBase {
+    Q_OBJECT
+public:
+    ThreadSafeBarrierModule(const QString& name, std::shared_ptr<ParallelBatchBarrier> barrier)
+        : m_barrier(std::move(barrier)) {
+        m_moduleId = QStringLiteral("com.deeplux.test.parallel-barrier.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+        setThreadSafe(true);
+        PortSpec out;
+        out.id = "image";
+        out.displayName = "image";
+        out.type = DataType::Image2D;
+        setPorts({}, {out});
+    }
+
+    QList<PortSpec> outputPorts() const override {
+        PortSpec out;
+        out.id = "image";
+        out.displayName = "image";
+        out.type = DataType::Image2D;
+        return {out};
+    }
+
+    ControlFlowType flowControlType() const override {
+        return ControlFlowType::Sequential;
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        if (m_barrier->entered.fetch_add(1, std::memory_order_acq_rel) + 1 == 2) {
+            m_barrier->overlapProven.store(true, std::memory_order_release);
+            m_barrier->releaseBoth.release(2);
+        }
+        if (!m_barrier->releaseBoth.tryAcquire(1, 10000))
+            return false;
+        m_barrier->completed.fetch_add(1, std::memory_order_relaxed);
+        output = input;
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    std::shared_ptr<ParallelBatchBarrier> m_barrier;
+};
+
 // 线程安全的 sleep 模块（用于验证并发）
 class ThreadSafeSleepModule : public ModuleBase {
     Q_OBJECT
@@ -5132,8 +5190,9 @@ void TestRunEngine::testParallelBatchExecutesConcurrently() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
     engine.setParallelThreadCount(2);
+    auto barrier = std::make_shared<ParallelBatchBarrier>();
 
-    // Parallel 显式分叉到 A、B；两个线程安全分支各 sleep 100ms，最后汇合到 C。
+    // Parallel 显式分叉到 A、B；屏障证明两个分支在任一分支继续前都已进入 process。
     Project project;
     ModuleInstance fork;
     fork.id = QStringLiteral("Fork");
@@ -5156,12 +5215,12 @@ void TestRunEngine::testParallelBatchExecutesConcurrently() {
     project.addConnection(controlConnection("A", "next", "C"));
     project.addConnection(controlConnection("B", "next", "C"));
 
-    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
+    QVERIFY(engine.loadProject(&project, [barrier](const ModuleInstance& inst) -> ModuleBase* {
         if (inst.id == "Fork")
             return new ParallelForkModule(inst.id);
         if (inst.id == "C")
             return new ControlJoinAllModule(inst.id);
-        return new ThreadSafeSleepModule(inst.id, 100);
+        return new ThreadSafeBarrierModule(inst.id, barrier);
     }));
     // 后台执行（设计 §6.3）：并行分支 A/B 必须 worker 亲和才可进入并行批次。
     RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("A"), ExecutionAffinity::Worker);
@@ -5174,8 +5233,8 @@ void TestRunEngine::testParallelBatchExecutesConcurrently() {
     disconnect(conn);
 
     QVERIFY(result.success);
-    // A||B 并行约 100ms；顺序则约 200ms。
-    QVERIFY2(result.elapsedMs < 200, qPrintable(QString("parallel should be < 200ms, got %1").arg(result.elapsedMs)));
+    QVERIFY2(barrier->overlapProven.load(std::memory_order_acquire), "both branches must reach the barrier together");
+    QCOMPARE(barrier->completed.load(std::memory_order_relaxed), 2);
     QVERIFY2(engine.lastParallelMaxConcurrency() >= 2,
              qPrintable(QString("max concurrency should be >= 2, got %1").arg(engine.lastParallelMaxConcurrency())));
     engine.clearModules();
