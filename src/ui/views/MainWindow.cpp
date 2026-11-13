@@ -5373,10 +5373,6 @@ QJsonObject MainWindow::executeAgentDataSourceViewAction(const QString& toolName
                 if (m_samAnnotatorDialog == dialog)
                     m_samAnnotatorDialog.clear();
             });
-            connect(dialog, &QObject::destroyed, this, [this, dialog]() {
-                if (m_samAnnotatorDialog == dialog)
-                    m_samAnnotatorDialog.clear();
-            });
         }
 
         dialog->showImagePickerEntryForUser();
@@ -5431,10 +5427,6 @@ QJsonObject MainWindow::executeAgentDataSourceViewAction(const QString& toolName
                 if (m_samAnnotatorDialog == dialog)
                     m_samAnnotatorDialog.clear();
             });
-            connect(dialog, &QObject::destroyed, this, [this, dialog]() {
-                if (m_samAnnotatorDialog == dialog)
-                    m_samAnnotatorDialog.clear();
-            });
         }
         if (targetViewport && dialog->imageSnapshot().isNull()) {
             // Safe attach updates the visible image/session binding without preparing the SAM backend.
@@ -5464,10 +5456,6 @@ QJsonObject MainWindow::executeAgentDataSourceViewAction(const QString& toolName
             m_samAnnotatorDialog->setAttribute(Qt::WA_DeleteOnClose);
             SamAnnotatorDialog* createdDialog = m_samAnnotatorDialog;
             connect(createdDialog, &QDialog::finished, this, [this, createdDialog](int) {
-                if (m_samAnnotatorDialog == createdDialog)
-                    m_samAnnotatorDialog.clear();
-            });
-            connect(createdDialog, &QObject::destroyed, this, [this, createdDialog]() {
                 if (m_samAnnotatorDialog == createdDialog)
                     m_samAnnotatorDialog.clear();
             });
@@ -8746,10 +8734,6 @@ void MainWindow::onQuickAnnotate() {
         m_samAnnotatorDialog->setAttribute(Qt::WA_DeleteOnClose);
         SamAnnotatorDialog* createdDialog = m_samAnnotatorDialog;
         connect(createdDialog, &QDialog::finished, this, [this, createdDialog](int) {
-            if (m_samAnnotatorDialog == createdDialog)
-                m_samAnnotatorDialog.clear();
-        });
-        connect(createdDialog, &QObject::destroyed, this, [this, createdDialog]() {
             if (m_samAnnotatorDialog == createdDialog)
                 m_samAnnotatorDialog.clear();
         });
