@@ -637,6 +637,11 @@ CLIHandler& CLIHandler::instance() {
     return instance;
 }
 
+CLIHandler::~CLIHandler() {
+    for (ICommand* command : m_commands)
+        delete command;
+}
+
 void CLIHandler::setupCommands() {
     m_commands.append(new VersionCommand());
     m_commands.append(new HelpCommand());

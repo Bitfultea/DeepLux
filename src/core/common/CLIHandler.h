@@ -139,7 +139,7 @@ signals:
 
 private:
     explicit CLIHandler(QObject* parent = nullptr);
-    ~CLIHandler() = default;
+    ~CLIHandler() override;
 
     CLIHandler(const CLIHandler&) = delete;
     CLIHandler& operator=(const CLIHandler&) = delete;
