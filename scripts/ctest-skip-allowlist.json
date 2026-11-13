@@ -1,4 +1,16 @@
 {
+  "TestAgentVisualPluginsG8::testAgentLoadsDecodesAndDisplaysRealImageOutput": {
+    "reason_contains": [
+      "OpenCV was built without QUIRC QR decoding support"
+    ],
+    "why": "The test requires OpenCV QUIRC support; when present, failure to decode its fixture is a test failure."
+  },
+  "TestRunEngine::testWorkerExecutionLogIncludesThreadId": {
+    "reason_contains": [
+      "Worker execution thread IDs are emitted only in debug builds"
+    ],
+    "why": "The worker thread ID diagnostic is compiled only in debug builds."
+  },
   "TestMainWindow::testQuickAnnotateNativeRealImageShowsMask": {
     "reason_contains": [
       "原生 SAM 未启用",

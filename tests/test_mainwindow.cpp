@@ -10970,6 +10970,9 @@ void TestMainWindow::testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition() 
     QCoreApplication::processEvents();
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project);
+    QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
+    FlowLayoutCoordinator* coordinator = window.findChild<FlowLayoutCoordinator*>();
+    QVERIFY(coordinator);
     FlowCanvas* canvas = window.findChild<FlowCanvas*>(QStringLiteral("FlowCanvas"));
     QVERIFY(canvas);
     QUndoStack* guiUndoStack = window.findChild<QUndoStack*>();
@@ -10985,10 +10988,14 @@ void TestMainWindow::testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition() 
     ModuleInstance defaultNode;
     defaultNode.id = QStringLiteral("gui_drag_default");
     defaultNode.moduleId = QStringLiteral("GrabImage");
+    const int layoutBeforeDefault = coordinator->layoutRunCount();
     project->addModule(defaultNode);
+    QTRY_VERIFY_WITH_TIMEOUT(coordinator->layoutRunCount() > layoutBeforeDefault, 1000);
     FlowNodeItem* defaultItem = canvas->nodeItem(defaultNode.id);
     QVERIFY(defaultItem);
-    QVERIFY(!defaultItem->pos().isNull());
+    const auto laidOutDefault = project->moduleById(defaultNode.id);
+    QVERIFY(laidOutDefault);
+    QCOMPARE(defaultItem->pos(), QPointF(laidOutDefault->posX, laidOutDefault->posY));
     const QPoint defaultClick = canvas->mapFromScene(defaultItem->mapToScene(QPointF(80, 30)));
     QSignalSpy updateSpy(project, &Project::moduleUpdated);
     QSignalSpy positionSpy(project, &Project::modulePositionChanged);
@@ -11021,6 +11028,7 @@ void TestMainWindow::testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition() 
     target.moduleId = QStringLiteral("Blob");
     target.posX = 480;
     target.posY = 160;
+    const int layoutBeforeGraph = coordinator->layoutRunCount();
     project->addModule(target);
     ModuleConnection connection;
     connection.fromModuleId = movable.id;
@@ -11028,6 +11036,11 @@ void TestMainWindow::testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition() 
     connection.fromPort = QStringLiteral("image");
     connection.toPort = QStringLiteral("image");
     project->addConnection(connection);
+    QTRY_VERIFY_WITH_TIMEOUT(coordinator->layoutRunCount() > layoutBeforeGraph, 1000);
+    movable = *project->moduleById(movable.id);
+    target = *project->moduleById(target.id);
+    updateSpy.clear();
+    positionSpy.clear();
     const QJsonArray originalConnections = project->toJson().value(QStringLiteral("connections")).toArray();
     FlowNodeItem* item = canvas->nodeItem(movable.id);
     FlowNodeItem* targetItem = canvas->nodeItem(target.id);
@@ -12188,6 +12201,7 @@ void TestMainWindow::testAgentDataSourceDisplayAndVisibilityTools() {
     window.show();
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project);
+    QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
 
     DataSource source;
     source.id = QStringLiteral("agent_view_source");

@@ -940,9 +940,7 @@ private slots:
     void testParallelExecutesConcurrently();
     void testExecuteParallelRejectsDuplicateModuleInBatch();
     void testExecuteParallelRejectsSameInstanceAcrossRequests();
-#ifndef NDEBUG
     void testWorkerExecutionLogIncludesThreadId();
-#endif
     void testParallelFailureCancelsGroup();
     // 阶段 6 并发收口定向测试
     void testParallelSignalsDeliveredOnReceiverThread();
@@ -1998,8 +1996,10 @@ void TestRunEngine::testExecuteParallelRejectsSameInstanceAcrossRequests() {
     QCOMPARE(processCalls.load(std::memory_order_relaxed), 1);
 }
 
-#ifndef NDEBUG
 void TestRunEngine::testWorkerExecutionLogIncludesThreadId() {
+#ifdef NDEBUG
+    QSKIP("Worker execution thread IDs are emitted only in debug builds");
+#else
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
     const int previousThreadCount = engine.parallelThreadCount();
@@ -2033,8 +2033,8 @@ void TestRunEngine::testWorkerExecutionLogIncludesThreadId() {
         }
     }
     QVERIFY2(foundThreadRecord, "Debug worker execution must log its module name and thread ID");
-}
 #endif
+}
 
 void TestRunEngine::testParallelFailureCancelsGroup() {
     RunEngine& engine = RunEngine::instance();
