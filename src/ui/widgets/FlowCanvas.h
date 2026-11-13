@@ -11,10 +11,10 @@
 #include <QMutex>
 #include <QObject>
 #include <QPainterPath>
-#include <QPointer>
-#include <QSet>
 #include <QPoint>
 #include <QPointF>
+#include <QPointer>
+#include <QSet>
 #include <QWidget>
 
 namespace DeepLux {

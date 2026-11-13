@@ -508,7 +508,8 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         FlowExecutionService::JobRequest request;
         request.maxCycles = 3;
@@ -544,7 +545,8 @@ private slots:
         ServiceProbeModule probe;
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
-        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("ServiceProbe"),
+                                                                      ExecutionAffinity::Worker);
 
         QSemaphore hookEntered;
         QSemaphore releaseHook;

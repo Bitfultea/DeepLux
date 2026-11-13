@@ -3304,7 +3304,8 @@ private slots:
         engine.addModule(&module);
         // 未注册的测试模块默认 GUI 亲和；后台 Cycle 会在 GUI 事件中逐轮等待，
         // 本测试要检查服务线程的 pause/resume 控制，因此显式使用 worker。
-        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
+                                                                      ExecutionAffinity::Worker);
         const QJsonObject started = actor.executeTool("run_flow", QJsonObject{{"mode", "cycle"}, {"maxCycles", 10}});
         QCOMPARE(started.value("status").toString(), QStringLiteral("started"));
         QTRY_COMPARE_WITH_TIMEOUT(engine.state(), RunState::Running, 2000);
@@ -3333,8 +3334,8 @@ private slots:
         module.m_releaseGate = &releaseGate;
         QVERIFY(module.initialize());
         RunEngine::instance().addModule(&module);
-        RunEngineTestAccess(RunEngine::instance()).setModuleExecutionAffinityForTest(
-            QStringLiteral("agent_noncooperative"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("agent_noncooperative"), ExecutionAffinity::Worker);
 
         const QJsonObject started = actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
         QCOMPARE(started.value("status").toString(), QStringLiteral("started"));
@@ -3568,7 +3569,8 @@ private slots:
 
         RunEngine& engine = RunEngine::instance();
         QVERIFY(engine.loadProject(project, [](const ModuleInstance&) { return new BlockingAgentModule(); }));
-        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
+                                                                      ExecutionAffinity::Worker);
         const QList<ModuleBase*> beforeModules = engine.modules();
         QVERIFY(engine.runOnceAsync());
         QTRY_VERIFY_WITH_TIMEOUT(engine.isBusy(), 1000);

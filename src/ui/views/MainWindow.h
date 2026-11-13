@@ -32,8 +32,8 @@
 #include <QTreeWidget>
 #include <QUndoCommand>
 #include <QUndoStack>
-#include <QUuid>
 #include <QUrl>
+#include <QUuid>
 #include <QVector>
 
 class QDialog;

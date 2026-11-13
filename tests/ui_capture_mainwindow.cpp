@@ -18,8 +18,8 @@
 #include <QTreeWidget>
 #include <QWidget>
 #include <QtTest/QTest>
-#include <core/engine/FlowGraphAnalyzer.h>
 #include <core/common/UserManager.h>
+#include <core/engine/FlowGraphAnalyzer.h>
 #include <core/engine/RunEngine.h>
 #include <core/manager/PluginManager.h>
 #include <core/manager/ProjectManager.h>

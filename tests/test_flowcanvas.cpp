@@ -6,14 +6,14 @@
 #include <QThread>
 #include <QToolTip>
 #include <QtTest/QtTest>
-#include <core/engine/FlowGraphAnalyzer.h>
-#include <core/manager/ProjectManager.h>
-#include <core/model/Project.h>
-#include <ui/controllers/FlowLayoutCoordinator.h>
 #include <core/base/ModuleBase.h>
 #include <core/engine/EngineTestSupport.h>
+#include <core/engine/FlowGraphAnalyzer.h>
 #include <core/engine/RunEngine.h>
+#include <core/manager/ProjectManager.h>
+#include <core/model/Project.h>
 #include <limits>
+#include <ui/controllers/FlowLayoutCoordinator.h>
 #include <ui/widgets/FlowCanvas.h>
 
 using namespace DeepLux;
@@ -153,7 +153,8 @@ void TestFlowCanvas::testTextDropRejectsBusyAndAddsNodeAfterStop() {
         }
     } releaseOnExit{release};
     QString runId;
-    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("flowcanvas_busy_probe"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("flowcanvas_busy_probe"),
+                                                                  ExecutionAffinity::Worker);
     QVERIFY(engine.runOnceAsync(&runId));
     QVERIFY(entered.tryAcquire(1, 2000));
     QVERIFY(engine.isBusy());

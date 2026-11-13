@@ -13,8 +13,8 @@
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsTextItem>
 #include <QHash>
-#include <QMimeData>
 #include <QMetaMethod>
+#include <QMimeData>
 #include <QPainter>
 #include <QPolygonF>
 #include <QSet>

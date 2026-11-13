@@ -1,9 +1,9 @@
-#include <QSignalSpy>
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QPointer>
 #include <QSemaphore>
+#include <QSignalSpy>
 #include <QThread>
 #include <QTimer>
 #include <QtTest/QtTest>
@@ -2534,12 +2534,11 @@ void TestCameraManager::testAsyncCameraDetailsQueryIsQueuedAndLifecycleSafe() {
     QTRY_COMPARE_WITH_TIMEOUT(counters.disconnectEntered.load(), 1, 1000);
     QTRY_COMPARE_WITH_TIMEOUT(manager.cameraSessionCount(), 0, 1000);
     QJsonObject drainedDetailsResult;
-    QTRY_VERIFY_WITH_TIMEOUT(manager.getCameraOperationResult(
-                                 drainResponse.value(QStringLiteral("requestId")).toString().toULongLong(),
-                                 &drainedDetailsResult) &&
-                                 drainedDetailsResult.value(QStringLiteral("status")).toString() !=
-                                     QLatin1String("pending"),
-                             1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        manager.getCameraOperationResult(drainResponse.value(QStringLiteral("requestId")).toString().toULongLong(),
+                                         &drainedDetailsResult) &&
+            drainedDetailsResult.value(QStringLiteral("status")).toString() != QLatin1String("pending"),
+        1000);
     QCOMPARE(cachedStatus().state, CameraState::Disconnected);
     view.close();
     QString unregisterError;

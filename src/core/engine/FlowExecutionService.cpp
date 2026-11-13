@@ -5,8 +5,8 @@
 #include <QElapsedTimer>
 #include <QMutexLocker>
 #include <QThread>
-#include <atomic>
 #include <QUuid>
+#include <atomic>
 #include <exception>
 #include <thread>
 
