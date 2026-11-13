@@ -1,5 +1,7 @@
 # G8 DefectDetection documentation sync contract
 
+> 历史验收契约与记录；当前项目状态见 [`docs/STATUS.md`](../STATUS.md)。
+
 ## Scope
 
 Keep the operation manual, plugin manual, bundled Agent knowledge, plugin metadata, and runtime SDK-disabled behavior consistent for `DefectDetection`.

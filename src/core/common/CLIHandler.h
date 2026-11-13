@@ -2,6 +2,7 @@
 
 #include "../platform/Platform.h"
 
+#include <QByteArray>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -128,12 +129,17 @@ public:
     // 查找命令
     ICommand* findCommand(const QString& name);
 
+    // 将一条 list-plugins 结果格式化为 UTF-8 字节。CLI 输出统一使用 UTF-8，
+    // 避免在 Windows CP936 等本地编码下把中文插件名解码错位。
+    static QByteArray formatPluginLine(const QString& status, const QString& name, const QString& version,
+                                       const QString& category);
+
 signals:
     void parseCompleted();
 
 private:
     explicit CLIHandler(QObject* parent = nullptr);
-    ~CLIHandler() = default;
+    ~CLIHandler() override;
 
     CLIHandler(const CLIHandler&) = delete;
     CLIHandler& operator=(const CLIHandler&) = delete;

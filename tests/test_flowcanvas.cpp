@@ -7,10 +7,13 @@
 #include <QToolTip>
 #include <QtTest/QtTest>
 #include <core/base/ModuleBase.h>
+#include <core/engine/EngineTestSupport.h>
+#include <core/engine/FlowGraphAnalyzer.h>
 #include <core/engine/RunEngine.h>
 #include <core/manager/ProjectManager.h>
 #include <core/model/Project.h>
 #include <limits>
+#include <ui/controllers/FlowLayoutCoordinator.h>
 #include <ui/widgets/FlowCanvas.h>
 
 using namespace DeepLux;
@@ -82,6 +85,14 @@ private slots:
     void testProjectRemoveConnectionWithPortsPrecise();
     void testPortTooltipUsesCompleteDataTypeName();
     void testConnectionDragMovesAndClearsCompatibleHighlight();
+    // B2: 执行计划布局与坐标写回
+    void testExecutionLayoutByRankAndLane();
+    void testExecutionLayoutSizesRowsByNodeHeight();
+    void testNormalizeLayoutPreservesX();
+    void testNormalizeLayoutFallsBackForOverlappingX();
+    void testNodeDragWritesBackPosition();
+    void testNodeDragWithoutAttachedProjectDoesNotWriteBack();
+    void testLayoutInitializedRestoresSavedPositions();
     void testNodePositionQuantizationIsFiniteAndInt32Safe();
     void testTextDropRejectsBusyAndAddsNodeAfterStop();
 };
@@ -142,7 +153,8 @@ void TestFlowCanvas::testTextDropRejectsBusyAndAddsNodeAfterStop() {
         }
     } releaseOnExit{release};
     QString runId;
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("flowcanvas_busy_probe"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("flowcanvas_busy_probe"),
+                                                                  ExecutionAffinity::Worker);
     QVERIFY(engine.runOnceAsync(&runId));
     QVERIFY(entered.tryAcquire(1, 2000));
     QVERIFY(engine.isBusy());
@@ -704,6 +716,339 @@ void TestFlowCanvas::testConnectionDragMovesAndClearsCompatibleHighlight() {
     release.setButton(Qt::LeftButton);
     source->mouseReleaseEvent(&release);
     QVERIFY(!second->isCompatibleHighlighted());
+}
+
+// ---------------------------------------------------------------------------
+// B2: 执行计划布局与坐标写回
+// ---------------------------------------------------------------------------
+
+namespace {
+
+void appendPlanNode(FlowOrderPlan& plan, const QString& id, int rank, int lane) {
+    FlowOrderNode node;
+    node.instanceId = id;
+    node.rank = rank;
+    node.lane = lane;
+    node.displayIndex = plan.nodes.size();
+    plan.nodes.append(node);
+    plan.displayOrder.append(id);
+    plan.rankIndex.insert(id, rank);
+    plan.laneIndex.insert(id, lane);
+}
+
+QList<PortSpec> makeOutputPorts(int count) {
+    QList<PortSpec> outputs;
+    for (int i = 0; i < count; ++i) {
+        PortSpec port;
+        port.id = QStringLiteral("out_%1").arg(i);
+        port.displayName = port.id;
+        port.type = DataType::Any;
+        outputs.append(port);
+    }
+    return outputs;
+}
+
+FlowGraphCatalog catalogForProject(const Project& project) {
+    FlowGraphCatalog catalog;
+    for (const ModuleInstance& instance : project.modules()) {
+        FlowGraphModule module;
+        module.instanceId = instance.id;
+        module.flowType = ControlFlowType::Sequential;
+        catalog.modules.append(module);
+    }
+    return catalog;
+}
+
+} // namespace
+
+void TestFlowCanvas::testExecutionLayoutByRankAndLane() {
+    FlowCanvas canvas;
+    const QString a = canvas.addNode("module.a", "A", QPointF(500, 500));
+    const QString b = canvas.addNode("module.b", "B", QPointF(500, 500));
+    const QString c = canvas.addNode("module.c", "C", QPointF(500, 500));
+    const QString d = canvas.addNode("module.d", "D", QPointF(500, 500));
+    const QString e = canvas.addNode("module.e", "E", QPointF(500, 500));
+
+    FlowOrderPlan plan;
+    plan.valid = true;
+    appendPlanNode(plan, a, 0, 0);
+    appendPlanNode(plan, b, 1, 0);
+    appendPlanNode(plan, c, 2, 0);
+    appendPlanNode(plan, d, 1, 1);
+    appendPlanNode(plan, e, 1, -1);
+
+    canvas.applyExecutionLayout(plan, FlowCanvas::LayoutMode::Full);
+
+    const qreal ya = canvas.nodeItem(a)->pos().y();
+    const qreal yb = canvas.nodeItem(b)->pos().y();
+    const qreal yc = canvas.nodeItem(c)->pos().y();
+    QVERIFY(ya < yb);
+    QVERIFY(yb < yc);
+
+    // 同一 rank 同一 Y；不同 lane 的 X 不重叠
+    QCOMPARE(canvas.nodeItem(d)->pos().y(), yb);
+    QCOMPARE(canvas.nodeItem(e)->pos().y(), yb);
+    QVERIFY(qAbs(canvas.nodeItem(d)->pos().x() - canvas.nodeItem(b)->pos().x()) >= 220.0);
+    QVERIFY(qAbs(canvas.nodeItem(e)->pos().x() - canvas.nodeItem(b)->pos().x()) >= 220.0);
+
+    const QStringList ids = {a, b, c, d, e};
+    for (int i = 0; i < ids.size(); ++i) {
+        for (int j = i + 1; j < ids.size(); ++j) {
+            FlowNodeItem* first = canvas.nodeItem(ids.at(i));
+            FlowNodeItem* second = canvas.nodeItem(ids.at(j));
+            QVERIFY2(!first->sceneBoundingRect().intersects(second->sceneBoundingRect()),
+                     qPrintable(QStringLiteral("nodes %1 and %2 overlap").arg(ids.at(i), ids.at(j))));
+        }
+    }
+}
+
+void TestFlowCanvas::testExecutionLayoutSizesRowsByNodeHeight() {
+    FlowCanvas canvas;
+    const QString tall = canvas.addNode("module.tall", "Tall", QPointF(0, 0));
+    const QString shortNode = canvas.addNode("module.short", "Short", QPointF(0, 0));
+    const QString tallPeer = canvas.addNode("module.tall_peer", "Tall Peer", QPointF(0, 0));
+
+    // 6~11 个输出端口的真实插件会超过旧的固定 160px 行距。
+    canvas.nodeItem(tall)->setPortSpecs({}, makeOutputPorts(11));
+    canvas.nodeItem(tallPeer)->setPortSpecs({}, makeOutputPorts(11));
+    QVERIFY(canvas.nodeItem(tall)->boundingRect().height() > 160.0);
+
+    FlowOrderPlan plan;
+    plan.valid = true;
+    appendPlanNode(plan, tall, 0, 0);
+    appendPlanNode(plan, shortNode, 1, 0);
+    appendPlanNode(plan, tallPeer, 1, 1);
+
+    auto verifyNoOverlap = [&canvas]() {
+        const QStringList ids = canvas.nodeIds();
+        for (int i = 0; i < ids.size(); ++i) {
+            for (int j = i + 1; j < ids.size(); ++j) {
+                FlowNodeItem* first = canvas.nodeItem(ids.at(i));
+                FlowNodeItem* second = canvas.nodeItem(ids.at(j));
+                QVERIFY2(!first->sceneBoundingRect().intersects(second->sceneBoundingRect()),
+                         qPrintable(QStringLiteral("nodes %1 and %2 overlap").arg(ids.at(i), ids.at(j))));
+            }
+        }
+    };
+
+    for (FlowCanvas::LayoutMode mode : {FlowCanvas::LayoutMode::Full, FlowCanvas::LayoutMode::Normalize}) {
+        canvas.applyExecutionLayout(plan, mode);
+        FlowNodeItem* top = canvas.nodeItem(tall);
+        FlowNodeItem* below = canvas.nodeItem(shortNode);
+        FlowNodeItem* peer = canvas.nodeItem(tallPeer);
+
+        QCOMPARE(below->pos().y(), peer->pos().y());
+        QVERIFY(top->sceneBoundingRect().bottom() < below->sceneBoundingRect().top());
+        verifyNoOverlap();
+    }
+}
+
+void TestFlowCanvas::testNormalizeLayoutPreservesX() {
+    FlowCanvas canvas;
+    const QString a = canvas.addNode("module.a", "A", QPointF(37, 10));
+    const QString b = canvas.addNode("module.b", "B", QPointF(142, 20));
+    const QString c = canvas.addNode("module.c", "C", QPointF(-55, 30));
+
+    FlowOrderPlan plan;
+    plan.valid = true;
+    appendPlanNode(plan, a, 0, 0);
+    appendPlanNode(plan, b, 1, 0);
+    appendPlanNode(plan, c, 2, 0);
+
+    canvas.applyExecutionLayout(plan, FlowCanvas::LayoutMode::Normalize);
+
+    QCOMPARE(canvas.nodeItem(a)->pos().x(), 37.0);
+    QCOMPARE(canvas.nodeItem(b)->pos().x(), 142.0);
+    QCOMPARE(canvas.nodeItem(c)->pos().x(), -55.0);
+    QVERIFY(canvas.nodeItem(a)->pos().y() < canvas.nodeItem(b)->pos().y());
+    QVERIFY(canvas.nodeItem(b)->pos().y() < canvas.nodeItem(c)->pos().y());
+}
+
+void TestFlowCanvas::testNormalizeLayoutFallsBackForOverlappingX() {
+    FlowCanvas canvas;
+    const QString a = canvas.addNode("module.a", "A", QPointF(10, 500));
+    const QString b = canvas.addNode("module.b", "B", QPointF(60, 500));
+    const QString c = canvas.addNode("module.c", "C", QPointF(20, 700));
+
+    FlowOrderPlan plan;
+    plan.valid = true;
+    appendPlanNode(plan, a, 0, 0);
+    appendPlanNode(plan, b, 0, 1);
+    appendPlanNode(plan, c, 1, 0);
+
+    canvas.applyExecutionLayout(plan, FlowCanvas::LayoutMode::Normalize);
+
+    // 同一 rank 手工 X 重叠 → 该行回退到 lane 排列，不再重叠。
+    const QRectF firstBounds = canvas.nodeItem(a)->sceneBoundingRect();
+    const QRectF secondBounds = canvas.nodeItem(b)->sceneBoundingRect();
+    QVERIFY2(!firstBounds.intersects(secondBounds), "overlapping same-rank X must fall back to lane positions");
+    QVERIFY(qAbs(canvas.nodeItem(a)->pos().x() - canvas.nodeItem(b)->pos().x()) >= firstBounds.width());
+
+    // 无重叠的 rank 仍保留手工 X。
+    QCOMPARE(canvas.nodeItem(c)->pos().x(), 20.0);
+    QVERIFY(canvas.nodeItem(a)->pos().y() < canvas.nodeItem(c)->pos().y());
+}
+
+void TestFlowCanvas::testNodeDragWritesBackPosition() {
+    FlowCanvas canvas;
+    canvas.resize(400, 300);
+    Project* project = ProjectManager::instance().currentProject();
+    QVERIFY(project != nullptr);
+    canvas.setProject(project);
+
+    ModuleInstance instance;
+    instance.id = QStringLiteral("drag_node");
+    instance.moduleId = QStringLiteral("module.drag");
+    project->addModule(instance);
+
+    auto* node = new TestableFlowNodeItem("drag_node", "Drag", "module.drag");
+    canvas.scene()->addItem(node);
+    node->setPos(20, 30);
+
+    QSignalSpy projectSpy(project, &Project::modulePositionChanged);
+    QSignalSpy canvasSpy(&canvas, &FlowCanvas::nodePositionChanged);
+    QVERIFY(projectSpy.isValid());
+    QVERIFY(canvasSpy.isValid());
+
+    const QPointF downPos = node->pos();
+    QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
+    press.setScenePos(downPos);
+    press.setScreenPos(QPoint(100, 100));
+    press.setButton(Qt::LeftButton);
+    press.setButtons(Qt::LeftButton);
+    press.setButtonDownScenePos(Qt::LeftButton, downPos);
+    node->mousePressEvent(&press);
+
+    QGraphicsSceneMouseEvent move(QEvent::GraphicsSceneMouseMove);
+    move.setScenePos(downPos + QPointF(30, 40));
+    move.setScreenPos(QPoint(130, 140));
+    move.setLastScenePos(downPos);
+    move.setButtonDownScenePos(Qt::LeftButton, downPos);
+    move.setButtons(Qt::LeftButton);
+    node->mouseMoveEvent(&move);
+    node->setPos(QPointF(50, 70));
+
+    QGraphicsSceneMouseEvent release(QEvent::GraphicsSceneMouseRelease);
+    release.setScenePos(QPointF(50, 70));
+    release.setScreenPos(QPoint(130, 140));
+    release.setButton(Qt::LeftButton);
+    release.setButtons(Qt::LeftButton);
+    node->mouseReleaseEvent(&release);
+
+    QCOMPARE(canvasSpy.count(), 1);
+    QCOMPARE(projectSpy.count(), 1);
+    QCOMPARE(project->moduleById(QStringLiteral("drag_node"))->posX, 50);
+    QCOMPARE(project->moduleById(QStringLiteral("drag_node"))->posY, 70);
+
+    const QList<QVariant> args = projectSpy.takeFirst();
+    QCOMPARE(args.at(0).toString(), QStringLiteral("drag_node"));
+    QCOMPARE(args.at(1).toInt(), 50);
+    QCOMPARE(args.at(2).toInt(), 70);
+}
+
+void TestFlowCanvas::testNodeDragWithoutAttachedProjectDoesNotWriteBack() {
+    FlowCanvas canvas;
+    canvas.resize(400, 300);
+    Project* project = ProjectManager::instance().currentProject();
+    QVERIFY(project != nullptr);
+
+    // 全局 currentProject 中存在同名节点，用于证明画布不会回退到全局工程。
+    ModuleInstance instance;
+    instance.id = QStringLiteral("detached_drag");
+    instance.moduleId = QStringLiteral("module.drag");
+    project->addModule(instance);
+
+    auto* node = new TestableFlowNodeItem("detached_drag", "Drag", "module.drag");
+    canvas.scene()->addItem(node);
+    node->setPos(20, 30);
+
+    QSignalSpy projectSpy(project, &Project::modulePositionChanged);
+    QSignalSpy canvasSpy(&canvas, &FlowCanvas::nodePositionChanged);
+    QVERIFY(projectSpy.isValid());
+    QVERIFY(canvasSpy.isValid());
+
+    const QPointF downPos = node->pos();
+    QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
+    press.setScenePos(downPos);
+    press.setScreenPos(QPoint(100, 100));
+    press.setButton(Qt::LeftButton);
+    press.setButtons(Qt::LeftButton);
+    press.setButtonDownScenePos(Qt::LeftButton, downPos);
+    node->mousePressEvent(&press);
+
+    QGraphicsSceneMouseEvent move(QEvent::GraphicsSceneMouseMove);
+    move.setScenePos(downPos + QPointF(30, 40));
+    move.setScreenPos(QPoint(130, 140));
+    move.setLastScenePos(downPos);
+    move.setButtonDownScenePos(Qt::LeftButton, downPos);
+    move.setButtons(Qt::LeftButton);
+    node->mouseMoveEvent(&move);
+    node->setPos(QPointF(50, 70));
+
+    QGraphicsSceneMouseEvent release(QEvent::GraphicsSceneMouseRelease);
+    release.setScenePos(QPointF(50, 70));
+    release.setScreenPos(QPoint(130, 140));
+    release.setButton(Qt::LeftButton);
+    release.setButtons(Qt::LeftButton);
+    node->mouseReleaseEvent(&release);
+
+    // 仅发信号；不得写回未绑定的全局工程。
+    QCOMPARE(canvasSpy.count(), 1);
+    QCOMPARE(projectSpy.count(), 0);
+    QCOMPARE(project->moduleById(QStringLiteral("detached_drag"))->posX, 0);
+    QCOMPARE(project->moduleById(QStringLiteral("detached_drag"))->posY, 0);
+}
+
+void TestFlowCanvas::testLayoutInitializedRestoresSavedPositions() {
+    // 已初始化布局：加载后保留保存坐标，不自动重排
+    Project initialized;
+    ModuleInstance first;
+    first.id = "init_a";
+    first.moduleId = "module.a";
+    first.name = "A";
+    first.posX = 40;
+    first.posY = 60;
+    initialized.addModule(first);
+    ModuleInstance second;
+    second.id = "init_b";
+    second.moduleId = "module.b";
+    second.name = "B";
+    second.posX = 260;
+    second.posY = 60;
+    initialized.addModule(second);
+    initialized.setLayoutInitialized(true);
+
+    FlowCanvas canvas;
+    canvas.loadFromProject(&initialized);
+
+    FlowLayoutCoordinator coordinator(&initialized, &canvas,
+                                      [](const Project& project) { return catalogForProject(project); });
+    coordinator.setProject(&initialized);
+    QTest::qWait(80);
+    QCOMPARE(coordinator.layoutRunCount(), 0);
+    QCOMPARE(canvas.nodeItem("init_a")->pos(), QPointF(40, 60));
+    QCOMPARE(canvas.nodeItem("init_b")->pos(), QPointF(260, 60));
+
+    // 未初始化（全部 0,0）：触发 Full 并标记 layoutInitialized
+    Project uninitialized;
+    ModuleInstance ua;
+    ua.id = "u_a";
+    ua.moduleId = "module.a";
+    uninitialized.addModule(ua);
+    ModuleInstance ub;
+    ub.id = "u_b";
+    ub.moduleId = "module.b";
+    uninitialized.addModule(ub);
+
+    FlowCanvas canvas2;
+    canvas2.loadFromProject(&uninitialized);
+    FlowLayoutCoordinator coordinator2(&uninitialized, &canvas2,
+                                       [](const Project& project) { return catalogForProject(project); });
+    coordinator2.setProject(&uninitialized);
+
+    QTRY_COMPARE(coordinator2.layoutRunCount(), 1);
+    QVERIFY(uninitialized.layoutInitialized());
+    QVERIFY(canvas2.nodeItem("u_a")->pos() != canvas2.nodeItem("u_b")->pos());
 }
 
 QTEST_MAIN(TestFlowCanvas)

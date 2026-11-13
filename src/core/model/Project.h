@@ -7,9 +7,12 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QList>
+#include <QMetaType>
 #include <QObject>
 #include <QSet>
 #include <QString>
+#include <QStringList>
+#include <QUuid>
 #include <memory>
 #include <optional>
 
@@ -90,6 +93,23 @@ struct CameraConfig {
 };
 
 /**
+ * @brief 结构事务候选：完整的模块顺序 + 完整连接列表
+ *
+ * orderedIds 必须是当前工程模块 ID 的一个完整排列；connections 为事务提交后的
+ * 全量连接。图/端口/控制结构校验由调用方（FlowGraphAnalyzer）负责，Project
+ * 只做与引擎无关的结构前置校验。
+ */
+struct FlowGraphCandidate {
+    QStringList orderedIds;
+    QList<ModuleConnection> connections;
+};
+
+/**
+ * @brief 结构编辑来源，用于区分 GUI / Agent / 系统触发的结构变更
+ */
+enum class StructureEditOrigin { Gui, Agent, System };
+
+/**
  * @brief 项目类
  */
 class DEEPLUX_API Project : public QObject {
@@ -166,6 +186,25 @@ public:
                            ParameterChangeSource source = ParameterChangeSource::Unknown);
     bool moveModule(const QString& instanceId, int newIndex,
                     ModuleOrderChangeSource source = ModuleOrderChangeSource::External);
+    /// 仅更新节点坐标；发 modulePositionChanged（不发 moduleUpdated）。
+    void setModulePosition(const QString& instanceId, int x, int y);
+    /// 按给定完整顺序重排模块；成功发 modulesReordered。
+    bool reorderModules(const QStringList& orderedIds);
+    /// 原子结构事务：仅做结构前置校验，成功时一次性替换模块顺序与连接。
+    bool applyStructureTransaction(const FlowGraphCandidate& candidate, StructureEditOrigin origin, QString* error);
+    /// 模块顺序 + 连接声明顺序（含声明下标）的 SHA-1；绝不排序连接。
+    QString structureFingerprint() const;
+    /// 由候选快照计算同一指纹（只读，允许在事务提交前预测提交后的指纹）。
+    static QString structureFingerprintFor(const QStringList& orderedIds, const QList<ModuleConnection>& connections);
+    /// 仅发出 structureChanged(origin)，不修改任何状态。
+    /// 供 Agent 结构 undo 命令等"直接调用 addModule/addConnection 的调用方"补齐来源信号。
+    void notifyStructureChange(StructureEditOrigin origin);
+    /// 当前会话标识：新建/加载工程都会生成新值。
+    QUuid sessionToken() const;
+    bool layoutInitialized() const {
+        return m_layoutInitialized;
+    }
+    void setLayoutInitialized(bool initialized);
     /// 返回指向 QList 内部元素的指针——调用方不得跨 addModule/removeModule 持有此指针
     ModuleInstance* findModule(const QString& instanceId);
     /// 按值返回模块实例，适合跨 undo/redo、add/remove 等模型变更边界使用
@@ -263,6 +302,8 @@ signals:
                                     const QString& toPort);
     void dataSourceAdded(const DataSource& ds);
     void dataSourceRemoved(const QString& id);
+    void modulesReordered();
+    void structureChanged(StructureEditOrigin origin);
     void modifiedChanged(bool modified);
 
 private:
@@ -295,8 +336,13 @@ private:
     QJsonObject m_recipes;
     QJsonObject m_dashboard;
     MigrationRecord m_migration;
+
+    // B2：布局初始化标记与会话标识（fromJson 重新生成会话标识）
+    bool m_layoutInitialized = false;
+    QUuid m_sessionToken;
 };
 
 } // namespace DeepLux
 
 Q_DECLARE_METATYPE(DeepLux::ModuleInstance)
+Q_DECLARE_METATYPE(DeepLux::StructureEditOrigin)

@@ -9,6 +9,7 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QLibrary>
 #include <QList>
 #include <QMap>
 #include <QMutex>
@@ -80,6 +81,7 @@ public:
     void scanPlugins();
 
     // 加载/卸载
+    // timeoutMs can cancel a queued cross-thread request; once loading starts, wait for its actual result.
     bool loadPlugin(const QString& name, int timeoutMs = 10000);
     void unloadPlugin(const QString& name);
     bool tryUnloadPlugin(const QString& name, QString* error = nullptr);
@@ -129,7 +131,7 @@ private:
     ~PluginManager();
 
     bool validateLoadedPlugin(const PluginInfo& candidate, QPluginLoader* loader, QString* error) const;
-    void markPluginLoaded(const QString& name, QPluginLoader* loader);
+    void markPluginLoaded(const QString& name, QPluginLoader* loader, QLibrary* abiLibrary);
     void loadNextPluginAsync();
 
     // 自定义事件，用于线程安全地传递插件加载结果
@@ -139,8 +141,9 @@ private:
         bool success;
         QString error;
         QPluginLoader* loader;
-        PluginLoadEvent(const QString& n, bool s, const QString& e, QPluginLoader* l)
-            : QEvent(QEvent::User), name(n), success(s), error(e), loader(l) {}
+        QLibrary* abiLibrary;
+        PluginLoadEvent(const QString& n, bool s, const QString& e, QPluginLoader* l, QLibrary* a)
+            : QEvent(QEvent::User), name(n), success(s), error(e), loader(l), abiLibrary(a) {}
     };
     bool event(QEvent* event) override;
 
@@ -156,12 +159,14 @@ private:
     };
 
     mutable QRecursiveMutex m_mutex;
+    QMutex m_loadMutex;
     QStringList m_pluginPaths;
     QMap<QString, PluginInfo> m_modules;
     QMap<QString, PluginInfo> m_cameras;
     QMap<QString, PluginInfo> m_bundledPlugins;
     QMap<QString, QObject*> m_loadedPlugins;
     QMap<QString, QPluginLoader*> m_pluginLoaders;
+    QMap<QString, QLibrary*> m_pluginAbiLibraries;
     QMap<QString, int> m_liveModuleInstances;
     QSet<QString> m_untrackedModulePlugins;
     struct ModuleInstanceRecord {
@@ -173,6 +178,7 @@ private:
     quint64 m_nextModuleInstanceId = 1;
     // 正在加载的插件集合，用于避免重复加载
     QSet<QString> m_loadingPlugins;
+    QHash<QString, QThread*> m_loadingThreads;
     // 等待加载完成的条件变量
     QWaitCondition m_loadingComplete;
     // Template instances for cloning (each plugin provides one template)

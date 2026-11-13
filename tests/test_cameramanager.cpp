@@ -3,6 +3,7 @@
 #include <QJsonDocument>
 #include <QPointer>
 #include <QSemaphore>
+#include <QSignalSpy>
 #include <QThread>
 #include <QTimer>
 #include <QtTest/QtTest>
@@ -407,11 +408,14 @@ public:
     FakeDiscoveryJob(quint64 signaledId, QByteArray payload, int delayMs, bool duplicateTerminal, QObject* parent)
         : CameraDiscoveryJob(parent), m_signaledId(signaledId), m_payload(std::move(payload)), m_delayMs(delayMs),
           m_duplicateTerminal(duplicateTerminal) {
-        QTimer::singleShot(m_delayMs, this, [this]() {
-            completeOnce(m_signaledId, m_payload);
-            if (m_duplicateTerminal)
-                emit completed(m_signaledId, m_payload); // Defend the Manager against a misbehaving plugin.
-        });
+        if (m_delayMs >= 0)
+            QTimer::singleShot(m_delayMs, this, [this]() { completeNow(); });
+    }
+
+    void completeNow() {
+        completeOnce(m_signaledId, m_payload);
+        if (m_duplicateTerminal)
+            emit completed(m_signaledId, m_payload); // Defend the Manager against a misbehaving plugin.
     }
 
 private:
@@ -555,6 +559,9 @@ public:
     int cancelCalls() const {
         return m_cancelCalls;
     }
+    FakeDiscoveryJob* lastJob() const {
+        return m_lastJob;
+    }
     void setDelayMs(int value) {
         m_delayMs = value;
     }
@@ -621,7 +628,7 @@ private:
     quint64 m_signalIdDelta = 0;
     bool m_duplicateTerminal = false;
     QByteArray m_payloadOverride;
-    FakeDiscoveryJob* m_lastJob = nullptr;
+    QPointer<FakeDiscoveryJob> m_lastJob;
     std::function<void(quint64)> m_startCallback;
     bool m_invalidJobParent = false;
 };
@@ -642,6 +649,7 @@ class TestCameraManager : public QObject {
 private slots:
     void init();
     void cleanup();
+    void testRefreshWithoutPluginsIsHardwareIndependentAndIdempotent();
     void testRefreshCamerasReturnsWithoutPlugins();
     void testDriverOwnershipAndSafeUnregister();
     void testAcquiringCameraStopsBeforeDisconnectAll();
@@ -693,6 +701,21 @@ private slots:
 private:
     QStringList m_registeredIds;
 };
+
+void TestCameraManager::testRefreshWithoutPluginsIsHardwareIndependentAndIdempotent() {
+    CameraManager& manager = CameraManager::instance();
+    QVERIFY(manager.plugins().isEmpty());
+    QVERIFY(manager.knownCameras().isEmpty());
+    QSignalSpy discovered(&manager, &CameraManager::cameraDiscovered);
+
+    manager.refreshCameras();
+    QVERIFY(manager.knownCameras().isEmpty());
+    QCOMPARE(manager.discoverCameras().size(), 0);
+    manager.refreshCameras();
+
+    QVERIFY(manager.knownCameras().isEmpty());
+    QCOMPARE(discovered.count(), 0);
+}
 
 void TestCameraManager::init() {
     m_registeredIds.clear();
@@ -2516,9 +2539,16 @@ void TestCameraManager::testAsyncCameraDetailsQueryIsQueuedAndLifecycleSafe() {
     counters.detailsGate = nullptr;
     QTRY_COMPARE_WITH_TIMEOUT(counters.disconnectEntered.load(), 1, 1000);
     QTRY_COMPARE_WITH_TIMEOUT(manager.cameraSessionCount(), 0, 1000);
+    QJsonObject drainedDetailsResult;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        manager.getCameraOperationResult(drainResponse.value(QStringLiteral("requestId")).toString().toULongLong(),
+                                         &drainedDetailsResult) &&
+            drainedDetailsResult.value(QStringLiteral("status")).toString() != QLatin1String("pending"),
+        1000);
     QCOMPARE(cachedStatus().state, CameraState::Disconnected);
     view.close();
-    QVERIFY(manager.tryUnregisterCameraPlugin(plugin.pluginId()));
+    QString unregisterError;
+    QVERIFY2(manager.tryUnregisterCameraPlugin(plugin.pluginId(), &unregisterError), qPrintable(unregisterError));
     m_registeredIds.removeAll(plugin.pluginId());
 }
 
@@ -3556,7 +3586,7 @@ void TestCameraManager::testAsyncCameraSessionLifecycleAndWindowShutdown() {
     manager.registerCameraPlugin(&discoveryDrainPlugin);
     m_registeredIds.append(discoveryDrainPlugin.pluginId());
     QTRY_COMPARE_WITH_TIMEOUT(manager.pendingDiscoveryCount(), 0, 1000);
-    discoveryDrainPlugin.setDelayMs(500);
+    discoveryDrainPlugin.setDelayMs(-1);
     const QJsonObject discoveryTargets = manager.cameraDiscoveryTargets();
     QStringList discoveryPluginIds;
     for (const QJsonValue& value : discoveryTargets.value(QStringLiteral("asyncPluginIds")).toArray())
@@ -3584,6 +3614,10 @@ void TestCameraManager::testAsyncCameraSessionLifecycleAndWindowShutdown() {
     QVERIFY(!window.close());
     QVERIFY(window.isVisible());
     QVERIFY(shutdownSpy.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(discoveryDrainPlugin.cancelCalls(), 1, 1000);
+    FakeDiscoveryJob* discoveryDrainJob = discoveryDrainPlugin.lastJob();
+    QVERIFY(discoveryDrainJob);
+    discoveryDrainJob->completeNow();
     QTest::qWait(150);
     QVERIFY(shutdownSpy.isEmpty());
     QCOMPARE(lateDisconnectCounters.disconnectEntered.load(), 2);

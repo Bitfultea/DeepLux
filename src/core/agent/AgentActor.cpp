@@ -15,6 +15,7 @@
 #include "device/CameraParameterWrite.h"
 #include "display/DisplayData.h"
 #include "engine/FlowExecutionService.h"
+#include "engine/FlowGraphAnalyzer.h"
 #include "engine/RunEngine.h"
 #include "interface/ICamera.h"
 #include "io/LabelMeImporter.h"
@@ -56,6 +57,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #ifdef Q_OS_UNIX
 #include <sys/stat.h>
@@ -924,6 +926,24 @@ QString logLevelName(LogLevel level) {
 }
 } // namespace
 
+// B3 / P0-2：Agent 结构编辑直接调用 Project::addModule/addConnection 等细粒度 API，
+// 这些 API 不会发出带来源的 structureChanged。用 RAII 作用域在命令应用结束时
+// 补发一次 structureChanged(Agent)，供 GUI 侧撤销命令做跨栈失效判定。
+// 作用域只发信号、零状态修改，不改变 Agent 命令既有的撤销语义。
+class StructureEditScope {
+public:
+    explicit StructureEditScope(StructureEditOrigin origin) : m_origin(origin) {}
+    ~StructureEditScope() {
+        if (Project* project = ProjectManager::instance().currentProject()) {
+            project->notifyStructureChange(m_origin);
+        }
+    }
+    Q_DISABLE_COPY(StructureEditScope)
+
+private:
+    StructureEditOrigin m_origin;
+};
+
 // --- Undo Commands ---
 
 class AgentAddModuleCmd : public QUndoCommand {
@@ -933,11 +953,13 @@ public:
         : QUndoCommand(parent), m_moduleId(moduleId), m_instanceId(instanceId), m_displayName(displayName) {}
 
     void undo() override {
+        StructureEditScope scope(StructureEditOrigin::Agent);
         Project* proj = ProjectManager::instance().currentProject();
         if (proj)
             proj->removeModule(m_instanceId, Project::ModuleOrderChangeSource::Agent);
     }
     void redo() override {
+        StructureEditScope scope(StructureEditOrigin::Agent);
         Project* proj = ProjectManager::instance().currentProject();
         if (!proj)
             return;
@@ -985,6 +1007,7 @@ public:
         }
     }
     void undo() override {
+        StructureEditScope scope(StructureEditOrigin::Agent);
         Project* proj = ProjectManager::instance().currentProject();
         if (proj && !m_backup.id.isEmpty()) {
             proj->addModule(m_backup, m_index, Project::ModuleOrderChangeSource::Agent);
@@ -993,6 +1016,7 @@ public:
         }
     }
     void redo() override {
+        StructureEditScope scope(StructureEditOrigin::Agent);
         Project* proj = ProjectManager::instance().currentProject();
         if (!proj)
             return;
@@ -1381,12 +1405,14 @@ public:
     }
 
     void undo() override {
+        StructureEditScope scope(StructureEditOrigin::Agent);
         Project* proj = ProjectManager::instance().currentProject();
         if (!proj)
             return;
         proj->removeConnectionWithPorts(m_fromId, m_fromPort, m_toId, m_toPort);
     }
     void redo() override {
+        StructureEditScope scope(StructureEditOrigin::Agent);
         Project* proj = ProjectManager::instance().currentProject();
         if (!proj)
             return;
@@ -1412,6 +1438,7 @@ public:
 
     void undo() override {
         // undo of disconnect = reconnect
+        StructureEditScope scope(StructureEditOrigin::Agent);
         Project* proj = ProjectManager::instance().currentProject();
         if (!proj)
             return;
@@ -1419,6 +1446,7 @@ public:
     }
     void redo() override {
         // redo of disconnect = disconnect again
+        StructureEditScope scope(StructureEditOrigin::Agent);
         Project* proj = ProjectManager::instance().currentProject();
         if (proj)
             proj->removeConnectionWithPorts(m_connection.fromModuleId, m_connection.fromPort, m_connection.toModuleId,
@@ -1445,6 +1473,7 @@ AgentActor::AgentActor(QObject* parent)
     connect(&ProjectManager::instance(), &ProjectManager::projectClosed, m_undoStack, &QUndoStack::clear);
     connect(&ProjectManager::instance(), &ProjectManager::projectOpened, m_undoStack, &QUndoStack::clear);
     connect(&ProjectManager::instance(), &ProjectManager::projectCreated, m_undoStack, &QUndoStack::clear);
+
     const auto clearUndoBarrier = [this]() { m_latestUndoBarrierIndex = -1; };
     connect(&ProjectManager::instance(), &ProjectManager::projectClosed, this, clearUndoBarrier);
     connect(&ProjectManager::instance(), &ProjectManager::projectOpened, this, clearUndoBarrier);
@@ -1453,6 +1482,31 @@ AgentActor::AgentActor(QObject* parent)
     connect(&ProjectManager::instance(), &ProjectManager::projectClosed, this, markEngineDirty);
     connect(&ProjectManager::instance(), &ProjectManager::projectOpened, this, markEngineDirty);
     connect(&ProjectManager::instance(), &ProjectManager::projectCreated, this, markEngineDirty);
+
+    // B3：与 GUI 撤销栈对称失效。外部（非 Agent）结构编辑后，Agent 栈中的结构
+    // 命令不再能安全覆盖后续编辑，通过 setObsolete 让 QUndoStack 跳过并删除。
+    const auto attachStructureInvalidation = [this](Project* project) {
+        if (!project)
+            return;
+        disconnect(project, &Project::structureChanged, this, nullptr);
+        connect(project, &Project::structureChanged, this, [this](StructureEditOrigin origin) {
+            if (origin == StructureEditOrigin::Agent || !m_undoStack)
+                return;
+            for (int i = 0; i < m_undoStack->count(); ++i) {
+                // QUndoStack::command() 返回 const 指针；setObsolete 是命令自身的非 const 操作，
+                // 与 QUndoStack 内部处理 obsolete 命令的方式一致。
+                const QUndoCommand* stored = m_undoStack->command(i);
+                if (QUndoCommand* command = const_cast<QUndoCommand*>(stored)) {
+                    command->setObsolete(true);
+                }
+            }
+        });
+    };
+    // newProject() 只发 projectCreated，openProject() 只发 projectOpened；两者都必须接线，
+    // 否则新建工程上 GUI 结构编辑无法让 Agent 撤销栈失效（P0-2 对称跨栈失效）。
+    connect(&ProjectManager::instance(), &ProjectManager::projectCreated, this, attachStructureInvalidation);
+    connect(&ProjectManager::instance(), &ProjectManager::projectOpened, this, attachStructureInvalidation);
+    attachStructureInvalidation(ProjectManager::instance().currentProject());
 }
 
 AgentActor::~AgentActor() = default;
@@ -1576,6 +1630,11 @@ QJsonObject AgentActor::userPermissionPreflight(const QString& toolName, const Q
 bool AgentActor::undoLastAction() {
     if (!m_undoStack || !m_undoStack->canUndo() || undoBlockedByBarrier() || RunEngine::instance().isBusy())
         return false;
+    const QUndoCommand* command = m_undoStack->command(m_undoStack->index() - 1);
+    if (command && command->isObsolete()) {
+        m_undoStack->undo();
+        return false;
+    }
     m_positionUndoExpired = false;
     m_moduleOrderUndoExpired = false;
     m_parameterUndoExpired = false;
@@ -3419,6 +3478,110 @@ QJsonObject AgentActor::getFlowState(const QJsonObject& params) {
     if (!proj)
         return makeToolError("No project opened", QStringLiteral("NO_PROJECT"));
 
+    PluginManager& pm = PluginManager::instance();
+
+    // B4：按 Project 模块顺序构建 FlowGraphCatalog。缓存是本次调用内的局部对象：
+    // 同一 moduleId 只 createModule 一次，函数返回时所有 IModule 实例连同缓存一起销毁。
+    // 明确不复用 m_schemaCache——那是跨调用存活的成员缓存（schema 快照），语义不同，
+    // 且插件热更后会返回陈旧数据。
+    // Qt 5.15.3 的 QHash 要求 value 可拷贝（qhash.h:531/556/761/781），
+    // std::unique_ptr 是 move-only，故用 std::map 承载等价的独占所有权与按 moduleId 缓存语义。
+    std::map<QString, std::unique_ptr<IModule>> moduleCache;
+    QSet<QString> failedModuleIds;
+
+    const auto appendIssue = [](QJsonArray* target, const QString& code, const QString& instanceId,
+                                const QString& moduleId, const QString& message) {
+        QJsonObject issue;
+        issue.insert(QStringLiteral("code"), code);
+        issue.insert(QStringLiteral("instanceId"), instanceId);
+        issue.insert(QStringLiteral("moduleId"), moduleId);
+        issue.insert(QStringLiteral("message"), message);
+        target->append(issue);
+    };
+
+    FlowGraphCatalog catalog;
+    QStringList analyzableIds; // 保持 Project 规范顺序，只含可解析模块
+    QJsonArray errors;
+    QJsonArray warnings;
+
+    for (const ModuleInstance& instance : proj->modules()) {
+        IModule* module = nullptr;
+        auto cached = moduleCache.find(instance.moduleId);
+        if (cached != moduleCache.end()) {
+            module = cached->second.get();
+        } else if (!failedModuleIds.contains(instance.moduleId)) {
+            std::unique_ptr<IModule> created(pm.createModule(instance.moduleId));
+            if (created) {
+                cached = moduleCache.emplace(instance.moduleId, std::move(created)).first;
+                module = cached->second.get();
+            } else {
+                failedModuleIds.insert(instance.moduleId);
+            }
+        }
+
+        if (!module) {
+            // 降级路径：记结构化错误/告警并跳过该模块；不猜测控制类型、
+            // 不塞进 catalog、不伪造 rank。
+            const QString message = QStringLiteral("Cannot create module for plugin '%1'").arg(instance.moduleId);
+            appendIssue(&errors, QStringLiteral("module_unresolved"), instance.id, instance.moduleId, message);
+            appendIssue(&warnings, QStringLiteral("module_unresolved"), instance.id, instance.moduleId, message);
+            continue;
+        }
+
+        FlowGraphModule graphModule;
+        graphModule.instanceId = instance.id;
+        graphModule.flowType = module->flowControlType();
+        graphModule.inputPorts = module->inputPorts();
+        graphModule.outputPorts = module->outputPorts();
+        catalog.modules.append(graphModule);
+        analyzableIds.append(instance.id);
+    }
+
+    // 两端都可解析的连接才交给 normalizeConnections；涉及被跳过模块的边记 warning 后忽略，
+    // 避免整图归一化失败导致所有模块的顺序字段缺失。
+    QSet<QString> analyzableSet;
+    for (const QString& id : analyzableIds)
+        analyzableSet.insert(id);
+
+    QList<ModuleConnection> analyzableConnections;
+    for (const ModuleConnection& connection : proj->connections()) {
+        if (!analyzableSet.contains(connection.fromModuleId) || !analyzableSet.contains(connection.toModuleId)) {
+            const QString message = QStringLiteral("Connection %1 -> %2 references an unresolved module")
+                                        .arg(connection.fromModuleId, connection.toModuleId);
+            appendIssue(&warnings, QStringLiteral("connection_skipped"), connection.fromModuleId, QString(), message);
+            continue;
+        }
+        analyzableConnections.append(connection);
+    }
+
+    QString normalizeError;
+    const QList<ModuleConnection> normalized =
+        FlowGraphAnalyzer::normalizeConnections(catalog, analyzableConnections, &normalizeError);
+    FlowOrderPlan plan;
+    if (!normalizeError.isEmpty()) {
+        appendIssue(&errors, QStringLiteral("connection_normalization_failed"), QString(), QString(), normalizeError);
+    } else {
+        // moduleOrder 沿用 Project 规范顺序，仅剔除已跳过的不可解析模块：
+        // 否则 analyze 会为控制类型未知的模块凭空计算 rank。
+        plan = FlowGraphAnalyzer::analyze(catalog, normalized, analyzableIds);
+        if (!plan.valid) {
+            appendIssue(&errors, QStringLiteral("execution_plan_invalid"), QString(), QString(), plan.error);
+        }
+    }
+
+    QHash<QString, int> rankById;
+    QHash<QString, int> laneById;
+    QHash<QString, int> displayIndexById;
+    if (plan.valid) {
+        for (const FlowOrderNode& node : plan.nodes) {
+            rankById.insert(node.instanceId, node.rank);
+            laneById.insert(node.instanceId, node.lane);
+            displayIndexById.insert(node.instanceId, node.displayIndex);
+        }
+    }
+
+    // 字段只增不改：保留既有键与值，只追加 executionRank/lane/displayIndex。
+    // -1 是显式的「不可分析」哨兵，不是伪造的 rank。
     QJsonArray modules;
     const QList<ModuleInstance> instances = proj->modules();
     for (int index = 0; index < instances.size(); ++index) {
@@ -3428,6 +3591,9 @@ QJsonObject AgentActor::getFlowState(const QJsonObject& params) {
         value["order"] = index;
         value["ports"] =
             QJsonObject{{"inputs", portSpecsToJson(info.inputPorts)}, {"outputs", portSpecsToJson(info.outputPorts)}};
+        value["executionRank"] = rankById.value(module.id, -1);
+        value["lane"] = laneById.value(module.id, -1);
+        value["displayIndex"] = displayIndexById.value(module.id, -1);
         modules.append(value);
     }
 
@@ -3478,7 +3644,7 @@ QJsonObject AgentActor::getFlowState(const QJsonObject& params) {
                                  {QStringLiteral("nodeIds"), nodeIds}});
     }
 
-    return QJsonObject{{"project", QJsonObject{{"id", proj->id()},
+    QJsonObject result{{"project", QJsonObject{{"id", proj->id()},
                                                {"name", proj->name()},
                                                {"filePath", proj->filePath()},
                                                {"isModified", proj->isModified()}}},
@@ -3487,6 +3653,11 @@ QJsonObject AgentActor::getFlowState(const QJsonObject& params) {
                        {"flows", flows},
                        {"modules", modules},
                        {"connections", connections}};
+    if (!errors.isEmpty())
+        result.insert(QStringLiteral("errors"), errors);
+    if (!warnings.isEmpty())
+        result.insert(QStringLiteral("warnings"), warnings);
+    return result;
 }
 
 QJsonObject AgentActor::getAvailablePlugins(const QJsonObject& params) {

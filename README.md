@@ -6,9 +6,10 @@ DeepLux Vision 是面向工业现场的跨平台机器视觉软件：以可视�
 
 ## 当前状态
 
-- 默认构建 **66** 个运行时插件（启用 `-DENABLE_HYMSON3D=ON` 后为 67 个）。
-- CI 覆盖 Linux Qt 5/6 完整 CTest、Windows MSVC 产品构建与插件同步/部署冒烟；Windows 本机已验证完整 CTest **77/77**。
-- 原生 SAM 已完成 Windows 编译/打包验证；真实模型推理、相机/PLC 硬件仍需现场验收。
+- 仓库插件目录包含 **69 份 metadata**，其中包括跨平台相机替代项和可选插件；默认 Linux/Windows 配置构建 **66 个插件**，启用 Hymson 3D 后为 67 个。插件手册覆盖完整目录，构建产物数量以本机 CMake 生成的 `plugin-facts.json` 为准。
+- **当前集成候选（2026-11-13）**：隔离分支 `feature/review-hardening-pr` 正在整合，工作树尚未形成可发布提交；本地 Linux CTest 134/134 通过。准确基线、命令、证据和未完成门槛见[当前状态](docs/STATUS.md)。该结果不是托管 CI、Windows、Sanitizer 或现场验收。
+- CI 工作流包含 Linux Qt 5/6、Windows MSVC、Sanitizer 与插件亲和性检查；实际通过状态应以对应工作流运行记录为准，不由本地 CTest 代替。
+- 原生 SAM 的真实模型 CPU/CUDA Linux 推理流程曾在本机 RTX 3090 环境验证；ONNX 与 Python 输出一致性及掩膜质量尚未形成完整门禁，曾报告的空掩膜问题待可复现样本/提示坐标后复测。Windows 上仅验证编译/打包；其他目标机、约 3000×3000 工业原图以及相机/PLC 硬件仍待对应环境验收，见[SAM 部署记录](docs/sam_native/stage5_packaging.md)。
 
 ## 核心能力
 
@@ -77,7 +78,7 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy-windows.ps1 `
 ```
 
 - `sync-plugins` 把插件与 `metadata.json` 同步到 `~/.deeplux/plugins`；开发期也可直接从 `build-win\bin` 运行，但需把 Qt/OpenCV 的 `bin` 加入 `PATH`。
-- 部署脚本生成自包含目录（Qt、OpenCV、VC++ 运行库、66 个插件），并在干净 `PATH` 下做 CLI 冒烟测试；成功标志为 `plugins: 66`、`[SMOKE] exit=0 loaded=65`，输出包为 `dist\DeepLux-win64.zip`。目标机未安装 VC++ 运行库时，先运行一次 `bin\vc_redist.x64.exe`。
+- 部署脚本生成自包含目录（Qt、OpenCV、VC++ 运行库和当前构建的插件），并在干净 `PATH` 下按包内 manifest 动态校验 CLI 冒烟结果；具体判据与 Windows 快照说明见[Windows 构建与部署](docs/windows-build.md)。目标机未安装 VC++ 运行库时，先运行一次 `bin\vc_redist.x64.exe`。
 - Windows CLI 使用部署包内的 `deeplux.cmd`（GUI 子系统 exe 在 PowerShell 中不会等待进程）：
 
 ```powershell
@@ -105,7 +106,9 @@ flowchart LR
 ## Agent 与 SAM
 
 - **Agent**：底部“Agent 对话”页。只能调用已声明的内部工具，写操作经过权限、确认与撤销，全部落审计日志；不具备任意 shell 执行权限。详见[终端与 Agent 设计](docs/Terminal_Agent_Design.md)。
-- **SAM 标注**：顶部“快速标注”打开面板，用正点、负点或框选生成预览，切换候选后确认；支持掩膜编辑、会话保存及 LabelMe/YOLO/COCO 导出。默认使用 Python 服务；切换到“本机 ONNX”后可在“模型设置…”中选择模型包和 CPU/CUDA 设备，设置会保存到本机。详见[原生 SAM 安装说明](docs/sam_native/stage5_packaging.md)。
+- **SAM 标注**：顶部“快速标注”打开面板，用正点、负点或框选生成预览，切换候选后确认；支持掩膜编辑、会话保存及 LabelMe/YOLO/COCO 导出。标注面板默认使用 Python 服务；切换到“本机 ONNX”后可在“模型设置…”中选择模型包和 CPU/CUDA 设备，设置会保存到本机。构建默认启用原生 SAM，需提供 ONNX Runtime SDK；详见[原生 SAM 安装说明](docs/sam_native/stage5_packaging.md)。
+
+CI 不下载或存储 SAM 权重/模型包，因此真实模型 CPU/CUDA 推理不在 CI 范围内；模型运行需按安装说明在目标环境单独验证。
 
 ## 项目结构
 
@@ -129,7 +132,7 @@ scripts/          # 构建、插件同步、部署和 CLI 辅助脚本
 | [快速上手](docs/quick-start.md) | 创建找圆流程、单步检查、常见排查。 |
 | [Windows 构建与部署](docs/windows-build.md) | MSVC 依赖、Ninja/VS 配置、插件同步、CTest、windeployqt 打包与常见问题。 |
 | [架构说明](docs/architecture.md) | UI、工程、执行引擎、插件、Agent 与 SAM 的职责边界。 |
-| [插件手册](docs/plugins.md) | 69 个运行时插件的用途、接入方式、关键配置、失败条件和结果说明。 |
+| [插件手册](docs/plugins.md) | 69 份插件 metadata 的用途索引；默认单平台构建 66 个插件，启用 Hymson 3D 后为 67 个。 |
 | [CLI 文档](docs/cli.md) | GUI 之外的项目、模块与连接管理命令。 |
 | [终端与 Agent 设计](docs/Terminal_Agent_Design.md) | 受控 Agent 工具调用、审计与权限模型。 |
 | [Agent 能力完善与验收计划](docs/agent-capability-improvement-plan.md) | 分阶段实施范围、插件/操作覆盖矩阵、验收标准与外部 Agent 交接要求。 |

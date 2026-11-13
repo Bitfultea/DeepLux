@@ -1,7 +1,7 @@
 {
     "version": "3.0",
     "id": "accept-parallel-failure-0001",
-    "name": "验收-Parallel 失败分支取消同组",
+    "name": "验收-Parallel 失败不进入汇合",
     "created": "2026-08-31T00:00:00",
     "modified": "2026-08-31T00:00:00",
     "modules": [

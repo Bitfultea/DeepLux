@@ -9,8 +9,16 @@
 
 namespace DeepLux {
 namespace {
-QHash<const ModuleBase*, CancellationToken*> g_cancellationTokens;
-QMutex g_cancellationTokensMutex;
+struct CancellationTokenRegistry {
+    QHash<const ModuleBase*, CancellationToken*> tokens;
+    QMutex mutex;
+};
+
+CancellationTokenRegistry& cancellationTokenRegistry() {
+    // Dynamically loaded plugins may destroy modules after core static teardown.
+    static auto* registry = new CancellationTokenRegistry;
+    return *registry;
+}
 } // namespace
 
 // ========== ModuleParam ==========
@@ -37,8 +45,9 @@ bool ModuleParam::fromJson(const QJsonObject& json) {
 ModuleBase::ModuleBase(QObject* parent) : IModule(parent) {}
 
 ModuleBase::~ModuleBase() {
-    QMutexLocker locker(&g_cancellationTokensMutex);
-    g_cancellationTokens.remove(this);
+    auto& registry = cancellationTokenRegistry();
+    QMutexLocker locker(&registry.mutex);
+    registry.tokens.remove(this);
 }
 
 bool ModuleBase::initialize() {
@@ -117,6 +126,31 @@ void ModuleBase::setPorts(const QList<PortSpec>& inputs, const QList<PortSpec>& 
 }
 
 ExecutionResult ModuleBase::execute(const PortValueMap& inputs, PortValueMap& outputs, ExecutionContext& context) {
+    // T2.8（2026-11-10 裁定；2026-11-11 复核 P2 整改）：token 与「本次执行」同生命周期，
+    // 必须在**函数入口**就建立守卫，退出时无条件摘除。
+    //
+    // 复核指出的缺陷：上一版把守卫放在输入校验**之后**，而 token 的安装并没有提前——
+    // 于是「缺少必需输入（1001）」「类型不匹配（1002）」这两类早退路径绕过了守卫：
+    // 条目已写入借用表却永不摘除，执行结束后仍留存。更严重的是 RunEngine 会在调用
+    // execute() **之前**先 setCancellationToken()，那些早退路径连"安装"都发生在守卫之外。
+    //
+    // 现在的做法：安装与守卫都放在最前面，覆盖函数**全部**出口（含所有校验早退）。
+    // 守卫只在本次确实安装了 token 时还原，避免抹掉别人装的 token。
+    if (context.cancellationToken) {
+        setCancellationToken(context.cancellationToken);
+    }
+    const bool tokenInstalledHere = (context.cancellationToken != nullptr);
+    const struct CancellationTokenScopeGuard {
+        ModuleBase* self;
+        bool armed;
+        ~CancellationTokenScopeGuard() {
+            if (armed) {
+                self->setCancellationToken(nullptr);
+            }
+        }
+    } cancellationScope{this, tokenInstalledHere};
+    Q_UNUSED(cancellationScope);
+
     // 提取 Image2D 载体：优先 "image" 端口，其次任一可转换值
     ImageData input;
     if (inputs.contains(QStringLiteral("image")) && inputs.value(QStringLiteral("image")).canConvert<ImageData>()) {
@@ -193,10 +227,6 @@ ExecutionResult ModuleBase::execute(const PortValueMap& inputs, PortValueMap& ou
             input.setData(it.key(), it.value());
     }
 
-    if (context.cancellationToken) {
-        setCancellationToken(context.cancellationToken);
-    }
-
     ImageData output;
     const bool success = execute(input, output);
     if (!success) {
@@ -223,17 +253,36 @@ ExecutionResult ModuleBase::execute(const PortValueMap& inputs, PortValueMap& ou
 }
 
 void ModuleBase::setCancellationToken(CancellationToken* token) {
-    QMutexLocker locker(&g_cancellationTokensMutex);
+    auto& registry = cancellationTokenRegistry();
+    QMutexLocker locker(&registry.mutex);
     if (token) {
-        g_cancellationTokens.insert(this, token);
+        registry.tokens.insert(this, token);
     } else {
-        g_cancellationTokens.remove(this);
+        registry.tokens.remove(this);
     }
 }
 
 CancellationToken* ModuleBase::cancellationToken() const {
-    QMutexLocker locker(&g_cancellationTokensMutex);
-    return g_cancellationTokens.value(this, nullptr);
+    auto& registry = cancellationTokenRegistry();
+    QMutexLocker locker(&registry.mutex);
+    return registry.tokens.value(this, nullptr);
+}
+
+void ModuleBase::detachCancellationToken(CancellationToken* token) {
+    if (!token) {
+        return;
+    }
+    // T2.8：token 即将销毁，把表中所有指向它的条目摘掉。遍历全部条目而不是只按
+    // 当前模块查找——同一 token 可能被多个模块借用过（并行批次、多次执行）。
+    auto& registry = cancellationTokenRegistry();
+    QMutexLocker locker(&registry.mutex);
+    for (auto it = registry.tokens.begin(); it != registry.tokens.end();) {
+        if (it.value() == token) {
+            it = registry.tokens.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 bool ModuleBase::isCancellationRequested() const {

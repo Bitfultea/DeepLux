@@ -2815,7 +2815,7 @@ private slots:
                 terminalSession = actor->executeTool(QStringLiteral("get_run_results"),
                                                      QJsonObject{{QStringLiteral("runId"), startedSessionId}});
             },
-            Qt::DirectConnection);
+            Qt::QueuedConnection);
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
         QTRY_COMPARE_WITH_TIMEOUT(cycleStopped.count(), 1, 10000);
         QVERIFY(!startedSessionId.isEmpty());
@@ -2825,7 +2825,7 @@ private slots:
         QCOMPARE(countModuleSignal(moduleStarted, instanceId), 3);
         QCOMPARE(cycleStopped.count(), 1);
 
-        QVERIFY(!terminalSession.isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(!terminalSession.isEmpty(), 5000);
         QCOMPARE(terminalSession.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
         QCOMPARE(terminalSession.value(QStringLiteral("maxCycles")).toInt(), 3);
         QCOMPARE(terminalSession.value(QStringLiteral("completedCycles")).toInt(), 3);
@@ -2960,7 +2960,7 @@ private slots:
                 terminalSession = actor->executeTool(QStringLiteral("get_run_results"),
                                                      QJsonObject{{QStringLiteral("runId"), sessionId}});
             },
-            Qt::DirectConnection);
+            Qt::QueuedConnection);
         QVERIFY(controller.confirmPendingTools(approvedId));
         QTRY_COMPARE_WITH_TIMEOUT(cycleStopped.count(), 1, 10000);
         QVERIFY(!sessionId.isEmpty());
@@ -2978,7 +2978,7 @@ private slots:
         }
         QCOMPARE(fileBytes(), expectedBytes);
         QCOMPARE(QFileInfo(outputPath).size(), expectedBytes.size());
-        QVERIFY(!terminalSession.isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(!terminalSession.isEmpty(), 5000);
         QCOMPARE(terminalSession.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
         QCOMPARE(terminalSession.value(QStringLiteral("isBusy")).toBool(), false);
         QCOMPARE(terminalSession.value(QStringLiteral("maxCycles")).toInt(), 3);
@@ -3172,7 +3172,7 @@ private slots:
                     terminalSession =
                         actor->executeTool(QStringLiteral("get_run_results"), {{QStringLiteral("runId"), sessionId}});
                 },
-                Qt::DirectConnection);
+                Qt::QueuedConnection);
             QVERIFY(controller.confirmPendingTools(approvedId));
             QTRY_COMPARE_WITH_TIMEOUT(cycleStopped.count(), 1, 10000);
             QVERIFY(!sessionId.isEmpty());
@@ -3190,7 +3190,7 @@ private slots:
                 QVERIFY2(result.success, qPrintable(result.errorMessage));
             }
 
-            QVERIFY(!terminalSession.isEmpty());
+            QTRY_VERIFY_WITH_TIMEOUT(!terminalSession.isEmpty(), 5000);
             QCOMPARE(terminalSession.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
             QCOMPARE(terminalSession.value(QStringLiteral("isBusy")).toBool(), false);
             QCOMPARE(terminalSession.value(QStringLiteral("maxCycles")).toInt(), 3);
@@ -3800,6 +3800,14 @@ private slots:
         QVERIFY(!firstTickSessionId.isEmpty());
         QVERIFY2(firstTickSwapError.isEmpty(), qPrintable(firstTickSwapError));
         QCOMPARE(QFileInfo(alias).symLinkTarget(), QFileInfo(rootB).canonicalFilePath());
+        if (firstTickRunFinished.count() > 1) {
+            qWarning() << "bounded-cycle unexpected runFinished count:" << firstTickRunFinished.count();
+            for (const QList<QVariant>& arguments : firstTickRunFinished) {
+                const RunResult result = qvariant_cast<RunResult>(arguments.at(0));
+                qWarning() << "bounded-cycle runFinished:" << result.runId << result.success << result.errorCode
+                           << result.failedModule << result.errorMessage;
+            }
+        }
         QTRY_COMPARE_WITH_TIMEOUT(firstTickRunFinished.count(), 1, 5000);
         QCOMPARE(firstTickStarted.count(), 1);
         QCOMPARE(firstTickFinished.count(), 1);

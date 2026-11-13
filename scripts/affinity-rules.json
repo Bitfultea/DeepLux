@@ -1,0 +1,69 @@
+{
+  "forbidden_identifiers": [
+    "qApp",
+    "QWidget",
+    "QPixmap",
+    "QPainter",
+    "QOpenGLWidget",
+    "QOpenGLContext",
+    "QEventLoop",
+    "QTimer",
+    "QTcpSocket",
+    "QSerialPort",
+    "QProcess"
+  ],
+  "forbidden_calls": [
+    "moveToThread",
+    "deleteLater",
+    "processEvents"
+  ],
+  "forbidden_sequences": [
+    {"tokens": ["new", "QObject"]},
+    {"tokens": ["new", "VarModel"]},
+    {"tokens": ["QMetaObject", "::", "invokeMethod", "("]}
+  ],
+  "global_manager_write_calls": [
+    "addVariable",
+    "setVariableValue",
+    "enqueue",
+    "dequeue"
+  ],
+  "run_engine_write_calls": [
+    "setOutput",
+    "clearOutputs",
+    "runOnce",
+    "stop"
+  ],
+  "global_mutating_methods": [
+    "append",
+    "assign",
+    "clear",
+    "emplace",
+    "emplace_back",
+    "emplace_front",
+    "erase",
+    "insert",
+    "pop_back",
+    "pop_front",
+    "prepend",
+    "push_back",
+    "push_front",
+    "remove",
+    "removeAll",
+    "removeAt",
+    "removeOne",
+    "reserve",
+    "resize",
+    "setValue",
+    "swap"
+  ],
+  "run_engine_read_allowlist": [
+    {
+      "plugin_id": "com.deeplux.plugin.if",
+      "function": "evaluateCondition",
+      "method": "getOutput",
+      "reason": "RunEngine::getOutput is protected by m_outputMutex; IfPlugin only reads the snapshot.",
+      "evidence": "tests/test_logicplugins.cpp::testIfWorkerReadsRunEngineOutputConcurrently"
+    }
+  ]
+}

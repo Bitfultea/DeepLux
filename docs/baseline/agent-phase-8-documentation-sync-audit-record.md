@@ -1,5 +1,7 @@
 # G8 documentation synchronization audit record
 
+> 历史审计记录；其中 PASS 仅指下述子项，不代表当前整体发布状态。见 [`docs/STATUS.md`](../STATUS.md)。
+
 ## Status
 
 **PASS** for the documentation/runtime-resource synchronization sub-item of

@@ -82,7 +82,9 @@
 #include <core/config/SystemConfig.h>
 #include <core/deeplux/PayloadTypes.h>
 #include <core/display/DisplayData.h>
+#include <core/engine/EngineTestSupport.h>
 #include <core/engine/FlowExecutionService.h>
+#include <core/engine/FlowGraphAnalyzer.h>
 #include <core/engine/RunEngine.h>
 #include <core/manager/ConfigManager.h>
 #include <core/manager/GlobalVarManager.h>
@@ -92,12 +94,14 @@
 #include <core/model/AnnotationMaskOps.h>
 #include <core/model/ImageData.h>
 #include <core/model/Project.h>
+#include <cstdlib>
 #include <functional>
 #include <limits>
 #include <plugins/calibration/NPointCalibration/NPointCalibrationPlugin.h>
 #include <plugins/image_processing/CropImage/CropImagePlugin.h>
 #include <thread>
 #include <ui/ThemeManager.h>
+#include <ui/controllers/FlowLayoutCoordinator.h>
 #include <ui/controllers/ProcessTreeController.h>
 #include <ui/dialogs/LoginDialog.h>
 #include <ui/dialogs/SamAnnotatorDialog.h>
@@ -225,6 +229,11 @@ public:
 
     std::function<void()> duringProcess;
     QStringList* executionLog = nullptr;
+    // T2.6 P2：置 true 时每次 process 产出不同像素，并把序号写进 run 级快照，
+    // 供真实 MainWindow 连接回归验证「实际画面来自最后任务」。默认 false，
+    // 不改变其他既有用例的行为；历史填色行保持原样，仅在开启时覆盖颜色。
+    bool distinctImages = false;
+    std::atomic_int runs{0};
     bool executeResult = true;
 
 protected:
@@ -238,8 +247,15 @@ protected:
         }
         QImage image(16, 12, QImage::Format_RGB32);
         image.fill(QColor("#22C55E"));
+        const int k = ++runs;
+        if (distinctImages) {
+            image.fill(QColor(qMin(255, 20 * k), 40, 60));
+        }
         output = ImageData(image);
         output.setData(QStringLiteral("tag"), QStringLiteral("probe"));
+        if (distinctImages) {
+            output.setData(QStringLiteral("t26_k"), k);
+        }
         return executeResult;
     }
 
@@ -270,6 +286,18 @@ protected:
 
     QWidget* createConfigWidget() override {
         return nullptr;
+    }
+};
+
+/// B3：控制分支节点探针。仅覆盖 flowControlType，用于构造带 branchLabel 的执行计划，
+/// 验证 §7.2「分支顺序由控制边决定」的拖动拒绝路径。端口保持默认空声明，
+/// 与 MainWindow 的 catalogProvider 契约一致。
+class MainWindowBranchProbeModule : public MainWindowOutputProbeModule {
+public:
+    explicit MainWindowBranchProbeModule(const QString& instanceId) : MainWindowOutputProbeModule(instanceId) {}
+
+    ControlFlowType flowControlType() const override {
+        return ControlFlowType::Conditional;
     }
 };
 
@@ -408,6 +436,204 @@ bool waitForServiceIdle(int timeoutMs = 5000) {
         QTest::qWait(2);
     }
 }
+
+// ===== B3：流程树重排集成测试的确定性夹具 =====
+
+/// Project 的模块声明顺序（分析器的规范 moduleOrder，与流程树展示顺序无关）。
+QStringList projectModuleIds(const Project& project) {
+    QStringList ids;
+    ids.reserve(project.modules().size());
+    for (const ModuleInstance& instance : project.modules())
+        ids.append(instance.id);
+    return ids;
+}
+
+/// 流程树当前展示顺序（Qt::UserRole+1 保存实例 ID）。
+QStringList treeInstanceIds(const QTreeWidget& tree) {
+    QStringList ids;
+    for (int row = 0; row < tree.topLevelItemCount(); ++row) {
+        const QTreeWidgetItem* item = tree.topLevelItem(row);
+        ids.append(item ? item->data(0, Qt::UserRole + 1).toString() : QString());
+    }
+    return ids;
+}
+
+/// 连接声明序列的可比较文本（含声明顺序、端口与边类型）。
+QStringList connectionKeys(const QList<ModuleConnection>& connections) {
+    QStringList keys;
+    keys.reserve(connections.size());
+    for (const ModuleConnection& connection : connections) {
+        keys.append(QStringLiteral("%1.%2>%3.%4:%5")
+                        .arg(connection.fromModuleId, connection.fromPort, connection.toModuleId, connection.toPort,
+                             connection.edgeType));
+    }
+    return keys;
+}
+
+ModuleConnection b3DataEdge(const QString& from, const QString& to) {
+    ModuleConnection connection;
+    connection.fromModuleId = from;
+    connection.toModuleId = to;
+    connection.fromPort = QStringLiteral("image");
+    connection.toPort = QStringLiteral("image");
+    connection.edgeType = QStringLiteral("data");
+    return connection;
+}
+
+ModuleConnection b3ControlEdge(const QString& from, const QString& fromPort, const QString& to, const QString& toPort) {
+    ModuleConnection connection;
+    connection.fromModuleId = from;
+    connection.toModuleId = to;
+    connection.fromPort = fromPort;
+    connection.toPort = toPort;
+    connection.edgeType = QStringLiteral("control");
+    return connection;
+}
+
+struct B3Fixture {
+    MainWindow* window = nullptr;
+    Project* project = nullptr;
+    FlowLayoutCoordinator* coordinator = nullptr;
+    ProcessTreeController* treeController = nullptr;
+    QUndoStack* undoStack = nullptr;
+    QTreeWidget* tree = nullptr;
+    QList<MainWindowOutputProbeModule*> runtimeModules;
+};
+
+/// 构造工程 + 运行时探针模块，并关闭自动布局，保证断言不受 30ms 合并布局异步改写。
+bool setupB3Fixture(MainWindow& window, const QStringList& ids, B3Fixture* fixture) {
+    if (!fixture)
+        return false;
+    *fixture = B3Fixture();
+    fixture->window = &window;
+    fixture->coordinator = window.findChild<FlowLayoutCoordinator*>();
+    if (!fixture->coordinator)
+        return false;
+    // 确定性屏障：抑制自动布局，currentStructurePlan() 因此始终按当前工程实时计算。
+    fixture->coordinator->suppressAutoLayout(true);
+    fixture->project = ProjectManager::instance().newProject();
+    if (!fixture->project)
+        return false;
+    fixture->tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    fixture->treeController = fixture->coordinator->processTreeController();
+    fixture->undoStack = window.findChild<QUndoStack*>();
+    if (!fixture->tree || !fixture->treeController || !fixture->undoStack)
+        return false;
+    for (const QString& id : ids) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("OutputProbe");
+        instance.name = id;
+        fixture->project->addModule(instance);
+        auto* module = new MainWindowOutputProbeModule(id);
+        module->initialize();
+        window.registerFlowModule(id, module);
+        fixture->runtimeModules.append(module);
+    }
+    QCoreApplication::processEvents();
+    return true;
+}
+
+/// 触发一次真实引擎同步：syncModulesToRunEngine 是 protected Q_INVOKABLE，
+/// 通过元对象调用；markModulesNeedSync 保证不命中早退分支。
+bool syncEngine(MainWindow& window, ProcessTreeController* controller) {
+    if (controller)
+        controller->markModulesNeedSync();
+    return QMetaObject::invokeMethod(&window, "syncModulesToRunEngine", Qt::DirectConnection);
+}
+
+// ===== B5.1：控制流视觉语义断言的确定性辅助 =====
+
+/// 构造分析器 catalog 的模块描述符（控制输出端口契约与
+/// tests/test_flowgraphanalyzer.cpp 的 controlModule 一致，不加载插件）。
+FlowGraphModule b5GraphModule(const QString& id, ControlFlowType type = ControlFlowType::Sequential) {
+    FlowGraphModule module;
+    module.instanceId = id;
+    module.flowType = type;
+    return module;
+}
+
+FlowGraphModule b5ControlModule(const QString& id, ControlFlowType type, const QStringList& controlOutputs) {
+    FlowGraphModule module = b5GraphModule(id, type);
+    for (const QString& outputId : controlOutputs) {
+        PortSpec port;
+        port.id = outputId;
+        port.displayName = outputId;
+        port.type = DataType::Boolean;
+        port.control = true;
+        module.outputPorts.append(port);
+    }
+    return module;
+}
+
+/// 由真实 FlowGraphAnalyzer 生成计划（normalizeConnections + analyze），不手工伪造元数据。
+FlowOrderPlan b5Analyze(const FlowGraphCatalog& catalog, const QList<ModuleConnection>& edges, const QStringList& order,
+                        QString* error) {
+    if (error)
+        error->clear();
+    const QList<ModuleConnection> normalized = FlowGraphAnalyzer::normalizeConnections(catalog, edges, error);
+    return FlowGraphAnalyzer::analyze(catalog, normalized, order);
+}
+
+// T2.6 真实 MainWindow 连接回归的失败路径收尾：不变量同
+// ServiceContractCleanupGuard —— 未 join 时 finish() 绝不返回。
+// 栈对象（MainWindow / module / ctx / imageWidget 指针）声明在 guard 之前，
+// guard 最后声明、最先析构，保证 worker 退出前这些对象仍存活。
+struct T26RealConnectionGuard {
+    FlowExecutionService* service = nullptr;
+    QMetaObject::Connection extra;
+    bool armed = true;
+
+    void finish() {
+        if (!service || !armed) {
+            return;
+        }
+        QObject::disconnect(extra);
+        service->stop();
+        const auto pump = [] {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            QThread::msleep(5);
+        };
+        QElapsedTimer timer;
+        timer.start();
+        while (service->isActive() && timer.elapsed() < 10000) {
+            pump();
+        }
+        bool joined = false;
+        while (timer.elapsed() < 15000) {
+            if (service->shutdown()) {
+                joined = true;
+                break;
+            }
+            service->stop();
+            pump();
+        }
+        if (!joined || service->isActive()) {
+            qWarning("T26RealConnectionGuard: bounded diagnostics expired; continuing to wait "
+                     "for the real worker exit (outer watchdog bounds this wait)");
+            for (;;) {
+                service->stop();
+                if (service->shutdown() && !service->isActive()) {
+                    joined = true;
+                    break;
+                }
+                pump();
+                if (timer.elapsed() >= 60000) {
+                    qCritical("T26RealConnectionGuard: worker did not exit; terminating the test "
+                              "process instead of unwinding the stack while locals are still alive");
+                    std::abort();
+                }
+            }
+        }
+        armed = false;
+    }
+
+    ~T26RealConnectionGuard() {
+        if (armed) {
+            finish();
+        }
+    }
+};
 } // namespace
 
 class TestMainWindow : public QObject {
@@ -559,7 +785,7 @@ private slots:
     void testAgentOpenActiveSamSession();
     void testToolBoxSearchFiltersItemsAndRestoresOnClear();
     void testQuickModeRunsCurrentFlowOnce();
-    void testOpenProjectMenuActionLoadsAndSyncsProject();
+    void testOpenProjectPathLoadsAndSyncsProject();
     void testProcessTreeDoubleClickOpensInspectorParams();
     void testMainWindowLayoutKeepsConfirmedWorkflowTabsAndReadableTheme();
     void testRunFlowConfirmationShowsIrreversibleLabelEndToEnd();
@@ -581,6 +807,7 @@ private slots:
     void testNoOutputSelectedModuleClearsOverlays();
     void testClearSelectionAndCloseInspectorClearOverlays();
     void testDarkThemeCloseAndDestroyWindowDirectly();
+    void testVisibleMainWindowDisconnectsDockCallbacksBeforeDestruction();
     void testPluginConfigDialogRestylesLegacyDarkPlugin();
     void testGrabImageEditorSurvivesCommitSignal();
     void testQuickAnnotateOpensSamDialogOnMainViewportImage();
@@ -617,6 +844,9 @@ private slots:
     void testServiceUserPauseUpdatesRunControls();
     // t17/F2：工程切换后旧 (jobId,runId) 迟到帧不得改写画面/叠加（设计 §7.3）
     void testProjectSwitchDropsLateDisplayFrames();
+    // T2.6 行为契约：连续 5 短 job + GUI 队列延迟，经真实 MainWindow 连接后
+    // 最终只渲染最后一个 job 的帧，旧通知不得改写画面（不复刻槽逻辑）。
+    void testDelayedQueueThroughRealMainWindowConnections();
     // t17/O1：窗口可见性驱动帧捕获开关（设计 §7.5）
     void testDisplayCaptureFollowsVisibility();
     // B8.3：测量叠加只读帧内快照（设计 §7.3）
@@ -632,6 +862,24 @@ private slots:
     void testDataSourceVisibilityCheckboxRebuildsMainViewport();
     void testMixedDataSourcesKeep2DVisibleAndClearStaleMode();
     void testRenderMenuOnlyShowsModesSupportedByVisibleClouds();
+
+    // B3.1b：引擎顺序与展示顺序解耦（P0-3）
+    void testDisplayOrderReorderKeepsEngineDataOrder();
+    // B3.3/B3.4：无连接顺序列表跨层拖动，一次事务/一条撤销记录 + Undo/Redo
+    void testUnconnectedListReorderCommitsOneTransaction();
+    void testConsecutiveReordersUndoRedoRestoreSnapshots();
+    // B3.4：已连接简单线性链跨层重连与引擎同步
+    void testConnectedLinearChainReorderReconnectsAndSyncsEngine();
+    void testSameLayerIndependentNodesReorder();
+    void testControlBranchReorderRejectedWithoutMutation();
+    void testBranchMergeCrossLayerReorderRejected();
+    // B3.3：结构指纹、跨栈失效与提交失败零残留
+    void testConnectionDeclarationOrderChangesFingerprint();
+    void testInvalidatedReorderCommandLeavesNoResidue();
+    void testAgentOriginInvalidatesGuiReorderUndo();
+    // B5.1：控制流视觉语义断言（分支标签 / 回边标记 / lane 不重叠 / 命中区域不变）
+    void testControlFlowBranchLabelsProjectedToCanvas();
+    void testControlFlowLoopBackEdgeMarkersUseCanonicalKey();
 
 private:
     QTemporaryDir m_appDataDir;
@@ -672,7 +920,7 @@ void TestMainWindow::init() {
     RunEngine::instance().clearModules();
     RunEngine::instance().clearOutputs();
     // B7：上一个用例可能留下后台 job；先停再等收尾，保证每个用例从 Service Idle 开始。
-    FlowExecutionService::instance().clearStartHandshakeHookForTest();
+    FlowExecutionServiceTestAccess(FlowExecutionService::instance()).clearStartHandshakeHookForTest();
     FlowExecutionService::instance().stop();
     QVERIFY(waitForServiceIdle());
     // 默认插件目录重定向到临时目录，避免每个 MainWindow 实例都扫描
@@ -685,7 +933,7 @@ void TestMainWindow::init() {
 void TestMainWindow::cleanup() {
     ProjectManager::instance().closeProject();
     PluginManager::instance().shutdown();
-    FlowExecutionService::instance().clearStartHandshakeHookForTest();
+    FlowExecutionServiceTestAccess(FlowExecutionService::instance()).clearStartHandshakeHookForTest();
     FlowExecutionService::instance().stop();
     QVERIFY(waitForServiceIdle());
     RunEngine::instance().stop();
@@ -5032,7 +5280,12 @@ void TestMainWindow::testG6MeasurementInputCancelsImageChangeAndLateRelease() {
     QTest::mouseRelease(imageWidget, Qt::LeftButton, Qt::NoModifier, staleReleasePosition);
     QCoreApplication::processEvents();
 
-    QCOMPARE(project->toJson(), initialProject);
+    const QJsonObject currentProject = project->toJson();
+    if (currentProject != initialProject) {
+        qWarning().noquote() << "G6 project before:" << QJsonDocument(initialProject).toJson(QJsonDocument::Compact);
+        qWarning().noquote() << "G6 project after:" << QJsonDocument(currentProject).toJson(QJsonDocument::Compact);
+    }
+    QCOMPARE(currentProject, initialProject);
     QCOMPARE(sourcePickSpy.size(), 0);
     QCOMPARE(runStartedSpy.count(), 0);
     QCOMPARE(runFinishedSpy.count(), 0);
@@ -5059,7 +5312,14 @@ void TestMainWindow::testG6MeasurementInputCancelsImageChangeAndLateRelease() {
     QVERIFY(QMetaObject::invokeMethod(&window, "onStop", Qt::DirectConnection));
     QTest::mouseRelease(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(250, 178));
     QCoreApplication::processEvents();
-    QCOMPARE(project->toJson(), afterFirstPick);
+    const QJsonObject projectAfterLateRelease = project->toJson();
+    if (projectAfterLateRelease != afterFirstPick) {
+        qWarning().noquote() << "G6 project after late release:"
+                             << QJsonDocument(projectAfterLateRelease).toJson(QJsonDocument::Compact);
+        qWarning().noquote() << "G6 project after first pick:"
+                             << QJsonDocument(afterFirstPick).toJson(QJsonDocument::Compact);
+    }
+    QCOMPARE(projectAfterLateRelease, afterFirstPick);
     QCOMPARE(sourcePickSpy.size(), 1);
     QCOMPARE(runStartedSpy.count(), 0);
     QCOMPARE(runFinishedSpy.count(), 0);
@@ -9422,6 +9682,22 @@ void TestMainWindow::testDarkThemeCloseAndDestroyWindowDirectly() {
     QCoreApplication::processEvents();
 }
 
+void TestMainWindow::testVisibleMainWindowDisconnectsDockCallbacksBeforeDestruction() {
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+
+    auto* logDock = window.findChild<QDockWidget*>(QStringLiteral("LogDock"));
+    auto* toolDock = window.findChild<QDockWidget*>(QStringLiteral("ToolPanelDock"));
+    QVERIFY(logDock != nullptr);
+    QVERIFY(toolDock != nullptr);
+    logDock->setVisible(true);
+    toolDock->setVisible(true);
+    QCoreApplication::processEvents();
+    QVERIFY(logDock->isVisible());
+    QVERIFY(toolDock->isVisible());
+}
+
 void TestMainWindow::testPluginConfigDialogRestylesLegacyDarkPlugin() {
     QTemporaryDir appDir;
     QVERIFY(appDir.isValid());
@@ -10706,6 +10982,9 @@ void TestMainWindow::testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition() 
     QCoreApplication::processEvents();
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project);
+    QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
+    FlowLayoutCoordinator* coordinator = window.findChild<FlowLayoutCoordinator*>();
+    QVERIFY(coordinator);
     FlowCanvas* canvas = window.findChild<FlowCanvas*>(QStringLiteral("FlowCanvas"));
     QVERIFY(canvas);
     QUndoStack* guiUndoStack = window.findChild<QUndoStack*>();
@@ -10721,10 +11000,14 @@ void TestMainWindow::testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition() 
     ModuleInstance defaultNode;
     defaultNode.id = QStringLiteral("gui_drag_default");
     defaultNode.moduleId = QStringLiteral("GrabImage");
+    const int layoutBeforeDefault = coordinator->layoutRunCount();
     project->addModule(defaultNode);
+    QTRY_VERIFY_WITH_TIMEOUT(coordinator->layoutRunCount() > layoutBeforeDefault, 1000);
     FlowNodeItem* defaultItem = canvas->nodeItem(defaultNode.id);
     QVERIFY(defaultItem);
-    QVERIFY(!defaultItem->pos().isNull());
+    const auto laidOutDefault = project->moduleById(defaultNode.id);
+    QVERIFY(laidOutDefault);
+    QCOMPARE(defaultItem->pos(), QPointF(laidOutDefault->posX, laidOutDefault->posY));
     const QPoint defaultClick = canvas->mapFromScene(defaultItem->mapToScene(QPointF(80, 30)));
     QSignalSpy updateSpy(project, &Project::moduleUpdated);
     QSignalSpy positionSpy(project, &Project::modulePositionChanged);
@@ -10757,6 +11040,7 @@ void TestMainWindow::testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition() 
     target.moduleId = QStringLiteral("Blob");
     target.posX = 480;
     target.posY = 160;
+    const int layoutBeforeGraph = coordinator->layoutRunCount();
     project->addModule(target);
     ModuleConnection connection;
     connection.fromModuleId = movable.id;
@@ -10764,6 +11048,11 @@ void TestMainWindow::testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition() 
     connection.fromPort = QStringLiteral("image");
     connection.toPort = QStringLiteral("image");
     project->addConnection(connection);
+    QTRY_VERIFY_WITH_TIMEOUT(coordinator->layoutRunCount() > layoutBeforeGraph, 1000);
+    movable = *project->moduleById(movable.id);
+    target = *project->moduleById(target.id);
+    updateSpy.clear();
+    positionSpy.clear();
     const QJsonArray originalConnections = project->toJson().value(QStringLiteral("connections")).toArray();
     FlowNodeItem* item = canvas->nodeItem(movable.id);
     FlowNodeItem* targetItem = canvas->nodeItem(target.id);
@@ -11011,7 +11300,7 @@ void TestMainWindow::testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition() 
         return probe;
     }));
     for (const QString& id : {defaultNode.id, movable.id, target.id})
-        engine.setModuleExecutionAffinityForTest(id, ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(id, ExecutionAffinity::Worker);
     const int busyBeforeCount = guiUndoStack->count();
     const int busyBeforeIndex = guiUndoStack->index();
     const int busyBeforeUpdates = updateSpy.count();
@@ -11046,7 +11335,7 @@ void TestMainWindow::testG4GuiNodeDragPersistsAndUndoRedoReopensExactPosition() 
     engine.stop();
     QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 2000);
     for (const QString& id : {defaultNode.id, movable.id, target.id})
-        engine.setModuleExecutionAffinityForTest(id, ExecutionAffinity::Gui);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(id, ExecutionAffinity::Gui);
 
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
@@ -11327,6 +11616,7 @@ void TestMainWindow::testG4MixedParameterUndoSerializationRoundTrips() {
     untouched.params.insert(QStringLiteral("explicitNullSeed"), QJsonValue(QJsonValue::Null));
     project->addModule(untouched);
     QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
 
     FlowCanvas* canvas = window.findChild<FlowCanvas*>(QStringLiteral("FlowCanvas"));
     ModuleInspectorPanel* inspector = window.findChild<ModuleInspectorPanel*>();
@@ -11690,7 +11980,7 @@ void TestMainWindow::testG4GuiInspectorEditsRejectedWhileEngineBusy() {
     QVERIFY(probe.initialize());
     RunEngine& engine = RunEngine::instance();
     engine.addModule(&probe);
-    engine.setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
     struct ReleaseOnExit {
         QSemaphore& semaphore;
         ~ReleaseOnExit() {
@@ -11923,6 +12213,7 @@ void TestMainWindow::testAgentDataSourceDisplayAndVisibilityTools() {
     window.show();
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project);
+    QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
 
     DataSource source;
     source.id = QStringLiteral("agent_view_source");
@@ -12860,6 +13151,7 @@ void TestMainWindow::testProjectOperationSlotsEnforceProductPermissionsAndRechec
     const QString denialPath = denialDir.filePath(QStringLiteral("denied-operation-baseline.dproj"));
     Project* denialProject = manager.newProject();
     QVERIFY(denialProject);
+    QTRY_VERIFY_WITH_TIMEOUT(denialProject->layoutInitialized(), 1000);
     denialProject->setName(QStringLiteral("denied-operation-baseline"));
     denialProject->setFilePath(denialPath);
     QVERIFY(manager.saveProject(denialPath));
@@ -13016,7 +13308,14 @@ void TestMainWindow::testProjectOperationSlotsEnforceProductPermissionsAndRechec
     QVERIFY(permissionWarningShown);
     QVERIFY(!saveAsShown);
     QCOMPARE(manager.currentProject(), original);
-    QCOMPARE(original->toJson(), before);
+    const QJsonObject currentProject = original->toJson();
+    if (currentProject != before) {
+        qWarning().noquote() << "Permission test project before:"
+                             << QJsonDocument(before).toJson(QJsonDocument::Compact);
+        qWarning().noquote() << "Permission test project after:"
+                             << QJsonDocument(currentProject).toJson(QJsonDocument::Compact);
+    }
+    QCOMPARE(currentProject, before);
     QVERIFY(original->isModified());
     QVERIFY(original->filePath().isEmpty());
 }
@@ -13295,6 +13594,7 @@ void TestMainWindow::testSavePermissionIsRecheckedAfterSaveAsDialog() {
     ProjectManager& manager = ProjectManager::instance();
     Project* original = manager.newProject();
     QVERIFY(original);
+    QTRY_VERIFY_WITH_TIMEOUT(original->layoutInitialized(), 1000);
     original->setName(QStringLiteral("save-dialog-revocation"));
     const QJsonObject before = original->toJson();
     bool chooserShown = false;
@@ -13346,6 +13646,7 @@ void TestMainWindow::testSavePermissionIsRecheckedAfterSaveAsDialog() {
     const QString directSavePath = dir.filePath(QStringLiteral("direct-save-must-not-exist.dproj"));
     Project* directSaveProject = manager.newProject();
     QVERIFY(directSaveProject);
+    QTRY_VERIFY_WITH_TIMEOUT(directSaveProject->layoutInitialized(), 1000);
     directSaveProject->setName(QStringLiteral("direct-save-dialog-revocation"));
     const QJsonObject directSaveBefore = directSaveProject->toJson();
     chooserShown = false;
@@ -14417,7 +14718,7 @@ void TestMainWindow::testG4NewImageImportIsRejectedWhileBusyThenCommitsAfterStop
     QVERIFY(probe.initialize());
     RunEngine& engine = RunEngine::instance();
     engine.addModule(&probe);
-    engine.setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
     struct ReleaseOnExit {
         QSemaphore& semaphore;
         ~ReleaseOnExit() {
@@ -14534,7 +14835,7 @@ void TestMainWindow::testG4AdvancedConfigKeepsDraftWhenEngineBecomesBusy() {
     QVERIFY(probe.initialize());
     RunEngine& engine = RunEngine::instance();
     engine.addModule(&probe);
-    engine.setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
     struct ReleaseOnExit {
         QSemaphore& semaphore;
         ~ReleaseOnExit() {
@@ -14697,7 +14998,7 @@ void TestMainWindow::testG4AdvancedConfigDefersCalibrationPointClearUntilAccepte
         };
         return probe;
     }));
-    engine.setModuleExecutionAffinityForTest(calibration.id, ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(calibration.id, ExecutionAffinity::Worker);
     struct ReleaseOnExit {
         QSemaphore& semaphore;
         ~ReleaseOnExit() {
@@ -14778,7 +15079,7 @@ void TestMainWindow::testG4BusyRejectsNonPendingMeasurementPickOnly() {
     QVERIFY(probe.initialize());
     RunEngine& engine = RunEngine::instance();
     engine.addModule(&probe);
-    engine.setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
     struct ReleaseOnExit {
         QSemaphore& semaphore;
         ~ReleaseOnExit() {
@@ -14813,15 +15114,21 @@ void TestMainWindow::testG4BusyTreeDropRejectsAndPlaceholderCleanupIsViewOnly() 
     window.show();
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project);
-    for (const auto& spec : {qMakePair(QStringLiteral("tree_first"), QStringLiteral("GrabImage")),
-                             qMakePair(QStringLiteral("tree_second"), QStringLiteral("Blob"))}) {
+    for (const QString& id : {QStringLiteral("tree_first"), QStringLiteral("tree_second")}) {
         ModuleInstance instance;
-        instance.id = spec.first;
-        instance.moduleId = spec.second;
-        instance.name = spec.first;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("OutputProbe");
+        instance.name = id;
         project->addModule(instance);
     }
+    MainWindowOutputProbeModule firstRuntime(QStringLiteral("tree_first"));
+    MainWindowOutputProbeModule secondRuntime(QStringLiteral("tree_second"));
+    QVERIFY(firstRuntime.initialize());
+    QVERIFY(secondRuntime.initialize());
+    window.registerFlowModule(QStringLiteral("tree_first"), &firstRuntime);
+    window.registerFlowModule(QStringLiteral("tree_second"), &secondRuntime);
     QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
     auto* controller = window.findChild<ProcessTreeController*>();
     auto* undoStack = window.findChild<QUndoStack*>();
     QVERIFY(controller);
@@ -14844,7 +15151,7 @@ void TestMainWindow::testG4BusyTreeDropRejectsAndPlaceholderCleanupIsViewOnly() 
     QVERIFY(probe.initialize());
     RunEngine& engine = RunEngine::instance();
     engine.addModule(&probe);
-    engine.setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
     struct ReleaseOnExit {
         QSemaphore& semaphore;
         ~ReleaseOnExit() {
@@ -14876,30 +15183,11 @@ void TestMainWindow::testG4BusyTreeDropRejectsAndPlaceholderCleanupIsViewOnly() 
     QCOMPARE(undoStack->index(), undoIndexBefore);
     FlowCanvas* canvas = window.findChild<FlowCanvas*>();
     QVERIFY(canvas);
-    FlowNodeItem* sourceNode = canvas->nodeItem(orderBefore.at(0));
-    FlowNodeItem* targetNode = canvas->nodeItem(orderBefore.at(1));
-    QVERIFY(sourceNode);
-    QVERIFY(targetNode);
-    QVERIFY(!sourceNode->outputPortPos(0).isNull());
-    QVERIFY(!targetNode->inputPortPos(0).isNull());
-    const auto sendMouse = [canvas](QEvent::Type type, const QPoint& local, Qt::MouseButton button,
-                                    Qt::MouseButtons buttons) {
-        QWidget* viewport = canvas->viewport();
-        QMouseEvent event(type, QPointF(local), QPointF(viewport->mapTo(viewport->window(), local)),
-                          QPointF(viewport->mapToGlobal(local)), button, buttons, Qt::NoModifier);
-        QApplication::sendEvent(viewport, &event);
-    };
-    const auto dragConnection = [&]() {
-        const QPoint start = canvas->mapFromScene(sourceNode->mapToScene(sourceNode->outputPortPos(0)));
-        const QPoint finish = canvas->mapFromScene(targetNode->mapToScene(targetNode->inputPortPos(0)));
-        sendMouse(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
-        sendMouse(QEvent::MouseMove, finish, Qt::NoButton, Qt::LeftButton);
-        sendMouse(QEvent::MouseButtonRelease, finish, Qt::LeftButton, Qt::NoButton);
-        QCoreApplication::processEvents();
-    };
-    dragConnection();
+    emit canvas->connectionRequest(orderBefore.at(0), QStringLiteral("image"), orderBefore.at(1),
+                                   QStringLiteral("image"));
     QVERIFY(project->connections().isEmpty());
     QCOMPARE(project->toJson(), projectBefore);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("运行或维护期间不能")));
 
     auto* placeholder = new QTreeWidgetItem();
     const QString pendingId = QStringLiteral("pending_drop_placeholder");
@@ -14924,13 +15212,15 @@ void TestMainWindow::testG4BusyTreeDropRejectsAndPlaceholderCleanupIsViewOnly() 
 
     release.release();
     QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 3000);
     engine.clearModules();
     probe.shutdown();
-    QVERIFY(performTreeDrag(tree->topLevelItem(0), belowSecond));
+    QVERIFY(window.reorderProcessTreeForTest(0, 2).isEmpty());
     QCOMPARE(tree->topLevelItem(0)->data(0, Qt::UserRole + 1).toString(), orderBefore.at(1));
     QCOMPARE(tree->topLevelItem(1)->data(0, Qt::UserRole + 1).toString(), orderBefore.at(0));
     QCOMPARE(project->modules().at(0).id, orderBefore.at(1));
-    dragConnection();
+    emit canvas->connectionRequest(orderBefore.at(1), QStringLiteral("image"), orderBefore.at(0),
+                                   QStringLiteral("image"));
     QCOMPARE(project->connections().size(), 1);
 }
 
@@ -14986,7 +15276,7 @@ void TestMainWindow::testG4PendingToolboxCallbacksRejectStaleDrops() {
     QVERIFY(probe.initialize());
     RunEngine& engine = RunEngine::instance();
     engine.addModule(&probe);
-    engine.setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
     struct ReleaseOnExit {
         QSemaphore& semaphore;
         ~ReleaseOnExit() {
@@ -15331,7 +15621,7 @@ void TestMainWindow::testG3VisibleGuiHeartbeatWhileWaitingForRun() {
     module->initialize();
     engine.addModule(module);
     QString runId;
-    engine.setModuleExecutionAffinityForTest(module->instanceName(), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(module->instanceName(), ExecutionAffinity::Worker);
     QVERIFY(engine.runOnceAsync(&runId));
     AgentActor actor;
     QCOMPARE(actor.executeTool("wait_for_run", QJsonObject{{"runId", runId}}).value("status").toString(),
@@ -16310,7 +16600,7 @@ void TestMainWindow::testQuickModeRunsCurrentFlowOnce() {
     engine.clearModules();
 }
 
-void TestMainWindow::testOpenProjectMenuActionLoadsAndSyncsProject() {
+void TestMainWindow::testOpenProjectPathLoadsAndSyncsProject() {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString path = dir.filePath(QStringLiteral("menu-open-project.dproj"));
@@ -16331,17 +16621,7 @@ void TestMainWindow::testOpenProjectMenuActionLoadsAndSyncsProject() {
     QVERIFY(previousProject != nullptr);
     previousProject->setModified(false);
 
-    bool chooserShown = false;
-    QTimer::singleShot(0, &window, [&]() {
-        auto* chooser = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
-        if (!chooser)
-            return;
-        chooserShown = true;
-        chooser->selectFile(path);
-        QVERIFY(QMetaObject::invokeMethod(chooser, "accept", Qt::DirectConnection));
-    });
-    QVERIFY(QMetaObject::invokeMethod(&window, "onOpenProject", Qt::DirectConnection));
-    QVERIFY(chooserShown);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onOpenProjectPath", Qt::DirectConnection, Q_ARG(QString, path)));
 
     Project* openedProject = manager.currentProject();
     QVERIFY(openedProject != nullptr);
@@ -17825,6 +18105,7 @@ void TestMainWindow::testG4AgentCanPauseGuiCycleBetweenIterations() {
     window.registerFlowModule(second.id, secondModule);
 
     QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
     auto* inspector = window.findChild<ModuleInspectorPanel*>();
     QVERIFY(inspector);
     QVERIFY(QMetaObject::invokeMethod(window.findChild<FlowCanvas*>(), "nodeSelected", Qt::DirectConnection,
@@ -18236,6 +18517,7 @@ void TestMainWindow::testG4AgentStopClearsDeferredMeasurementPick() {
     module->setParam(QStringLiteral("awaitUserPick"), true);
     window.registerFlowModule(instance.id, module);
     QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
 
     AgentActor* actor = AgentController::instance().actor();
     QVERIFY(actor);
@@ -18424,8 +18706,9 @@ void TestMainWindow::testRunOnceKeepsGuiResponsiveWhileWorkerModuleRuns() {
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
     QTRY_COMPARE_WITH_TIMEOUT(syncJobSpy.count(), 1, 5000);
     QVERIFY(waitForServiceIdle());
-    RunEngine::instance().setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
-    RunEngine::instance().setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
+    RunEngineTestAccess(RunEngine::instance()).setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
+    RunEngineTestAccess(RunEngine::instance())
+        .setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
 
     QSignalSpy jobSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
     QTest::mouseClick(runButton, Qt::LeftButton);
@@ -18793,7 +19076,8 @@ void TestMainWindow::testStepRunExecutesExactlyOneModulePerClick() {
     QVERIFY(waitForServiceIdle());
     QCOMPARE(executionLog.size(), 1);
 
-    RunEngine::instance().setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
+    RunEngineTestAccess(RunEngine::instance())
+        .setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
     QTest::mouseClick(stepButton, Qt::LeftButton);
     QVERIFY2(blockingProbe->entered.tryAcquire(1, 5000), "second step must run the blocking module");
     QCOMPARE(FlowExecutionService::instance().state(), FlowExecutionService::State::Running);
@@ -18926,8 +19210,9 @@ void TestMainWindow::testCloseDeferredUntilRunningJobFinishes() {
     QTRY_COMPARE_WITH_TIMEOUT(syncJobSpy.count(), 1, 5000);
     QVERIFY(waitForServiceIdle());
     guiJobFinishedSpy.clear();
-    RunEngine::instance().setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
-    RunEngine::instance().setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
+    RunEngineTestAccess(RunEngine::instance()).setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
+    RunEngineTestAccess(RunEngine::instance())
+        .setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
     QTest::mouseClick(runButton, Qt::LeftButton);
     QVERIFY2(blockingProbe->entered.tryAcquire(1, 5000), "worker module must enter execution");
     QVERIFY(window.isVisible());
@@ -18991,8 +19276,9 @@ void TestMainWindow::testStartHandshakeTimeoutLeavesNoPendingJob() {
 
     // 确定性延迟 worker 的启动协议：握手等待上限被压到 100ms，不能被 5s 阻塞。
     QSemaphore neverReleased;
-    FlowExecutionService::instance().setStartHandshakeHookForTest(
-        [&neverReleased]() { neverReleased.tryAcquire(1, 400); });
+    FlowExecutionServiceTestAccess(FlowExecutionService::instance()).setStartHandshakeHookForTest([&neverReleased]() {
+        neverReleased.tryAcquire(1, 400);
+    });
 
     QElapsedTimer startTimer;
     startTimer.start();
@@ -19005,7 +19291,7 @@ void TestMainWindow::testStartHandshakeTimeoutLeavesNoPendingJob() {
              "timed-out handshake must not leave a running job");
     QTRY_COMPARE(runButton->text(), QStringLiteral("运行"));
 
-    FlowExecutionService::instance().clearStartHandshakeHookForTest();
+    FlowExecutionServiceTestAccess(FlowExecutionService::instance()).clearStartHandshakeHookForTest();
     QVERIFY(waitForServiceIdle());
     // 握手超时不得留下“将执行的 pending”：启动即被停止，模块一次都没执行。
     QVERIFY2(executionLog.isEmpty(), "timed-out start must not execute modules");
@@ -19031,7 +19317,8 @@ void TestMainWindow::testAgentRunTimeoutDoesNotBlockGuiThread() {
     MainWindowSlowCancelProbe probe(250);
     QVERIFY(probe.initialize());
     RunEngine::instance().addModule(&probe);
-    RunEngine::instance().setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
+    RunEngineTestAccess(RunEngine::instance())
+        .setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
 
     bool runFlowReturned = false;
     bool queuedTaskRanDuringWait = false;
@@ -19110,8 +19397,9 @@ void TestMainWindow::testServiceUserPauseUpdatesRunControls() {
     // （断言会阻塞 GUI 线程等待 entered，gui 亲和模块的 BlockingQueuedConnection 无法被服务）。
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
     QVERIFY(waitForServiceIdle());
-    RunEngine::instance().setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
-    RunEngine::instance().setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
+    RunEngineTestAccess(RunEngine::instance()).setModuleExecutionAffinityForTest(cheap.id, ExecutionAffinity::Worker);
+    RunEngineTestAccess(RunEngine::instance())
+        .setModuleExecutionAffinityForTest(blocking.id, ExecutionAffinity::Worker);
 
     QSignalSpy jobSpy(&FlowExecutionService::instance(), &FlowExecutionService::jobFinished);
     QTest::mouseClick(runButton, Qt::LeftButton);
@@ -19267,6 +19555,132 @@ void TestMainWindow::testProjectSwitchDropsLateDisplayFrames() {
     QCOMPARE(imageWidget->measurementPoints().size(), pointsAfterSwitch);
     QCOMPARE(imageWidget->measurementLines().size(), linesAfterSwitch);
     QVERIFY(imageWidget->measurementLines().isEmpty());
+}
+
+void TestMainWindow::testDelayedQueueThroughRealMainWindowConnections() {
+    // T2.6 行为契约（裁定②，仅测试）：连续 5 个短 job、GUI 队列延迟，全部经过
+    // MainWindow 真实的 jobStateChanged / displayFrameReady / jobFinished 连接
+    //（MainWindow.cpp:772 / :755 / :799，Auto→Queued）后，最终只渲染最后一个 job
+    // 的帧；旧 (jobId,runId) 迟到通知不得改写画面。
+    // 本用例刻意走真实 MainWindow 连接，与 test_flowidentitycontract.cpp 中
+    // 复刻槽逻辑的 A/B 契约用例互补，避免「仅复制槽逻辑后自证」。
+    FlowExecutionService& service = FlowExecutionService::instance();
+    RunEngine& engine = RunEngine::instance();
+
+    MainWindow window;
+    window.resize(900, 640);
+    window.show();
+    QCoreApplication::processEvents();
+    QVERIFY2(engine.isDisplayCaptureEnabled(), "a visible MainWindow must enable display capture");
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project != nullptr);
+
+    engine.clearModules();
+    engine.clearOutputs();
+    engine.clearDisplayJobId();
+    engine.clearLatestDisplayFrames();
+    MainWindowOutputProbeModule module(QStringLiteral("t26_real_probe"));
+    module.distinctImages = true; // 五次任务输出不同像素，才能识别「画面来自最后任务」
+    QVERIFY(module.initialize());
+    engine.addModule(&module);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("t26_real_probe"),
+                                                                  ExecutionAffinity::Worker);
+    engine.setDisplayCaptureEnabled(true);
+
+    ViewportWidget* viewport = window.findChild<ViewportWidget*>();
+    QVERIFY(viewport != nullptr);
+    HImageWidget* imageWidget = viewport->imageWidget();
+    QVERIFY(imageWidget != nullptr);
+    // 用 QSignalSpy 观测真实渲染事件：身份校验一旦失效，迟到通知会经
+    // schedule → renderDisplayFrame → DisplayManager::displayImage 再次 emit。
+    DisplayManager* displayManager = window.findChild<DisplayManager*>();
+    QVERIFY(displayManager != nullptr);
+    QSignalSpy displayedSpy(displayManager, &DisplayManager::dataDisplayed);
+    QVERIFY2(displayedSpy.isValid(), "DisplayManager::dataDisplayed must be observable");
+
+    // 额外 Queued 计数：MainWindow 的 jobFinished 槽先连接，故本槽在其之后执行；
+    // 计数 == 5 意味着 5 个 jobFinished 槽（含 forceFlush / finishRunUi）均已完成。
+    QObject ctx;
+    int finishedNotifies = 0;
+    const QMetaObject::Connection extra = connect(
+        &service, &FlowExecutionService::jobFinished, &ctx,
+        [&](FlowExecutionService::JobType, bool) { ++finishedNotifies; }, Qt::QueuedConnection);
+
+    T26RealConnectionGuard guard;
+    guard.service = &service;
+    guard.extra = extra;
+
+    const quint64 base = service.currentJobSerial();
+    // 连续 5 个短 job：此阶段刻意不泵 GUI 事件，让所有 queued 通知堆积。
+    // 顺序由「启动前等真实 Idle + 启动后等 lastFinishedJobSerial」构造，无固定 sleep。
+    for (int i = 1; i <= 5; ++i) {
+        QElapsedTimer idleWait;
+        idleWait.start();
+        while ((service.isActive() || service.state() != FlowExecutionService::State::Idle) &&
+               idleWait.elapsed() < 30000) {
+            QThread::yieldCurrentThread();
+        }
+        QVERIFY2(!service.isActive() && service.state() == FlowExecutionService::State::Idle,
+                 "each short job must start from a real Idle");
+        QVERIFY(service.startSingle());
+        const quint64 expect = base + static_cast<quint64>(i);
+        QElapsedTimer doneWait;
+        doneWait.start();
+        while (service.lastFinishedJobSerial() < expect && doneWait.elapsed() < 30000) {
+            QThread::yieldCurrentThread();
+        }
+        QCOMPARE(service.lastFinishedJobSerial(), expect);
+    }
+
+    // 一次性消费全部堆积的最终通知（确定性：等计数到 5 且画面已渲染）。
+    QElapsedTimer drain;
+    drain.start();
+    while ((finishedNotifies < 5 || !imageWidget->hasImage()) && drain.elapsed() < 30000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        QTest::qWait(1);
+    }
+    QCOMPARE(finishedNotifies, 5);
+    QVERIFY2(imageWidget->hasImage(), "the last job's frame must reach the real MainWindow renderer");
+
+    const quint64 lastSerial = service.lastFinishedJobSerial();
+    const DisplayFrame slot = engine.latestDisplayFrame(QStringLiteral("main"));
+    QCOMPARE(slot.jobId, lastSerial); // 帧身份 == 最后任务
+    QVERIFY(!slot.runId.isEmpty());
+    QVERIFY(!slot.image.isNull());
+
+    // 五次输出必须各不相同，且实际画面 / 槽位帧来自最后一个 job（P2 判别性）。
+    QVERIFY2(module.runs.load(std::memory_order_acquire) >= 5,
+             "five short jobs must each produce a distinct pixel marker");
+    const QVariantMap lastSnapshot = slot.moduleDataSnapshot.value(module.instanceName());
+    const int lastK = lastSnapshot.value(QStringLiteral("t26_k")).toInt();
+    QVERIFY2(lastK > 1, "the displayed frame must carry the LAST job's distinct marker");
+    const QRgb firstPixel = QColor(20, 40, 60).rgb();
+    const QRgb expectedPixel = QColor(qMin(255, 20 * lastK), 40, 60).rgb();
+    QVERIFY2(expectedPixel != firstPixel, "the last job's pixel must differ from the first job's");
+    QCOMPARE(slot.image.pixel(0, 0), expectedPixel);
+    QCOMPARE(imageWidget->currentImage().pixel(0, 0), expectedPixel);
+    QVERIFY2(imageWidget->currentImage().pixel(0, 0) != firstPixel,
+             "the visible image must come from the LAST job, not job #1");
+
+    // 旧 job 的迟到通知：身份不匹配 → 既不得改写画面，也不得产生额外渲染事件。
+    const QImage rendered = imageWidget->currentImage();
+    const int displayedBeforeLate = displayedSpy.count();
+    const quint64 staleJobId = base + 1; // 第 1 个 job
+    const QString staleRunId = QStringLiteral("t26-stale-run");
+    engine.displayFrameReady(QStringLiteral("main"), staleJobId, staleRunId);
+    for (int pass = 0; pass < 10; ++pass) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    }
+    QTest::qWait(ImageRefreshCoalescer::ThrottleMs * 2);
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    QCOMPARE(displayedSpy.count(), displayedBeforeLate); // 迟到通知不得触发任何额外渲染
+    QCOMPARE(imageWidget->currentImage(), rendered);
+    QCOMPARE(imageWidget->currentImage().pixel(0, 0), expectedPixel);
+    QVERIFY2(imageWidget->currentImage().pixel(0, 0) != firstPixel,
+             "a late old-job notice must not roll the visible image back to job #1");
+
+    guard.finish();
 }
 
 void TestMainWindow::testDisplayCaptureFollowsVisibility() {
@@ -19759,5 +20173,559 @@ void TestMainWindow::testInspectorRuntimeStateSyncsToRunEngine() {
     QVERIFY(noteEdit != nullptr);
 }
 
-QTEST_MAIN(TestMainWindow)
+// ========== B3：流程树排序、拖动与安全撤销 ==========
+
+void TestMainWindow::testDisplayOrderReorderKeepsEngineDataOrder() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+
+    // 合法控制反例：Project 顺序 [A,B,C]，数据边 A.image→B.image，控制边 C.next→A.control。
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("A"), QStringLiteral("B")));
+    fixture.project->addConnection(
+        b3ControlEdge(QStringLiteral("C"), QStringLiteral("next"), QStringLiteral("A"), QStringLiteral("control")));
+    QCoreApplication::processEvents();
+
+    // 用真实 FlowGraphAnalyzer 生成计划，不手工伪造展示顺序。
+    const FlowGraphCatalog catalog = fixture.coordinator->catalogForProject(*fixture.project);
+    QString normalizeError;
+    const QList<ModuleConnection> normalized =
+        FlowGraphAnalyzer::normalizeConnections(catalog, fixture.project->connections(), &normalizeError);
+    QVERIFY2(normalizeError.isEmpty(), qPrintable(normalizeError));
+    const FlowOrderPlan computed = FlowGraphAnalyzer::analyze(catalog, normalized, projectModuleIds(*fixture.project));
+    QVERIFY(computed.valid);
+    QCOMPARE(computed.dataOrder, QStringList({QStringLiteral("A"), QStringLiteral("C"), QStringLiteral("B")}));
+    QCOMPARE(computed.displayOrder, QStringList({QStringLiteral("C"), QStringLiteral("A"), QStringLiteral("B")}));
+
+    const FlowOrderPlan coordinatorPlan = fixture.coordinator->planForProject(*fixture.project);
+    QVERIFY(coordinatorPlan.valid);
+    QCOMPARE(coordinatorPlan.dataOrder, computed.dataOrder);
+    QCOMPARE(coordinatorPlan.displayOrder, computed.displayOrder);
+
+    // 流程树按 displayOrder 展示，引擎仍由 Project 模块顺序 + 连接得到 dataOrder。
+    fixture.treeController->applyExecutionOrder(computed.displayOrder);
+    QCOMPARE(treeInstanceIds(*fixture.tree), computed.displayOrder);
+    QVERIFY(syncEngine(window, fixture.treeController));
+    QCOMPARE(RunEngineTestAccess(RunEngine::instance()).executionOrderForTest(), computed.dataOrder);
+
+    // 再次改变树顺序并重新同步：引擎顺序不随展示顺序漂移（P0-3）。
+    fixture.treeController->applyExecutionOrder(
+        QStringList({QStringLiteral("B"), QStringLiteral("C"), QStringLiteral("A")}));
+    QCOMPARE(treeInstanceIds(*fixture.tree),
+             QStringList({QStringLiteral("B"), QStringLiteral("C"), QStringLiteral("A")}));
+    QVERIFY(syncEngine(window, fixture.treeController));
+    QCOMPARE(RunEngineTestAccess(RunEngine::instance()).executionOrderForTest(), computed.dataOrder);
+
+    // 真实 GUI 拖动分发在含控制边的图上被拒绝，同样不改变工程数据与引擎顺序。
+    const QString fingerprintBefore = fixture.project->structureFingerprint();
+    const QString rejection = window.reorderProcessTreeForTest(1, 0);
+    QVERIFY(!rejection.isEmpty());
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintBefore);
+    QVERIFY(syncEngine(window, fixture.treeController));
+    QCOMPARE(RunEngineTestAccess(RunEngine::instance()).executionOrderForTest(), computed.dataOrder);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testUnconnectedListReorderCommitsOneTransaction() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+
+    const QStringList initial({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")});
+    QCOMPARE(projectModuleIds(*fixture.project), initial);
+    QCOMPARE(treeInstanceIds(*fixture.tree), initial);
+    const QString fingerprintBefore = fixture.project->structureFingerprint();
+    const int undoCountBefore = fixture.undoStack->count();
+    QCOMPARE(undoCountBefore, 0);
+
+    QSignalSpy structureSpy(fixture.project, &Project::structureChanged);
+    QVERIFY(structureSpy.isValid());
+    QSignalSpy failedSpy(&window, &MainWindow::structureEditFailed);
+    QVERIFY(failedSpy.isValid());
+
+    // 无连接顺序列表的跨层拖动：A 从第 0 行移动到第 2 行之前（B 之后、C 之前）。
+    const QString error = window.reorderProcessTreeForTest(0, 2);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(window.lastStructureError().isEmpty());
+    QCOMPARE(failedSpy.count(), 0);
+
+    // K4：一次拖动（仅 redo 提交路径）只产生一次 structureChanged、一条撤销记录。
+    QCOMPARE(structureSpy.count(), 1);
+    QCOMPARE(static_cast<int>(structureSpy.takeFirst().at(0).value<StructureEditOrigin>()),
+             static_cast<int>(StructureEditOrigin::Gui));
+    QCOMPARE(fixture.undoStack->count(), undoCountBefore + 1);
+
+    const QStringList reordered({QStringLiteral("B"), QStringLiteral("A"), QStringLiteral("C")});
+    QCOMPARE(projectModuleIds(*fixture.project), reordered);
+    QVERIFY(fixture.project->connections().isEmpty());
+    QCOMPARE(treeInstanceIds(*fixture.tree), reordered);
+    QVERIFY(fixture.project->structureFingerprint() != fingerprintBefore);
+
+    // 一次 Undo 恢复拖拽前快照；一次 Redo 回到拖拽后。undo/redo 各自发一次结构信号。
+    fixture.undoStack->undo();
+    QCOMPARE(projectModuleIds(*fixture.project), initial);
+    QCOMPARE(treeInstanceIds(*fixture.tree), initial);
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintBefore);
+    QCOMPARE(structureSpy.count(), 1);
+
+    fixture.undoStack->redo();
+    QCOMPARE(projectModuleIds(*fixture.project), reordered);
+    QCOMPARE(treeInstanceIds(*fixture.tree), reordered);
+    QCOMPARE(structureSpy.count(), 2);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testConsecutiveReordersUndoRedoRestoreSnapshots() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+
+    const QStringList initial({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")});
+    const QStringList c1({QStringLiteral("B"), QStringLiteral("A"), QStringLiteral("C")});
+    const QStringList c2({QStringLiteral("C"), QStringLiteral("B"), QStringLiteral("A")});
+
+    const QString firstError = window.reorderProcessTreeForTest(0, 2);
+    QVERIFY2(firstError.isEmpty(), qPrintable(firstError));
+    QCOMPARE(projectModuleIds(*fixture.project), c1);
+    const QString secondError = window.reorderProcessTreeForTest(2, 0);
+    QVERIFY2(secondError.isEmpty(), qPrintable(secondError));
+    QCOMPARE(projectModuleIds(*fixture.project), c2);
+    QCOMPARE(fixture.undoStack->count(), 2);
+
+    fixture.undoStack->undo();
+    QCOMPARE(projectModuleIds(*fixture.project), c1);
+    fixture.undoStack->undo();
+    QCOMPARE(projectModuleIds(*fixture.project), initial);
+    fixture.undoStack->redo();
+    QCOMPARE(projectModuleIds(*fixture.project), c1);
+    fixture.undoStack->redo();
+    QCOMPARE(projectModuleIds(*fixture.project), c2);
+    QCOMPARE(treeInstanceIds(*fixture.tree), c2);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testConnectedLinearChainReorderReconnectsAndSyncsEngine() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("A"), QStringLiteral("B")));
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("B"), QStringLiteral("C")));
+    QCoreApplication::processEvents();
+
+    const QStringList beforeConnections = connectionKeys(fixture.project->connections());
+    const QString fingerprintBefore = fixture.project->structureFingerprint();
+    QSignalSpy structureSpy(fixture.project, &Project::structureChanged);
+    QVERIFY(structureSpy.isValid());
+
+    // C 从链尾拖到链首：同一端口模式按新顺序重连。
+    const QString error = window.reorderProcessTreeForTest(2, 0);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(structureSpy.count(), 1);
+    QCOMPARE(fixture.undoStack->count(), 1);
+    QVERIFY(fixture.project->structureFingerprint() != fingerprintBefore);
+
+    const QStringList reordered({QStringLiteral("C"), QStringLiteral("A"), QStringLiteral("B")});
+    QCOMPARE(projectModuleIds(*fixture.project), reordered);
+    QCOMPARE(connectionKeys(fixture.project->connections()),
+             QStringList({QStringLiteral("C.image>A.image:data"), QStringLiteral("A.image>B.image:data")}));
+    QCOMPARE(treeInstanceIds(*fixture.tree), reordered);
+    QCOMPARE(RunEngineTestAccess(RunEngine::instance()).executionOrderForTest(), reordered);
+
+    fixture.undoStack->undo();
+    QCOMPARE(projectModuleIds(*fixture.project),
+             QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}));
+    QCOMPARE(connectionKeys(fixture.project->connections()), beforeConnections);
+    QCOMPARE(treeInstanceIds(*fixture.tree),
+             QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}));
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintBefore);
+    QCOMPARE(RunEngineTestAccess(RunEngine::instance()).executionOrderForTest(),
+             QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}));
+
+    fixture.undoStack->redo();
+    QCOMPARE(projectModuleIds(*fixture.project), reordered);
+    QCOMPARE(RunEngineTestAccess(RunEngine::instance()).executionOrderForTest(), reordered);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testSameLayerIndependentNodesReorder() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+    // A→B 使 A(rank 0)、B(rank 1)，孤立节点 C 保持 rank 0：A/C 同层且相互独立。
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("A"), QStringLiteral("B")));
+    QCoreApplication::processEvents();
+
+    const FlowOrderPlan plan = fixture.coordinator->planForProject(*fixture.project);
+    QVERIFY(plan.valid);
+    QCOMPARE(plan.displayOrder, QStringList({QStringLiteral("A"), QStringLiteral("C"), QStringLiteral("B")}));
+    QCOMPARE(plan.rankOf(QStringLiteral("A")), 0);
+    QCOMPARE(plan.rankOf(QStringLiteral("C")), 0);
+    QCOMPARE(plan.rankOf(QStringLiteral("B")), 1);
+
+    fixture.treeController->applyExecutionOrder(plan.displayOrder);
+    QCOMPARE(treeInstanceIds(*fixture.tree), plan.displayOrder);
+
+    const QStringList beforeConnections = connectionKeys(fixture.project->connections());
+    const QString fingerprintBefore = fixture.project->structureFingerprint();
+    QSignalSpy structureSpy(fixture.project, &Project::structureChanged);
+    QVERIFY(structureSpy.isValid());
+
+    // 同层换序：C 移到 A 之前，只调整模块顺序，连接声明保持不变。
+    const QString error = window.reorderProcessTreeForTest(1, 0);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(structureSpy.count(), 1);
+    QCOMPARE(fixture.undoStack->count(), 1);
+    QCOMPARE(projectModuleIds(*fixture.project),
+             QStringList({QStringLiteral("C"), QStringLiteral("A"), QStringLiteral("B")}));
+    QCOMPARE(connectionKeys(fixture.project->connections()), beforeConnections);
+    QCOMPARE(treeInstanceIds(*fixture.tree),
+             QStringList({QStringLiteral("C"), QStringLiteral("A"), QStringLiteral("B")}));
+    QVERIFY(fixture.project->structureFingerprint() != fingerprintBefore);
+
+    fixture.undoStack->undo();
+    QCOMPARE(projectModuleIds(*fixture.project),
+             QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}));
+    QCOMPARE(connectionKeys(fixture.project->connections()), beforeConnections);
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintBefore);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testControlBranchReorderRejectedWithoutMutation() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(setupB3Fixture(window, QStringList({QStringLiteral("IF"), QStringLiteral("T"), QStringLiteral("F")}),
+                           &fixture));
+    auto* branchModule = new MainWindowBranchProbeModule(QStringLiteral("IF"));
+    branchModule->initialize();
+    window.registerFlowModule(QStringLiteral("IF"), branchModule);
+    fixture.runtimeModules.append(branchModule);
+
+    fixture.project->addConnection(
+        b3ControlEdge(QStringLiteral("IF"), QStringLiteral("true"), QStringLiteral("T"), QStringLiteral("control")));
+    fixture.project->addConnection(
+        b3ControlEdge(QStringLiteral("IF"), QStringLiteral("false"), QStringLiteral("F"), QStringLiteral("control")));
+    QCoreApplication::processEvents();
+
+    const FlowOrderPlan plan = fixture.coordinator->planForProject(*fixture.project);
+    QVERIFY(plan.valid);
+    QCOMPARE(plan.displayOrder, QStringList({QStringLiteral("IF"), QStringLiteral("T"), QStringLiteral("F")}));
+    fixture.treeController->applyExecutionOrder(plan.displayOrder);
+    QCOMPARE(treeInstanceIds(*fixture.tree), plan.displayOrder);
+
+    const QString fingerprintBefore = fixture.project->structureFingerprint();
+    const QStringList beforeConnections = connectionKeys(fixture.project->connections());
+    const bool modifiedBefore = fixture.project->isModified();
+    const int undoCountBefore = fixture.undoStack->count();
+    QSignalSpy structureSpy(fixture.project, &Project::structureChanged);
+    QVERIFY(structureSpy.isValid());
+
+    // 拖动分支目标节点：分支顺序由控制边决定，直接拒绝并复位。
+    const QString error = window.reorderProcessTreeForTest(1, 3);
+    QVERIFY(!error.isEmpty());
+    QCOMPARE(structureSpy.count(), 0);
+    QCOMPARE(fixture.undoStack->count(), undoCountBefore);
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintBefore);
+    QCOMPARE(connectionKeys(fixture.project->connections()), beforeConnections);
+    QCOMPARE(projectModuleIds(*fixture.project),
+             QStringList({QStringLiteral("IF"), QStringLiteral("T"), QStringLiteral("F")}));
+    QCOMPARE(fixture.project->isModified(), modifiedBefore);
+    QCOMPARE(treeInstanceIds(*fixture.tree), plan.displayOrder);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testBranchMergeCrossLayerReorderRejected() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+    // 汇合图：A/B 都连到 C，重连候选必须拒绝。
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("A"), QStringLiteral("C")));
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("B"), QStringLiteral("C")));
+    QCoreApplication::processEvents();
+
+    const FlowOrderPlan plan = fixture.coordinator->planForProject(*fixture.project);
+    QVERIFY(plan.valid);
+    QCOMPARE(plan.displayOrder, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}));
+    fixture.treeController->applyExecutionOrder(plan.displayOrder);
+
+    const QString fingerprintBefore = fixture.project->structureFingerprint();
+    const QStringList beforeConnections = connectionKeys(fixture.project->connections());
+    const bool modifiedBefore = fixture.project->isModified();
+    const int undoCountBefore = fixture.undoStack->count();
+    QSignalSpy structureSpy(fixture.project, &Project::structureChanged);
+    QVERIFY(structureSpy.isValid());
+
+    const QString error = window.reorderProcessTreeForTest(2, 0);
+    QVERIFY(!error.isEmpty());
+    QVERIFY(!window.lastStructureError().isEmpty());
+    QCOMPARE(structureSpy.count(), 0);
+    QCOMPARE(fixture.undoStack->count(), undoCountBefore);
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintBefore);
+    QCOMPARE(connectionKeys(fixture.project->connections()), beforeConnections);
+    QCOMPARE(projectModuleIds(*fixture.project),
+             QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}));
+    QCOMPARE(fixture.project->isModified(), modifiedBefore);
+    QCOMPARE(treeInstanceIds(*fixture.tree), plan.displayOrder);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testConnectionDeclarationOrderChangesFingerprint() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+
+    QList<ModuleConnection> connections;
+    connections.append(b3DataEdge(QStringLiteral("A"), QStringLiteral("B")));
+    connections.append(b3DataEdge(QStringLiteral("B"), QStringLiteral("C")));
+    const QString original = Project::structureFingerprintFor(projectModuleIds(*fixture.project), connections);
+
+    QList<ModuleConnection> rotated = connections;
+    rotated.move(0, rotated.size() - 1);
+    const QString rotatedFingerprint = Project::structureFingerprintFor(projectModuleIds(*fixture.project), rotated);
+    QVERIFY(original != rotatedFingerprint);
+    QVERIFY(original != Project::structureFingerprintFor(
+                            QStringList({QStringLiteral("C"), QStringLiteral("B"), QStringLiteral("A")}), connections));
+    QCOMPARE(original, Project::structureFingerprintFor(projectModuleIds(*fixture.project), connections));
+
+    // setConnections 是静默注入：只改变连接声明顺序，不发出任何结构信号。
+    QSignalSpy structureSpy(fixture.project, &Project::structureChanged);
+    QVERIFY(structureSpy.isValid());
+    fixture.project->setConnections(rotated);
+    QCOMPARE(connectionKeys(fixture.project->connections()), connectionKeys(rotated));
+    QCOMPARE(fixture.project->structureFingerprint(), rotatedFingerprint);
+    QCOMPARE(structureSpy.count(), 0);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testInvalidatedReorderCommandLeavesNoResidue() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("A"), QStringLiteral("B")));
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("B"), QStringLiteral("C")));
+    QCoreApplication::processEvents();
+
+    const QStringList idsBefore = projectModuleIds(*fixture.project);
+    const QStringList connectionsBefore = connectionKeys(fixture.project->connections());
+    const int undoCountBefore = fixture.undoStack->count();
+    QSignalSpy structureSpy(fixture.project, &Project::structureChanged);
+    QVERIFY(structureSpy.isValid());
+
+    // 注入：候选构造完成后、push 之前静默旋转连接声明顺序，使首次 redo 的指纹校验失败。
+    window.setInvalidateNextReorderForTest(true);
+    const QString error = window.reorderProcessTreeForTest(2, 0);
+    QVERIFY(!error.isEmpty());
+    QVERIFY(!window.lastStructureError().isEmpty());
+    QCOMPARE(structureSpy.count(), 0);
+    QCOMPARE(projectModuleIds(*fixture.project), idsBefore);
+    QVERIFY(fixture.undoStack->count() <= undoCountBefore + 1);
+
+    QStringList rotatedExpected = connectionsBefore;
+    rotatedExpected.move(0, rotatedExpected.size() - 1);
+    QCOMPARE(connectionKeys(fixture.project->connections()), rotatedExpected);
+
+    // 失效命令不可执行：Undo/Redo 都是空操作，且不得留下可撤销记录。
+    const QString fingerprintAfterFailure = fixture.project->structureFingerprint();
+    fixture.undoStack->undo();
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintAfterFailure);
+    fixture.undoStack->redo();
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintAfterFailure);
+    QCOMPARE(fixture.undoStack->count(), undoCountBefore);
+    QCOMPARE(projectModuleIds(*fixture.project), idsBefore);
+
+    // 注入只作用一次；后续拖动仍可正常提交一次事务。
+    QSignalSpy secondSpy(fixture.project, &Project::structureChanged);
+    QVERIFY(secondSpy.isValid());
+    const QString secondError = window.reorderProcessTreeForTest(2, 0);
+    QVERIFY2(secondError.isEmpty(), qPrintable(secondError));
+    QCOMPARE(secondSpy.count(), 1);
+    QCOMPARE(fixture.undoStack->count(), undoCountBefore + 1);
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testAgentOriginInvalidatesGuiReorderUndo() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(
+        setupB3Fixture(window, QStringList({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}), &fixture));
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("A"), QStringLiteral("B")));
+    fixture.project->addConnection(b3DataEdge(QStringLiteral("B"), QStringLiteral("C")));
+    QCoreApplication::processEvents();
+
+    const QString firstError = window.reorderProcessTreeForTest(2, 0);
+    QVERIFY2(firstError.isEmpty(), qPrintable(firstError));
+    QCOMPARE(fixture.undoStack->count(), 1);
+
+    // 模拟 Agent 结构编辑：新增节点并以 Agent 来源发出 structureChanged。
+    ModuleInstance agentNode;
+    agentNode.id = QStringLiteral("D");
+    agentNode.moduleId = QStringLiteral("OutputProbe");
+    agentNode.name = QStringLiteral("D");
+    fixture.project->addModule(agentNode);
+    auto* agentModule = new MainWindowOutputProbeModule(QStringLiteral("D"));
+    agentModule->initialize();
+    window.registerFlowModule(QStringLiteral("D"), agentModule);
+    fixture.runtimeModules.append(agentModule);
+    fixture.project->notifyStructureChange(StructureEditOrigin::Agent);
+    QCoreApplication::processEvents();
+
+    const QString fingerprintAfterAgent = fixture.project->structureFingerprint();
+    const QStringList idsAfterAgent = projectModuleIds(*fixture.project);
+    QVERIFY(idsAfterAgent.contains(QStringLiteral("D")));
+
+    // GUI Undo 必须跳过已失效的重排命令，不能覆盖 Agent 的新增节点。
+    fixture.undoStack->undo();
+    QCOMPARE(projectModuleIds(*fixture.project), idsAfterAgent);
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintAfterAgent);
+    QVERIFY(fixture.project->moduleById(QStringLiteral("D")).has_value());
+
+    // Redo 同样不得复活失效命令。
+    fixture.undoStack->redo();
+    QCOMPARE(projectModuleIds(*fixture.project), idsAfterAgent);
+    QCOMPARE(fixture.project->structureFingerprint(), fingerprintAfterAgent);
+
+    RunEngine::instance().clearModules();
+}
+
+// ========== B5.1：控制流视觉语义断言 ==========
+
+void TestMainWindow::testControlFlowBranchLabelsProjectedToCanvas() {
+    MainWindow window;
+    B3Fixture fixture;
+    QVERIFY(setupB3Fixture(window, QStringList({QStringLiteral("IF"), QStringLiteral("T"), QStringLiteral("F")}),
+                           &fixture));
+    auto* branchModule = new MainWindowBranchProbeModule(QStringLiteral("IF"));
+    branchModule->initialize();
+    window.registerFlowModule(QStringLiteral("IF"), branchModule);
+    fixture.runtimeModules.append(branchModule);
+    fixture.project->addConnection(
+        b3ControlEdge(QStringLiteral("IF"), QStringLiteral("true"), QStringLiteral("T"), QStringLiteral("control")));
+    fixture.project->addConnection(
+        b3ControlEdge(QStringLiteral("IF"), QStringLiteral("false"), QStringLiteral("F"), QStringLiteral("control")));
+    QCoreApplication::processEvents();
+
+    // 用真实协调器计划（FlowGraphAnalyzer）驱动，不手工伪造 branchLabel / lane。
+    const FlowOrderPlan plan = fixture.coordinator->planForProject(*fixture.project);
+    QVERIFY2(plan.valid, qPrintable(plan.error));
+    QVERIFY(plan.laneOf(QStringLiteral("T")) != plan.laneOf(QStringLiteral("F")));
+
+    FlowCanvas canvas;
+    canvas.loadFromProject(fixture.project);
+    FlowNodeItem* conditionNode = canvas.nodeItem(QStringLiteral("IF"));
+    FlowNodeItem* trueNode = canvas.nodeItem(QStringLiteral("T"));
+    FlowNodeItem* falseNode = canvas.nodeItem(QStringLiteral("F"));
+    QVERIFY(conditionNode != nullptr);
+    QVERIFY(trueNode != nullptr);
+    QVERIFY(falseNode != nullptr);
+
+    // 投射前记录无徽标节点的 shape()/boundingRect()，作为命中区域不变的基准。
+    const QRectF plainShape = conditionNode->shape().boundingRect();
+    const QRectF plainBounding = conditionNode->boundingRect();
+
+    canvas.applyControlFlowVisuals(plan);
+    QCOMPARE(trueNode->branchLabel(), QStringLiteral("true"));
+    QCOMPARE(falseNode->branchLabel(), QStringLiteral("false"));
+    QVERIFY(conditionNode->branchLabel().isEmpty());
+
+    // 徽标扩大绘制包围盒，但 shape() 恒为原始矩形：鼠标命中/选择/碰撞不受影响。
+    QVERIFY(trueNode->boundingRect().height() > plainBounding.height());
+    QVERIFY(trueNode->shape().boundingRect() == plainShape);
+    QVERIFY(falseNode->shape().boundingRect() == plainShape);
+
+    // Full 布局后同 rank 的 true/false 分支按 lane 分开，画布上不重叠。
+    canvas.applyExecutionLayout(plan, FlowCanvas::LayoutMode::Full);
+    QVERIFY(!trueNode->sceneBoundingRect().intersects(falseNode->sceneBoundingRect()));
+    QVERIFY(conditionNode->branchLabel().isEmpty());
+
+    RunEngine::instance().clearModules();
+}
+
+void TestMainWindow::testControlFlowLoopBackEdgeMarkersUseCanonicalKey() {
+    FlowGraphCatalog catalog;
+    catalog.modules.append(b5ControlModule(QStringLiteral("loop"), ControlFlowType::Loop,
+                                           QStringList({QStringLiteral("body"), QStringLiteral("done")})));
+    catalog.modules.append(b5GraphModule(QStringLiteral("body")));
+    catalog.modules.append(b5GraphModule(QStringLiteral("after")));
+
+    const QList<ModuleConnection> edges{b3ControlEdge(QStringLiteral("loop"), QStringLiteral("body"),
+                                                      QStringLiteral("body"), QStringLiteral("control")),
+                                        b3ControlEdge(QStringLiteral("body"), QStringLiteral("next"),
+                                                      QStringLiteral("loop"), QStringLiteral("control")),
+                                        b3ControlEdge(QStringLiteral("loop"), QStringLiteral("done"),
+                                                      QStringLiteral("after"), QStringLiteral("control"))};
+    const QStringList order{QStringLiteral("loop"), QStringLiteral("body"), QStringLiteral("after")};
+    QString error;
+    const FlowOrderPlan plan = b5Analyze(catalog, edges, order, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY2(plan.valid, qPrintable(plan.error));
+    QCOMPARE(plan.loopBackEdges.size(), 1);
+
+    // B5.1：画布 public static 规范键必须与 core 的 loopBackEdges 逐字节一致，
+    // 且 4 参数重载委托给同一实现，禁止第二套拼接规则。
+    const ModuleConnection& backEdge = edges.at(1);
+    QVERIFY(plan.loopBackEdges.contains(FlowCanvas::connectionKey(backEdge)));
+    QCOMPARE(FlowCanvas::connectionKey(backEdge),
+             FlowCanvas::connectionKey(backEdge.fromModuleId, backEdge.fromPort, backEdge.toModuleId, backEdge.toPort));
+    QVERIFY(FlowCanvas::connectionKey(backEdge) != FlowCanvas::connectionKey(edges.at(0)));
+
+    Project project;
+    for (const QString& id : order) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = QStringLiteral("OutputProbe");
+        instance.name = id;
+        project.addModule(instance);
+    }
+    for (const ModuleConnection& edge : edges)
+        project.addConnection(edge);
+
+    FlowCanvas canvas;
+    canvas.loadFromProject(&project);
+    QCOMPARE(canvas.m_connections.size(), 3);
+    FlowConnectionItem* backItem = nullptr;
+    for (FlowConnectionItem* item : canvas.m_connections) {
+        if (item && item->fromNodeId() == QStringLiteral("body") && item->toNodeId() == QStringLiteral("loop"))
+            backItem = item;
+    }
+    QVERIFY(backItem != nullptr);
+    QVERIFY(!backItem->isLoopBackEdge());
+
+    canvas.applyControlFlowVisuals(plan);
+    QVERIFY(backItem->isLoopBackEdge());
+    QVERIFY(backItem->strokeStyle() == Qt::DashLine);
+    QCOMPARE(FlowConnectionItem::loopBackMarkerText(), QStringLiteral("LOOP"));
+    for (FlowConnectionItem* item : canvas.m_connections) {
+        if (item && item != backItem)
+            QVERIFY(!item->isLoopBackEdge());
+    }
+
+    // 无效计划必须清空所有视觉状态，绝不保留上一份计划的分支/回边标记。
+    FlowOrderPlan invalidPlan;
+    canvas.applyControlFlowVisuals(invalidPlan);
+    QVERIFY(!backItem->isLoopBackEdge());
+    QVERIFY(canvas.nodeItem(QStringLiteral("body"))->branchLabel().isEmpty());
+}
+
+int main(int argc, char* argv[]) {
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+    QApplication app(argc, argv);
+    TestMainWindow testObject;
+    return QTest::qExec(&testObject, argc, argv);
+}
 #include "test_mainwindow.moc"

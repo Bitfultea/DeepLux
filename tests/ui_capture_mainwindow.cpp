@@ -8,6 +8,7 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QStringList>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
@@ -18,6 +19,7 @@
 #include <QWidget>
 #include <QtTest/QTest>
 #include <core/common/UserManager.h>
+#include <core/engine/FlowGraphAnalyzer.h>
 #include <core/engine/RunEngine.h>
 #include <core/manager/PluginManager.h>
 #include <core/manager/ProjectManager.h>
@@ -650,6 +652,276 @@ bool loadAndRunFindCircleAcceptance(const QString& repoRoot, const QString& plug
     return true;
 }
 
+bool captureFitCirclePickAcceptance(const QString& repoRoot, const QString& pluginTempRoot, DeepLux::MainWindow& window,
+                                    const QDir& outputDir) {
+    if (!installPluginForCapture(repoRoot, pluginTempRoot, "MeasurementInput",
+                                 "src/plugins/geometry/MeasurementInput/metadata.json",
+                                 QStringLiteral(UICAP_PLUGIN_MeasurementInput)) ||
+        !installPluginForCapture(repoRoot, pluginTempRoot, "FitCircle", "src/plugins/geometry/FitCircle/metadata.json",
+                                 QStringLiteral(UICAP_PLUGIN_FitCircle))) {
+        return false;
+    }
+
+    DeepLux::PluginManager::instance().addPluginPath(pluginTempRoot);
+    DeepLux::PluginManager::instance().initialize();
+    if (!DeepLux::PluginManager::instance().loadPlugin("MeasurementInput") ||
+        !DeepLux::PluginManager::instance().loadPlugin("FitCircle")) {
+        return false;
+    }
+
+    DeepLux::Project* project = DeepLux::ProjectManager::instance().newProject();
+    if (!project)
+        return false;
+    DeepLux::ModuleInstance circle;
+    circle.id = QStringLiteral("capture_fitcircle");
+    circle.moduleId = QStringLiteral("FitCircle");
+    circle.name = QStringLiteral("圆拟合");
+    circle.posX = 120;
+    circle.posY = 120;
+    project->addModule(circle);
+
+    window.resize(1280, 800);
+    window.show();
+    QCoreApplication::processEvents();
+    DeepLux::ViewportWidget* viewport = window.findChild<DeepLux::ViewportWidget*>();
+    DeepLux::HImageWidget* imageWidget = viewport ? viewport->imageWidget() : nullptr;
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    if (!viewport || !imageWidget || !runButton)
+        return false;
+
+    QImage image(640, 480, QImage::Format_RGB32);
+    image.fill(QColor("#111827"));
+    viewport->displayImage(image);
+    QCoreApplication::processEvents();
+
+    DeepLux::RunResult result;
+    bool finished = false;
+    const QMetaObject::Connection connection =
+        QObject::connect(&DeepLux::RunEngine::instance(), &DeepLux::RunEngine::runFinished, &window,
+                         [&](const DeepLux::RunResult& runResult) {
+                             result = runResult;
+                             finished = true;
+                         });
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QCoreApplication::processEvents();
+
+    for (const QPointF& point : {QPointF(420.0, 240.0), QPointF(320.0, 340.0), QPointF(220.0, 240.0)}) {
+        const QPoint widgetPoint = imageWidget->imageToWidget(point).toPoint();
+        if (!imageWidget->rect().contains(widgetPoint)) {
+            QObject::disconnect(connection);
+            return false;
+        }
+        QTest::mouseClick(imageWidget, Qt::LeftButton, Qt::NoModifier, widgetPoint);
+        QCoreApplication::processEvents();
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    while (!finished && timer.elapsed() < 5000) {
+        QCoreApplication::processEvents();
+        QTest::qWait(10);
+    }
+    QObject::disconnect(connection);
+    const DeepLux::ImageData fitOutput = DeepLux::RunEngine::instance().moduleOutput(circle.id);
+    if (!finished || !result.success || qAbs(fitOutput.data("circle_radius").toDouble() - 100.0) >= 1.0) {
+        return false;
+    }
+
+    QTest::qWait(100);
+    const QImage rendered = imageWidget->grab().toImage().convertToFormat(QImage::Format_RGB32);
+    int cyanPixels = 0;
+    int orangePixels = 0;
+    for (int y = 0; y < rendered.height(); ++y) {
+        for (int x = 0; x < rendered.width(); ++x) {
+            const QColor color = rendered.pixelColor(x, y);
+            cyanPixels += color.red() < 100 && color.green() > 120 && color.blue() > 140;
+            orangePixels += color.red() > 180 && color.green() > 80 && color.green() < 190 && color.blue() < 100;
+        }
+    }
+    window.selectModuleForCapture(circle.id);
+    QCoreApplication::processEvents();
+    return cyanPixels > 100 && orangePixels > 20 &&
+           captureWindow(window, QSize(1280, 800), outputDir.filePath("fitcircle_pick_result.png"));
+}
+
+// B5.1：截图门禁的控制流计划由真实 FlowGraphAnalyzer 生成（不是手写展示顺序），
+// 显式投射到画布后再做语义断言，避免依赖 30ms 合并布局计时器的异步时序。
+// catalog 的控制输出端口契约与 tests/test_flowgraphanalyzer.cpp 的 controlModule 一致。
+DeepLux::FlowOrderPlan controlFlowPlanForCapture(const DeepLux::Project& project) {
+    DeepLux::FlowGraphCatalog catalog;
+    for (const DeepLux::ModuleInstance& instance : project.modules()) {
+        DeepLux::FlowGraphModule module;
+        module.instanceId = instance.id;
+        module.flowType = instance.id == QStringLiteral("capture_condition") ? DeepLux::ControlFlowType::Conditional
+                                                                             : DeepLux::ControlFlowType::Sequential;
+        if (module.flowType == DeepLux::ControlFlowType::Conditional) {
+            for (const QString& portId : {QStringLiteral("true"), QStringLiteral("false")}) {
+                DeepLux::PortSpec port;
+                port.id = portId;
+                port.displayName = portId;
+                port.type = DeepLux::DataType::Boolean;
+                port.control = true;
+                module.outputPorts.append(port);
+            }
+        }
+        catalog.modules.append(module);
+    }
+    QStringList order;
+    for (const DeepLux::ModuleInstance& instance : project.modules())
+        order.append(instance.id);
+    QString error;
+    const QList<DeepLux::ModuleConnection> normalized =
+        DeepLux::FlowGraphAnalyzer::normalizeConnections(catalog, project.connections(), &error);
+    if (!error.isEmpty()) {
+        qWarning("control flow normalization failed for capture: %s", qPrintable(error));
+        return DeepLux::FlowOrderPlan();
+    }
+    return DeepLux::FlowGraphAnalyzer::analyze(catalog, normalized, order);
+}
+
+bool captureControlFlowAcceptance(const QString& repoRoot, const QString& pluginTempRoot, DeepLux::MainWindow& window,
+                                  const QDir& outputDir) {
+    if (!installPluginForCapture(repoRoot, pluginTempRoot, "If", "src/plugins/logic/If/metadata.json",
+                                 QStringLiteral(UICAP_PLUGIN_If)) ||
+        !installPluginForCapture(repoRoot, pluginTempRoot, "Delay", "src/plugins/logic/Delay/metadata.json",
+                                 QStringLiteral(UICAP_PLUGIN_Delay))) {
+        return false;
+    }
+
+    DeepLux::PluginManager::instance().addPluginPath(pluginTempRoot);
+    DeepLux::PluginManager::instance().initialize();
+    if (!DeepLux::PluginManager::instance().loadPlugin(QStringLiteral("条件分支")) ||
+        !DeepLux::PluginManager::instance().loadPlugin(QStringLiteral("延时"))) {
+        return false;
+    }
+
+    DeepLux::Project* project = DeepLux::ProjectManager::instance().newProject();
+    if (!project)
+        return false;
+
+    DeepLux::ModuleInstance condition;
+    condition.id = QStringLiteral("capture_condition");
+    condition.moduleId = QStringLiteral("条件分支");
+    condition.name = QStringLiteral("条件");
+    condition.posX = -180;
+    condition.posY = -60;
+    condition.params["conditionType"] = QStringLiteral("Expression");
+    condition.params["expressionString"] = QStringLiteral("true");
+    project->addModule(condition);
+
+    DeepLux::ModuleInstance trueBranch;
+    trueBranch.id = QStringLiteral("capture_true");
+    trueBranch.moduleId = QStringLiteral("延时");
+    trueBranch.name = QStringLiteral("真分支");
+    trueBranch.posX = 120;
+    trueBranch.posY = -150;
+    trueBranch.params["delayMs"] = 1;
+    project->addModule(trueBranch);
+
+    DeepLux::ModuleInstance falseBranch = trueBranch;
+    falseBranch.id = QStringLiteral("capture_false");
+    falseBranch.name = QStringLiteral("假分支");
+    falseBranch.posY = 50;
+    project->addModule(falseBranch);
+
+    DeepLux::ModuleConnection trueConnection;
+    trueConnection.fromModuleId = condition.id;
+    trueConnection.toModuleId = trueBranch.id;
+    trueConnection.fromPort = QStringLiteral("true");
+    trueConnection.toPort = QStringLiteral("control");
+    trueConnection.edgeType = QStringLiteral("control");
+    project->addConnection(trueConnection);
+    DeepLux::ModuleConnection falseConnection = trueConnection;
+    falseConnection.fromPort = QStringLiteral("false");
+    falseConnection.toModuleId = falseBranch.id;
+    project->addConnection(falseConnection);
+
+    window.resize(1280, 800);
+    window.show();
+    QCoreApplication::processEvents();
+    QTabWidget* processTabs = tabsByName(window, "ProcessTabWidget");
+    DeepLux::FlowCanvas* canvas = window.findChild<DeepLux::FlowCanvas*>();
+    QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
+    if (!processTabs || !canvas || !runButton)
+        return false;
+    if (!clickTabChecked(processTabs, QStringLiteral("画布"), "controlflow-canvas"))
+        return false;
+
+    DeepLux::RunResult result;
+    bool finished = false;
+    const QMetaObject::Connection connection =
+        QObject::connect(&DeepLux::RunEngine::instance(), &DeepLux::RunEngine::runFinished, &window,
+                         [&](const DeepLux::RunResult& runResult) {
+                             result = runResult;
+                             finished = true;
+                         });
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QElapsedTimer timer;
+    timer.start();
+    while (!finished && timer.elapsed() < 5000) {
+        QCoreApplication::processEvents();
+        QTest::qWait(10);
+    }
+    QObject::disconnect(connection);
+
+    QTreeWidget* tree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
+    DeepLux::FlowNodeItem* conditionNode = canvas->nodeItem(condition.id);
+    DeepLux::FlowNodeItem* trueNode = canvas->nodeItem(trueBranch.id);
+    DeepLux::FlowNodeItem* falseNode = canvas->nodeItem(falseBranch.id);
+    if (!finished || !result.success || !tree || !conditionNode || !trueNode || !falseNode ||
+        conditionNode->executionStatus() != QStringLiteral("success") ||
+        trueNode->executionStatus() != QStringLiteral("success") ||
+        falseNode->executionStatus() != QStringLiteral("skipped")) {
+        return false;
+    }
+
+    // B5.1：语义断言覆盖新增视觉——If true/false 分支标签、分支 lane 唯一、画布不重叠。
+    // 计划由真实 FlowGraphAnalyzer 生成；显式投射是确定性屏障，不使用 sleep 构造顺序。
+    const DeepLux::FlowOrderPlan controlPlan = controlFlowPlanForCapture(*project);
+    if (!controlPlan.valid) {
+        qWarning("B5.1 control flow plan invalid for capture: %s", qPrintable(controlPlan.error));
+        return false;
+    }
+    canvas->applyControlFlowVisuals(controlPlan);
+    if (trueNode->branchLabel() != QStringLiteral("true") || falseNode->branchLabel() != QStringLiteral("false") ||
+        !conditionNode->branchLabel().isEmpty()) {
+        qWarning("B5.1 branch labels were not projected onto canvas nodes");
+        return false;
+    }
+    if (controlPlan.laneOf(trueBranch.id) == controlPlan.laneOf(falseBranch.id)) {
+        qWarning("B5.1 if branches share the same lane");
+        return false;
+    }
+    if (trueNode->sceneBoundingRect().intersects(falseNode->sceneBoundingRect())) {
+        qWarning("B5.1 if branch nodes overlap on canvas");
+        return false;
+    }
+
+    QSplitter* topSplitter = window.findChild<QSplitter*>(QStringLiteral("RightTopSplitter"));
+    const QList<int> savedSizes = topSplitter ? topSplitter->sizes() : QList<int>();
+    if (topSplitter) {
+        topSplitter->setSizes({600, 600, 0});
+    }
+    canvas->fitInView(canvas->scene()->itemsBoundingRect().adjusted(-30, -30, 30, 30), Qt::KeepAspectRatio);
+    QCoreApplication::processEvents();
+    const QImage rendered = canvas->viewport()->grab().toImage().convertToFormat(QImage::Format_RGB32);
+    int greenPixels = 0;
+    int grayPixels = 0;
+    for (int y = 0; y < rendered.height(); ++y) {
+        for (int x = 0; x < rendered.width(); ++x) {
+            const QColor color = rendered.pixelColor(x, y);
+            greenPixels += color.green() > 170 && color.red() < 80 && color.blue() < 130;
+            grayPixels +=
+                qAbs(color.red() - 156) < 10 && qAbs(color.green() - 163) < 10 && qAbs(color.blue() - 175) < 10;
+        }
+    }
+    const bool accepted = greenPixels > 5 && grayPixels > 5 &&
+                          captureWindow(window, QSize(1280, 800), outputDir.filePath("controlflow_canvas_result.png"));
+    if (topSplitter) {
+        topSplitter->setSizes(savedSizes);
+    }
+    return accepted;
+}
 } // namespace
 
 int main(int argc, char** argv) {

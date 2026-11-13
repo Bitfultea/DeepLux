@@ -6,11 +6,60 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
+  docs-status:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test status policy
+        run: python3 scripts/test_check_docs_status.py
+      - name: Check live status snapshot
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            python3 scripts/check_docs_status.py --base "$BASE_SHA"
+          else
+            python3 scripts/check_docs_status.py
+          fi
+
+  plugin-affinity-lint:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install workflow test dependency
+        run: python3 -m pip install --disable-pip-version-check PyYAML==6.0.3
+      - name: Test plugin-sync isolation configuration
+        run: python3 scripts/test_ci_plugin_isolation.py
+      - name: Test plugin-sync verifier
+        run: python3 scripts/test_ci_plugin_sync_verifier.py
+      - name: Test plugin isolation configuration
+        run: python3 scripts/test_ci_plugin_isolation_config.py
+      - name: Test ABI export scanner
+        run: python3 scripts/test_plugin_abi_exports.py
+      - name: Test affinity scanner
+        run: python3 scripts/test_plugin_affinity.py
+      - name: Test CI report gates
+        run: |
+          python3 scripts/test_check_ctest_skips.py
+          python3 scripts/test_classify_tsan.py
+      - name: Check worker plugin execution paths
+        run: python3 scripts/check_plugin_affinity.py
+
   ubuntu-qt5:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Qt5 dependencies
         run: |
@@ -25,11 +74,24 @@ jobs:
       - name: Build
         run: cmake --build build -j$(nproc)
 
+      - name: Verify plugin ABI exports
+        run: python3 scripts/check_plugin_abi_exports.py --build-dir build
+
+      - name: Isolate plugin data directory
+        run: python3 scripts/configure_ci_plugin_isolation.py --name qt5
+
       - name: Sync plugins
         run: cmake --build build --target sync-plugins
 
+      - name: Verify isolated plugin sync
+        run: python3 scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
+
       - name: Test
-        run: ctest --test-dir build --output-on-failure --timeout 30
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Check skipped tests
+        if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
+        run: python3 scripts/check_ctest_skips.py build/Testing/Temporary/LastTest.log
 
   # 阶5: 格式门禁只检查 PR/提交变更的 C++ 文件（受控列表），避免整仓大规模改动。
   # 本轮修改文件已全部格式化，故对变更文件的检查可通过；不静默（set -e）。
@@ -39,6 +101,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Install clang-format
         run: sudo apt-get update && sudo apt-get install -y clang-format
       - name: clang-format check (changed files only)
@@ -52,7 +115,8 @@ jobs:
               BASE="$(git rev-list --max-parents=0 HEAD)"
             fi
           fi
-          FILES=$(git diff --name-only "$BASE" HEAD -- 'src/*.cpp' 'src/*.h' 'tests/*.cpp' 'tests/*.h' \
+          git diff --check "$BASE" HEAD
+          FILES=$(git diff --name-only --diff-filter=ACMRT "$BASE" HEAD -- 'src/*.cpp' 'src/*.h' 'tests/*.cpp' 'tests/*.h' \
                     'src/**/*.cpp' 'src/**/*.h' 'tests/**/*.cpp' 'tests/**/*.h')
           if [ -z "$FILES" ]; then echo "No C++ files changed; format gate passes."; exit 0; fi
           echo "Checking changed files:"; echo "$FILES"
@@ -63,6 +127,11 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
       - name: Install Qt6 (+SerialPort)
         uses: jurplel/install-qt-action@v4
         with:
@@ -75,15 +144,194 @@ jobs:
         run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DBUILD_TESTS=OFF -DDEEPLUX_NATIVE_SAM=OFF
       - name: Build
         run: cmake --build build --config Release -j
+      - name: Verify plugin ABI exports
+        run: python scripts/check_plugin_abi_exports.py --build-dir build --check-release-no-test-hooks
+      - name: Isolate plugin data directory
+        run: python scripts/configure_ci_plugin_isolation.py --name windows
       - name: Sync plugins
         run: cmake --build build --config Release --target sync-plugins
+      - name: Verify isolated plugin sync
+        run: python scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
       - name: Deploy runtime and run CLI smoke test
         run: cmake --build build --config Release --target deploy-windows
+
+  windows-msvc-ctest:
+    # Collect hosted Windows results first; promote to blocking after a stable green run.
+    continue-on-error: true
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install Qt6 (+SerialPort)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: 6.8.3
+          arch: win64_msvc2022_64
+          modules: qtserialport
+      - name: Install vcpkg deps
+        run: vcpkg install eigen3 opencv4 --triplet x64-windows
+      - name: Add vcpkg runtime DLLs to PATH
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_PATH -Value 'C:\vcpkg\installed\x64-windows\bin'
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DBUILD_TESTS=ON -DDEEPLUX_NATIVE_SAM=OFF -DDEEPLUX_TEST_QPA_PLATFORM=offscreen
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Isolate plugin data directory
+        run: python scripts/configure_ci_plugin_isolation.py --name windows-ctest
+      - name: Sync plugins
+        run: cmake --build build --config Release --target sync-plugins
+      - name: Verify isolated plugin sync
+        run: python scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Check skipped tests
+        if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
+        run: python scripts/check_ctest_skips.py build/Testing/Temporary/LastTest.log
+      - name: Upload Windows CTest diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ctest-diagnostics
+          path: build/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+
+  linux-asan-ubsan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Qt5 and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qtbase5-dev qt5-qmake qttools5-dev libqt5serialport5-dev \
+            libeigen3-dev libopencv-dev libssl-dev pkg-config cmake build-essential xvfb
+      - name: Configure with ASan and UBSan
+        run: >-
+          cmake -S . -B build -DBUILD_TESTS=ON -DDEEPLUX_NATIVE_SAM=OFF
+          -DUSE_QT6=OFF
+          -DDEEPLUX_TEST_QPA_PLATFORM=xcb
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build
+        run: cmake --build build -j2
+      - name: Isolate plugin data directory
+        run: python3 scripts/configure_ci_plugin_isolation.py --name asan
+      - name: Sync plugins
+        run: cmake --build build --target sync-plugins
+      - name: Verify isolated plugin sync
+        run: python3 scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: xcb
+          # Level 1 still flags ODR globals with mismatched sizes. Level 2 also flags
+          # identical Qt staticMetaObject globals from test-linked and copied plugin DSOs.
+          ASAN_OPTIONS: detect_leaks=1:detect_odr_violation=1
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/lsan-system-cache.supp:print_suppressions=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ctest --test-dir build --output-on-failure -j2
+      - name: Check skipped tests
+        if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
+        run: python3 scripts/check_ctest_skips.py build/Testing/Temporary/LastTest.log
+      - name: Upload ASan/UBSan CTest diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-asan-ubsan-ctest-diagnostics
+          path: build/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+
+  linux-tsan:
+    continue-on-error: true
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Qt5 and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qtbase5-dev qt5-qmake qttools5-dev libqt5serialport5-dev \
+            libeigen3-dev libopencv-dev libssl-dev pkg-config cmake build-essential
+      - name: Configure with TSan
+        id: configure-tsan
+        run: >-
+          cmake -S . -B build -DBUILD_TESTS=ON -DDEEPLUX_NATIVE_SAM=OFF
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+          -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"
+      - name: Build
+        id: build-tsan
+        run: cmake --build build -j2
+      - name: Isolate plugin data directory
+        run: python3 scripts/configure_ci_plugin_isolation.py --name tsan
+      - name: Sync plugins
+        id: sync-tsan
+        run: cmake --build build --target sync-plugins
+      - name: Verify isolated plugin sync
+        run: python3 scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
+      - name: Run concurrency suites and preserve raw output
+        id: run-tsan
+        run: |
+          set -o pipefail
+          setarch "$(uname -m)" -R ctest --test-dir build --output-on-failure -j2 \
+            -R '^(test_runengine|test_executionaffinity|test_flowexecutionservice|test_workerpluginconsistency)$' \
+            2>&1 | tee build/tsan-ctest.log
+      - name: Check skipped tests
+        if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
+        run: python3 scripts/check_ctest_skips.py build/Testing/Temporary/LastTest.log
+      - name: Group direct QtCore shared-library summaries for manual review
+        if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
+        run: python3 scripts/classify_tsan.py build/Testing/Temporary/LastTest.log
+      - name: Upload TSan evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tsan-report
+          path: |
+            build/tsan-ctest.log
+            build/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+      - name: Summarize non-blocking TSan result
+        if: always()
+        env:
+          CONFIGURE_OUTCOME: ${{ steps.configure-tsan.outcome }}
+          BUILD_OUTCOME: ${{ steps.build-tsan.outcome }}
+          SYNC_OUTCOME: ${{ steps.sync-tsan.outcome }}
+          TEST_OUTCOME: ${{ steps.run-tsan.outcome }}
+        run: |
+          {
+            echo '### TSan diagnostic job (non-blocking)'
+            echo
+            echo 'This job is diagnostic only; a successful workflow result is not a TSan pass claim.'
+            echo
+            echo '| Stage | Outcome |'
+            echo '| --- | --- |'
+            echo "| Configure | ${CONFIGURE_OUTCOME:-not run} |"
+            echo "| Build | ${BUILD_OUTCOME:-not run} |"
+            echo "| Plugin sync | ${SYNC_OUTCOME:-not run} |"
+            echo "| CTest | ${TEST_OUTCOME:-not run} |"
+            echo
+            echo 'Inspect the uploaded raw report; uninstrumented-library classification is informational only.'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   ubuntu-qt6:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Qt6 dependencies
         run: |
@@ -98,8 +346,21 @@ jobs:
       - name: Build
         run: cmake --build build -j$(nproc)
 
+      - name: Verify plugin ABI exports
+        run: python3 scripts/check_plugin_abi_exports.py --build-dir build
+
+      - name: Isolate plugin data directory
+        run: python3 scripts/configure_ci_plugin_isolation.py --name qt6
+
       - name: Sync plugins
         run: cmake --build build --target sync-plugins
 
+      - name: Verify isolated plugin sync
+        run: python3 scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
+
       - name: Test
-        run: xvfb-run -a ctest --test-dir build --output-on-failure --timeout 30
+        run: xvfb-run -a ctest --test-dir build --output-on-failure
+
+      - name: Check skipped tests
+        if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
+        run: python3 scripts/check_ctest_skips.py build/Testing/Temporary/LastTest.log

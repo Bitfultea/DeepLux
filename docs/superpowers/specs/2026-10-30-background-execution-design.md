@@ -1,7 +1,7 @@
 # 后台执行线程与 UI 刷新收口设计
 
 - 日期：2026-10-30
-- 状态：设计已确认，待编写实施计划
+- 状态：已实施（B0–B10）；实现现状与验收边界见 [架构说明](../../architecture.md) 和 [验收报告](../../reports/background-execution-acceptance.md)。本设计保留原始目标与历史修订，未覆盖的验收项不得据此视为通过。
 - 关联代码：`src/core/engine/RunEngine.*`、`src/ui/views/MainWindow.cpp`、`src/core/agent/AgentActor.cpp`、`src/ui/display/DisplayManager.*`、`src/ui/widgets/ViewportWidget.*`、`src/ui/widgets/HImageWidget.*`
 - 参考实现：`/home/charles/Data/Repo/DeepLux_original`（C# / WPF）
 
@@ -52,7 +52,7 @@
 - `ModuleBase::isThreadSafe()` 仅表示并行批次可并发，不等于可离开 GUI 线程。
 - `GrabImagePlugin` 构造时创建 `QTimer`，`process()` 内启动/停止；相机路径调用 `processEvents()`。
 - TCP/PLC 插件在 `process()` 内使用 `QEventLoop::exec()`；串口/TCP 成员对象在创建线程有亲和性。
-- `Delay` 标记 `threadSafe=true`，但 `process()` 调用 `QCoreApplication::processEvents()`，不能作为“后台安全”依据。
+- `Delay` 是同步等待模块，不属于并行批次资格；即使等待可取消，也不能因其代码没有共享写入就标记为并行安全。
 - 相机/通讯/显示类模块必须保持 GUI 线程亲和性。
 
 ### 3.3 图像链路
@@ -182,11 +182,13 @@ signals:
 Idle ──startSingle/startCycle/stepOnce/continueRun──> Running
 Running ──模块边界命中 breakpoint──> Paused(breakpoint)
 Running ──用户 pauseRun──> Paused(user)
-Running ──stop──> Stopping ──当前模块返回/循环退出──> Idle
+Running ──stop 请求/设置取消标志──> Running（worker 协作退出中）
+Running（job 已停止）──worker 收尾──> Stopping ──紧接着──> Idle
 Paused ──continueRun──> Running（Resume job）
-Paused ──stop──> Stopping ──> Idle
+Paused ──stop 请求/唤醒 worker──> Paused（worker 收尾中）──> Stopping ──紧接着──> Idle
 ```
 
+- `Stopping` 在实现中是 worker 收尾期间相邻提交的短暂服务状态，不在调用线程的 `stop()` 中同步提交；停止仍依赖当前模块协作退出。正常完成和失败收尾直接进入 `Idle`。该时序以实现和验收报告为准。
 - 断点事实来源仍是 `RunEngine::isPausedAtBreakpoint()`；服务不复制断点判定。
 - 服务状态与 `RunEngine` 状态最终一致；服务不绕过引擎租约/状态机。
 
@@ -272,19 +274,19 @@ else:
 
 除串行 `executeModule` 外，以下入口也会直接执行模块，必须使用同一亲和性规则：
 
-- `RunEngine::executeParallel()`：池任务直接调用 `mod->execute()`。
-  - 进入池前过滤/校验：只有 `affinity=worker` 的模块允许进入并行池；存在 `gui` 亲和模块时返回结构化错误 `gui_affinity_not_parallelizable`，由调用方（如 Parallel 插件）回退串行。
+- `RunEngine::executeParallel()`：先按完整并行资格拆分批次；只有 `affinity=worker`、`threadSafe=true`、非阻塞且无断点的模块进入池，其余模块按原顺序串行回退。
+  - GUI 亲和回退模块在调用线程已是 GUI 线程时内联执行；否则使用带超时和自持有上下文的 GUI 回投。回投失败/取消/超时按结构化执行失败返回。
   - **禁止**在池线程用 `BlockingQueuedConnection` 统一回 GUI；GUI 线程若正在同步调用 `executeParallel` 并等待线程池，会形成互等死锁。
 - `RunEngine::executeBatchParallel()`（内部并行批次）：
   - 并行批次资格增加 `affinity=worker`；`threadSafe/blocking` 条件仍保留。
   - 不满足条件的模块留在串行路径，由 `executeModule` 的亲和性分流处理。
 - 任何新增模块执行入口必须复用同一个 `executionAffinity` 判定；代码审查以“所有 `mod->execute(` 调用点”为检查清单。
 - 必测：
-  - GUI 线程调用 `executeParallel` 含 `gui` 模块 → 返回错误且不阻塞；
+  - GUI 线程调用 `executeParallel` 含 `gui` 模块 → 串行回退并在 GUI 线程执行，不阻塞；
   - `executeBatchParallel` 不会把 `gui` 模块放进池；
   - worker 模块可正常并行，结果与串行一致。
 
-### 6.3 审计与标记
+### 6.4 审计与标记
 
 只有满足以下条件才标记 `worker`：
 
@@ -304,7 +306,7 @@ else:
 - 对确实必须 GUI 亲和的长任务：
   1. 优先拆分“计算”和“UI 绑定部分”，把计算迁到 worker；
   2. 若无法拆分（相机/通讯的 QObject 亲和性是典型），本轮明确列为限制，不纳入响应性通过范围；
-  3. 运行期记录 module 耗时；`affinity=gui` 且耗时超过阈值（建议 100ms）时写 warning 日志（模块名、耗时、建议审计），让现场可定位。
+  3. 运行期记录 module 耗时；`affinity=gui` 且耗时严格超过 **100ms** 时写 warning 日志（模块名、耗时、建议审计），让现场可定位。实现使用 `elapsedMs > 100`；该告警不阻断执行。响应性验收中约 153ms 的样本证明 GUI 事件仍可处理，但未达到 §13 的 >500ms 验收窗口，该项仍未通过。
 - 后续如需把相机/通讯迁出 GUI，应单独立项引入 `io` 亲和性与 `moveToThread` 的对象迁移协议，不在本轮伪装成已解决。
 
 ## 7. 大图刷新合并
@@ -406,7 +408,7 @@ struct DisplayFrame {
 | Job 取消 | “Service 检查停止后、启动下一轮前”窗口内调用 `engine.stop()`：同 token 的 `runOnceForJob` 必须失败，Service 不发起下一轮；仅 endExternalJob 后新 job 可复位 |
 | 原生循环 | `RunEngine::start()` 正常完成一轮后仍为 Running，至少执行两轮；收尾窗口并发 stop 获胜，终态 Stopped |
 | 线程 | worker 模块在执行线程；gui 模块在 GUI 线程；无 worker→QWidget 调用 |
-| 并行入口 | `executeParallel` 含 gui 模块返回 `gui_affinity_not_parallelizable` 且不阻塞；`executeBatchParallel` 不把 gui 模块入池；worker 并行结果与串行一致 |
+| 并行入口 | `executeParallel` 只并发执行合格 worker 模块，其余模块按序串行回退且遵守 GUI 亲和；两个线程安全模块经屏障证明真实并发；`executeBatchParallel` 不把 gui 模块入池 |
 | 故障注入 | 引擎层注入异常（非插件 process）后租约释放、状态回落、后续 run 可启动；Paused 收尾保留上下文且不发 runFinished |
 | 帧一致性 | 延迟消费 A 帧时 worker 已开始 B 轮：A 图像只用 A 的 moduleDataSnapshot；旧 job 迟到通知不污染新工程；`(jobId,runId)` 不匹配的帧被丢弃 |
 | 控制 | 断点暂停/继续；**用户暂停：A→B→C 在 A 后暂停，恢复后 B/C 各执行一次且 runFinished 不误发**；循环中停止；单步只执行一个模块；快速连点不重入 |

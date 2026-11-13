@@ -1,5 +1,7 @@
 # G5 标准 5：副作用入口证据对账
 
+> 历史验收证据：本对账针对 Agent 阶段 5 的 G5 范围；当前项目状态见 [docs/STATUS.md](../STATUS.md)。
+
 ## 判定口径
 
 按计划 §10，标准 5 要求覆盖直接副作用工具，以及配置插件后的 `run_flow`、`step_once`、`resume_flow`：确认前副作用为 0，拒绝为 0，批准后调用次数与批准目标一致。本文把成功 bounded cycle 作为扩展模式单列，不用 cycle 空格推导 once/step/resume 未覆盖，也不把 cycle 结果混入这三条入口的计数。

@@ -110,7 +110,7 @@ private slots:
         QCOMPARE(result.value(QStringLiteral("errorCode")).toString(), QStringLiteral("PLUGIN_LOAD_FAILED"));
         const QString reason =
             result.value(QStringLiteral("details")).toObject().value(QStringLiteral("reason")).toString();
-        QVERIFY2(reason.contains(QStringLiteral("does not implement IModule ABI v2")), qPrintable(reason));
+        QVERIFY2(reason.contains(QStringLiteral("missing_abi_export")), qPrintable(reason));
         QCOMPARE(failedSpy.count(), 1);
         QCOMPARE(failedSpy.at(0).at(0).toString(), QStringLiteral("AgentAbiMismatchFixture"));
         QCOMPARE(loadedSpy.count(), 0);

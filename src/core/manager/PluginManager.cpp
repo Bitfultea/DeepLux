@@ -11,21 +11,118 @@
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLibrary>
 #include <QPixmap>
 #include <QPluginLoader>
+#include <QSemaphore>
 #include <QThread>
 #include <QTimer>
+#include <atomic>
+
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(Q_OS_UNIX)
+#include <dlfcn.h>
+#endif
 
 namespace DeepLux {
 
 namespace {
 bool hasGuiApplication() {
     return qobject_cast<QGuiApplication*>(QCoreApplication::instance()) != nullptr;
+}
+
+struct PluginLoadDispatch {
+    QSemaphore finished;
+    std::atomic_int state{0}; // queued, running, complete, cancelled
+    std::atomic_int result{0};
+};
+
+template <typename Function> bool abiSymbolOwnedByPlugin(Function function, const QString& pluginPath) {
+#ifdef Q_OS_WIN
+    const std::wstring path = QFileInfo(pluginPath).canonicalFilePath().toStdWString();
+    if (path.empty()) {
+        return false;
+    }
+    const HMODULE pluginModule = GetModuleHandleW(path.c_str());
+    HMODULE symbolModule = nullptr;
+    const auto address = reinterpret_cast<LPCWSTR>(function);
+    return pluginModule &&
+           GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              address, &symbolModule) &&
+           symbolModule == pluginModule;
+#elif defined(Q_OS_UNIX)
+    Dl_info info{};
+    if (!dladdr(reinterpret_cast<const void*>(function), &info) || !info.dli_fname) {
+        return false;
+    }
+    const QString expectedPath = QFileInfo(pluginPath).canonicalFilePath();
+    const QString actualPath = QFileInfo(QString::fromLocal8Bit(info.dli_fname)).canonicalFilePath();
+    return !expectedPath.isEmpty() && !actualPath.isEmpty() && expectedPath == actualPath;
+#else
+    Q_UNUSED(function);
+    Q_UNUSED(pluginPath);
+    return false;
+#endif
+}
+
+bool validatePluginAbi(QLibrary& library, const QString& pluginPath, QString* error) {
+    const QString absolutePath = QFileInfo(pluginPath).absoluteFilePath();
+    auto reject = [error, &absolutePath](const QString& code, const QString& detail = QString()) {
+        if (error) {
+            *error = QStringLiteral("%1: plugin=%2%3")
+                         .arg(code, absolutePath, detail.isEmpty() ? QString() : QStringLiteral("; ") + detail);
+        }
+        return false;
+    };
+
+    if (!library.load()) {
+        return reject(QStringLiteral("abi_library_load_failed"), library.errorString());
+    }
+
+    auto versionFunction = reinterpret_cast<PluginAbiVersionFunction>(library.resolve("deeplux_plugin_abi_version"));
+    auto fingerprintFunction =
+        reinterpret_cast<PluginAbiFingerprintFunction>(library.resolve("deeplux_plugin_abi_fingerprint"));
+    if (!versionFunction || !fingerprintFunction) {
+        const QString missing = QStringLiteral("version=%1 fingerprint=%2")
+                                    .arg(versionFunction ? QStringLiteral("present") : QStringLiteral("missing"),
+                                         fingerprintFunction ? QStringLiteral("present") : QStringLiteral("missing"));
+        return reject(QStringLiteral("missing_abi_export"), missing);
+    }
+    if (!abiSymbolOwnedByPlugin(versionFunction, pluginPath) ||
+        !abiSymbolOwnedByPlugin(fingerprintFunction, pluginPath)) {
+        return reject(QStringLiteral("abi_symbol_not_owned"));
+    }
+
+    const quint32 actualVersion = versionFunction();
+    const quint32 expectedVersion = pluginAbiVersion();
+    if (actualVersion != expectedVersion) {
+        return reject(QStringLiteral("abi_version_mismatch"), QStringLiteral("expected=0x%1 actual=0x%2")
+                                                                  .arg(expectedVersion, 8, 16, QLatin1Char('0'))
+                                                                  .arg(actualVersion, 8, 16, QLatin1Char('0')));
+    }
+
+    const char* actualFingerprintData = fingerprintFunction();
+    if (!actualFingerprintData) {
+        return reject(QStringLiteral("abi_fingerprint_missing"));
+    }
+    const QByteArray expectedFingerprint(pluginAbiFingerprint());
+    const QByteArray actualFingerprint(actualFingerprintData);
+    if (actualFingerprint != expectedFingerprint) {
+        return reject(QStringLiteral("abi_fingerprint_mismatch"),
+                      QStringLiteral("expected=%1 actual=%2")
+                          .arg(QString::fromUtf8(expectedFingerprint), QString::fromUtf8(actualFingerprint)));
+    }
+    return true;
 }
 } // namespace
 
@@ -371,10 +468,11 @@ bool PluginManager::validateLoadedPlugin(const PluginInfo& candidate, QPluginLoa
     return true;
 }
 
-void PluginManager::markPluginLoaded(const QString& name, QPluginLoader* loader) {
+void PluginManager::markPluginLoaded(const QString& name, QPluginLoader* loader, QLibrary* abiLibrary) {
     QMutexLocker locker(&m_mutex);
     m_loadedPlugins[name] = loader->instance();
     m_pluginLoaders[name] = loader;
+    m_pluginAbiLibraries[name] = abiLibrary;
 
     if (m_modules.contains(name)) {
         PluginInfo info = m_modules.value(name);
@@ -390,20 +488,60 @@ void PluginManager::markPluginLoaded(const QString& name, QPluginLoader* loader)
 }
 
 bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
-    Q_UNUSED(timeoutMs);
-
-    {
-        QMutexLocker locker(&m_mutex);
-        if (m_loadedPlugins.contains(name)) {
-            qDebug() << "Plugin already loaded:" << name;
-            return true;
+    if (QThread::currentThread() != thread()) {
+        if (timeoutMs <= 0)
+            return false;
+        const auto dispatch = std::make_shared<PluginLoadDispatch>();
+        const bool invoked = QMetaObject::invokeMethod(
+            this,
+            [this, name, timeoutMs, dispatch] {
+                int expected = 0;
+                if (dispatch->state.compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) {
+                    dispatch->result.store(loadPlugin(name, timeoutMs) ? 1 : -1, std::memory_order_release);
+                    dispatch->state.store(2, std::memory_order_release);
+                }
+                dispatch->finished.release();
+            },
+            Qt::QueuedConnection);
+        if (!invoked)
+            return false;
+        if (!dispatch->finished.tryAcquire(1, timeoutMs)) {
+            int expected = 0;
+            if (dispatch->state.compare_exchange_strong(expected, 3, std::memory_order_acq_rel))
+                return false;
+            if (expected == 1)
+                dispatch->finished.acquire();
         }
+        return dispatch->result.load(std::memory_order_acquire) == 1;
     }
 
     PluginInfo info;
+    PluginInfo bundledInfo;
+    QElapsedTimer waitTimer;
+    waitTimer.start();
 
     {
+        QMutexLocker loadLocker(&m_loadMutex);
+        while (m_loadingPlugins.contains(name)) {
+            if (m_loadingThreads.value(name) == QThread::currentThread())
+                return false;
+            {
+                QMutexLocker locker(&m_mutex);
+                if (m_loadedPlugins.contains(name))
+                    return true;
+            }
+            const int remaining = timeoutMs - static_cast<int>(waitTimer.elapsed());
+            if (remaining <= 0 || !m_loadingComplete.wait(&m_loadMutex, static_cast<unsigned long>(remaining)))
+                return false;
+        }
+
         QMutexLocker locker(&m_mutex);
+        if (m_loadedPlugins.contains(name))
+            return true;
+        if (m_pluginLoaders.contains(name)) {
+            qWarning() << "Plugin unload cleanup is pending:" << name;
+            return false;
+        }
         if (m_modules.contains(name)) {
             info = m_modules[name];
         } else if (m_cameras.contains(name)) {
@@ -412,16 +550,21 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
             qWarning() << "Plugin not found:" << name;
             return false;
         }
-    }
-
-    PluginInfo bundledInfo;
-    {
-        QMutexLocker locker(&m_mutex);
         bundledInfo = m_bundledPlugins.value(name);
+        m_loadingPlugins.insert(name);
+        m_loadingThreads.insert(name, QThread::currentThread());
     }
+    const auto finishLoad = [this, &name] {
+        QMutexLocker locker(&m_loadMutex);
+        m_loadingPlugins.remove(name);
+        m_loadingThreads.remove(name);
+        m_loadingComplete.wakeAll();
+    };
 
-    auto loadCandidate = [this, &name](const PluginInfo& candidate, QString& error) -> QPluginLoader* {
+    auto loadCandidate = [this, &name](const PluginInfo& candidate, QString& error,
+                                       QLibrary*& abiLibrary) -> QPluginLoader* {
         error.clear();
+        abiLibrary = nullptr;
         if (candidate.path.isEmpty()) {
             error = QStringLiteral("Plugin metadata path is empty");
             return nullptr;
@@ -442,10 +585,21 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
             return nullptr;
         }
         auto* loader = new QPluginLoader(candidateDir.filePath(libs.first()));
-        if (!loader->load() || !validateLoadedPlugin(candidate, loader, &error)) {
-            if (error.isEmpty()) {
+        loader->setLoadHints(QLibrary::LoadHints());
+        if (!loader->load()) {
+            error = loader->errorString();
+            delete loader;
+            return nullptr;
+        }
+        abiLibrary = new QLibrary(loader->fileName());
+        abiLibrary->setLoadHints(QLibrary::LoadHints());
+        const bool abiValid = validatePluginAbi(*abiLibrary, loader->fileName(), &error);
+        if (!abiValid || !validateLoadedPlugin(candidate, loader, &error)) {
+            if (error.isEmpty())
                 error = loader->errorString();
-            }
+            abiLibrary->unload();
+            delete abiLibrary;
+            abiLibrary = nullptr;
             loader->unload();
             delete loader;
             return nullptr;
@@ -454,10 +608,11 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
     };
 
     QString error;
-    QPluginLoader* loader = loadCandidate(info, error);
+    QLibrary* abiLibrary = nullptr;
+    QPluginLoader* loader = loadCandidate(info, error, abiLibrary);
     if (!loader && !bundledInfo.path.isEmpty() && bundledInfo.path != info.path) {
         const QString userError = error;
-        loader = loadCandidate(bundledInfo, error);
+        loader = loadCandidate(bundledInfo, error, abiLibrary);
         if (loader) {
             qWarning() << "User plugin failed, using bundled plugin:" << name << userError;
             info = bundledInfo;
@@ -474,12 +629,14 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
         }
     }
     if (!loader) {
+        finishLoad();
         emit pluginLoadFailed(name, error);
         return false;
     }
 
     QObject* plugin = loader->instance();
-    markPluginLoaded(name, loader);
+    markPluginLoaded(name, loader, abiLibrary);
+    finishLoad();
     qDebug() << "Plugin loaded:" << name;
 
     emit pluginLoaded(name);
@@ -520,9 +677,16 @@ QString PluginManager::unloadBlockReason(bool cameraPlugin, int liveModuleInstan
 }
 
 bool PluginManager::tryUnloadPlugin(const QString& name, QString* error) {
+    if (QThread::currentThread() != thread()) {
+        if (error)
+            *error = QStringLiteral("PLUGIN_THREAD_AFFINITY");
+        return false;
+    }
+
     QMutexLocker locker(&m_mutex);
 
-    if (!m_loadedPlugins.contains(name)) {
+    const bool hasLoader = m_pluginLoaders.contains(name);
+    if (!m_loadedPlugins.contains(name) && !hasLoader) {
         if (error) {
             *error = m_modules.contains(name) || m_cameras.contains(name) ? QStringLiteral("PLUGIN_NOT_LOADED")
                                                                           : QStringLiteral("PLUGIN_NOT_FOUND");
@@ -530,8 +694,10 @@ bool PluginManager::tryUnloadPlugin(const QString& name, QString* error) {
         return false;
     }
 
-    const QString blockReason = unloadBlockReason(m_cameras.contains(name), m_liveModuleInstances.value(name, 0),
-                                                  !m_untrackedModulePlugins.contains(name));
+    const QString blockReason = m_loadedPlugins.contains(name)
+                                    ? unloadBlockReason(m_cameras.contains(name), m_liveModuleInstances.value(name, 0),
+                                                        !m_untrackedModulePlugins.contains(name))
+                                    : QString();
     if (!blockReason.isEmpty()) {
         if (error)
             *error = blockReason;
@@ -542,15 +708,40 @@ bool PluginManager::tryUnloadPlugin(const QString& name, QString* error) {
     QPluginLoader* loader = nullptr;
     if (m_pluginLoaders.contains(name)) {
         loader = m_pluginLoaders.value(name);
-        if (!loader->unload()) {
+        QLibrary* abiLibrary = m_pluginAbiLibraries.value(name, nullptr);
+        if (loader->isLoaded())
+            loader->unload();
+        if (loader->isLoaded() && abiLibrary && abiLibrary->isLoaded()) {
+            abiLibrary->unload();
+            if (!abiLibrary->isLoaded())
+                loader->unload();
+        }
+        if (loader->isLoaded()) {
             if (error)
                 *error = QStringLiteral("PLUGIN_UNLOAD_FAILED");
-            qWarning() << "Plugin unload failed:" << name << loader->errorString();
+            qWarning() << "Plugin loader unload failed:" << name << loader->errorString();
+            return false;
+        }
+        if (abiLibrary && abiLibrary->isLoaded())
+            abiLibrary->unload();
+        if (abiLibrary && abiLibrary->isLoaded()) {
+            m_loadedPlugins.remove(name);
+            m_liveModuleInstances.remove(name);
+            if (m_modules.contains(name)) {
+                PluginInfo info = m_modules.value(name);
+                info.loaded = false;
+                m_modules[name] = info;
+            }
+            if (error)
+                *error = QStringLiteral("PLUGIN_UNLOAD_FAILED");
+            qWarning() << "Plugin ABI handle unload failed:" << name << abiLibrary->errorString();
             return false;
         }
         m_pluginLoaders.remove(name);
+        m_pluginAbiLibraries.remove(name);
         m_loadedPlugins.remove(name);
         m_liveModuleInstances.remove(name);
+        delete abiLibrary;
         delete loader;
     } else {
         m_loadedPlugins.remove(name);
@@ -640,11 +831,31 @@ PluginManager::PluginLoadRunnable::PluginLoadRunnable(const QString& name, const
 
 void PluginManager::PluginLoadRunnable::run() {
     QPluginLoader* loader = new QPluginLoader(m_path);
+    loader->setLoadHints(QLibrary::LoadHints());
+    QLibrary* abiLibrary = nullptr;
+    QString error;
     bool success = loader->load();
-    QString error = success ? QString() : loader->errorString();
+    if (!success) {
+        error = loader->errorString();
+    }
+    if (success) {
+        abiLibrary = new QLibrary(m_path);
+        abiLibrary->setLoadHints(QLibrary::LoadHints());
+        success = validatePluginAbi(*abiLibrary, m_path, &error);
+        if (!success) {
+            abiLibrary->unload();
+            delete abiLibrary;
+            abiLibrary = nullptr;
+        }
+    }
+
+    loader->moveToThread(PluginManager::instance().thread());
+    if (abiLibrary)
+        abiLibrary->moveToThread(PluginManager::instance().thread());
 
     // 通过事件通知主线程
-    QCoreApplication::postEvent(&PluginManager::instance(), new PluginLoadEvent(m_name, success, error, loader));
+    QCoreApplication::postEvent(&PluginManager::instance(),
+                                new PluginLoadEvent(m_name, success, error, loader, abiLibrary));
 }
 
 bool PluginManager::event(QEvent* event) {
@@ -659,7 +870,7 @@ bool PluginManager::event(QEvent* event) {
         }
         if (loadEvent->success && !candidate.name.isEmpty() &&
             validateLoadedPlugin(candidate, loadEvent->loader, &validationError)) {
-            markPluginLoaded(loadEvent->name, loadEvent->loader);
+            markPluginLoaded(loadEvent->name, loadEvent->loader, loadEvent->abiLibrary);
             emit pluginLoaded(loadEvent->name);
 
             // 如果是相机插件，注册到 CameraManager
@@ -673,6 +884,10 @@ bool PluginManager::event(QEvent* event) {
             emit pluginLoadFailed(loadEvent->name, error);
             if (loadEvent->loader) {
                 loadEvent->loader->unload();
+            }
+            if (loadEvent->abiLibrary) {
+                loadEvent->abiLibrary->unload();
+                delete loadEvent->abiLibrary;
             }
             delete loadEvent->loader;
         }
@@ -771,6 +986,8 @@ QJsonObject PluginManager::availabilityItem(const PluginInfo& info, bool loaded)
     QStringList libraryFilters;
 #ifdef Q_OS_WIN
     libraryFilters << QStringLiteral("*.dll");
+#elif defined(Q_OS_DARWIN)
+    libraryFilters << QStringLiteral("*.dylib") << QStringLiteral("*.so");
 #else
     libraryFilters << QStringLiteral("*.so");
 #endif

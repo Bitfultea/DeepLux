@@ -1,3 +1,4 @@
+#include <core/engine/EngineTestSupport.h>
 #define DEEPLUX_BUILD_TESTS 1
 #include "core/agent/AgentActor.h"
 #include "core/agent/AgentController.h"
@@ -10,6 +11,7 @@
 #include "core/device/CameraManager.h"
 #include "core/display/DisplayData.h"
 #include "core/engine/FlowExecutionService.h"
+#include "core/engine/FlowGraphAnalyzer.h"
 #include "core/engine/RunEngine.h"
 #include "core/model/Project.h"
 #include "manager/GlobalVarManager.h"
@@ -22,6 +24,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QRect>
 #include <QSemaphore>
@@ -29,9 +32,12 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
+#include <QUndoStack>
 #include <QtTest/QtTest>
 #include <atomic>
 #include <limits>
+#include <memory>
+#include <stdexcept>
 #include <thread>
 
 using namespace DeepLux;
@@ -122,6 +128,48 @@ protected:
     }
 };
 
+// B4：用真实 PluginManager 实例构建 catalog，并用真实 FlowGraphAnalyzer 计算期望计划。
+// 测试不手工伪造 displayOrder/rank，所有期望值都来自与产品同源的分析器。
+struct B4PlanResult {
+    FlowOrderPlan plan;
+    QString error;
+};
+
+FlowGraphCatalog b4CatalogForProject(const Project& project) {
+    FlowGraphCatalog catalog;
+    PluginManager& pm = PluginManager::instance();
+    for (const ModuleInstance& instance : project.modules()) {
+        std::unique_ptr<IModule> module(pm.createModule(instance.moduleId));
+        if (!module)
+            continue;
+        FlowGraphModule graphModule;
+        graphModule.instanceId = instance.id;
+        graphModule.flowType = module->flowControlType();
+        graphModule.inputPorts = module->inputPorts();
+        graphModule.outputPorts = module->outputPorts();
+        catalog.modules.append(graphModule);
+    }
+    return catalog;
+}
+
+B4PlanResult b4AnalyzeProject(const Project& project) {
+    B4PlanResult result;
+    const FlowGraphCatalog catalog = b4CatalogForProject(project);
+    QString normalizeError;
+    const QList<ModuleConnection> normalized =
+        FlowGraphAnalyzer::normalizeConnections(catalog, project.connections(), &normalizeError);
+    if (!normalizeError.isEmpty()) {
+        result.error = normalizeError;
+        return result;
+    }
+    QStringList moduleOrder;
+    for (const ModuleInstance& instance : project.modules()) {
+        if (catalog.find(instance.id))
+            moduleOrder.append(instance.id);
+    }
+    result.plan = FlowGraphAnalyzer::analyze(catalog, normalized, moduleOrder);
+    return result;
+}
 class NonCooperativeAgentModule final : public ModuleBase {
 public:
     NonCooperativeAgentModule() {
@@ -3220,8 +3268,8 @@ private slots:
         RunEngine::instance().addModule(&module);
         // 后台执行（设计 §6.2）：未注册探针默认 gui，会经 BlockingQueuedConnection 回到 GUI
         // 线程并阻塞事件循环；本用例验证 Agent 非阻塞返回语义，故显式标记 worker 亲和。
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
-                                                                ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
 
         QElapsedTimer elapsed;
         elapsed.start();
@@ -3257,7 +3305,8 @@ private slots:
         engine.addModule(&module);
         // 未注册的测试模块默认 GUI 亲和；后台 Cycle 会在 GUI 事件中逐轮等待，
         // 本测试要检查服务线程的 pause/resume 控制，因此显式使用 worker。
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
+                                                                      ExecutionAffinity::Worker);
         const QJsonObject started = actor.executeTool("run_flow", QJsonObject{{"mode", "cycle"}, {"maxCycles", 10}});
         QCOMPARE(started.value("status").toString(), QStringLiteral("started"));
         QTRY_COMPARE_WITH_TIMEOUT(engine.state(), RunState::Running, 2000);
@@ -3286,8 +3335,8 @@ private slots:
         module.m_releaseGate = &releaseGate;
         QVERIFY(module.initialize());
         RunEngine::instance().addModule(&module);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("agent_noncooperative"),
-                                                                ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("agent_noncooperative"), ExecutionAffinity::Worker);
 
         const QJsonObject started = actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
         QCOMPARE(started.value("status").toString(), QStringLiteral("started"));
@@ -3521,7 +3570,8 @@ private slots:
 
         RunEngine& engine = RunEngine::instance();
         QVERIFY(engine.loadProject(project, [](const ModuleInstance&) { return new BlockingAgentModule(); }));
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
+                                                                      ExecutionAffinity::Worker);
         const QList<ModuleBase*> beforeModules = engine.modules();
         QVERIFY(engine.runOnceAsync());
         QTRY_VERIFY_WITH_TIMEOUT(engine.isBusy(), 1000);
@@ -4463,18 +4513,28 @@ private slots:
 
     void testAgentModulePluginLifecycleRequiresConfirmationAndHonorsInstanceLease() {
         PluginManager& plugins = PluginManager::instance();
-        QString pluginName;
-        for (const PluginInfo& info : plugins.moduleInfos()) {
-            if (!plugins.isPluginLoaded(info.name))
-                continue;
-            QString error;
-            if (plugins.tryUnloadPlugin(info.name, &error)) {
-                pluginName = info.name;
-                break;
-            }
-            QCOMPARE(error, QStringLiteral("PLUGIN_IN_USE"));
-        }
-        QVERIFY2(!pluginName.isEmpty(), "Need a loaded, idle module plugin fixture");
+        const QString pluginName = QStringLiteral("AgentLifecycleFixture");
+        const QString pluginDir = QDir(m_appDataDir.path()).filePath(QStringLiteral("plugins/%1").arg(pluginName));
+        QVERIFY(QDir().mkpath(pluginDir));
+        QFile metadataSource(QStringLiteral(TEST_AGENTACTOR_META_GrabImage));
+        QVERIFY(metadataSource.open(QIODevice::ReadOnly));
+        QJsonObject metadata = QJsonDocument::fromJson(metadataSource.readAll()).object();
+        metadata.insert(QStringLiteral("name"), pluginName);
+        metadata.insert(QStringLiteral("id"), QStringLiteral("com.deeplux.test.agentlifecyclefixture"));
+        QFile metadataOutput(QDir(pluginDir).filePath(QStringLiteral("metadata.json")));
+        QVERIFY(metadataOutput.open(QIODevice::WriteOnly));
+        QCOMPARE(metadataOutput.write(QJsonDocument(metadata).toJson()), QJsonDocument(metadata).toJson().size());
+        metadataOutput.close();
+        QVERIFY(
+            QFile::copy(QStringLiteral(TEST_AGENTACTOR_LIB_GrabImage),
+                        QDir(pluginDir).filePath(QFileInfo(QStringLiteral(TEST_AGENTACTOR_LIB_GrabImage)).fileName())));
+        plugins.scanPlugins();
+        QSignalSpy fixtureLoadFailed(&plugins, &PluginManager::pluginLoadFailed);
+        QVERIFY2(plugins.loadPlugin(pluginName), fixtureLoadFailed.isEmpty()
+                                                     ? "Lifecycle fixture load failed"
+                                                     : qPrintable(fixtureLoadFailed.last().at(1).toString()));
+        QString unloadError;
+        QVERIFY2(plugins.tryUnloadPlugin(pluginName, &unloadError), qPrintable(unloadError));
 
         QSignalSpy loadedSpy(&plugins, &PluginManager::pluginLoaded);
         QSignalSpy failedSpy(&plugins, &PluginManager::pluginLoadFailed);
@@ -5012,6 +5072,32 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 5000);
     }
 
+    void testAgentRunWaiterCleansUpThrownStartAndCapturesSynchronousFinish() {
+        AgentRunWaiter waiter;
+        bool caught = false;
+        try {
+            waiter.waitForRun(RunEngine::instance(), 1000, []() -> bool { throw std::runtime_error("start failed"); });
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
+        QVERIFY(caught);
+        QVERIFY(!waiter.isActive());
+        waiter.abort();
+
+        const AgentRunWaiter::Outcome aborted = waiter.waitForRun(RunEngine::instance(), 1000, []() { return true; });
+        QVERIFY(aborted.aborted);
+
+        BlockingAgentModule module(1);
+        QVERIFY(module.initialize());
+        RunEngine::instance().addModule(&module);
+        QString error;
+        const AgentRunWaiter::Outcome completed = waiter.waitForRun(
+            RunEngine::instance(), 1000, [&]() { return RunEngine::instance().runOnceChecked(&error); });
+        QVERIFY2(completed.finished, qPrintable(error));
+        QVERIFY(completed.result.success);
+        QCOMPARE(completed.result.runId, RunEngine::instance().runObservation().runId);
+    }
+
     void testRunFlowWaitTimeoutStopsFlow() {
         AgentActor actor;
         BlockingAgentModule blocking(3000);
@@ -5019,8 +5105,8 @@ private slots:
         RunEngine::instance().addModule(&blocking);
         // 后台执行（设计 §8.2）：服务工作者线程执行探针须 worker 亲和内联，
         // 否则探针会阻塞 GUI 事件循环，等待超时无法按时触发。
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
-                                                                ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
 
         QElapsedTimer timer;
         timer.start();
@@ -5286,7 +5372,8 @@ private slots:
 
         UnsupportedPortModule module;
         QVERIFY(module.initialize());
-        RunEngine::instance().setNodePortOutputsForTest(QStringLiteral("grab"), module.customOutputs());
+        RunEngineTestAccess(RunEngine::instance())
+            .setNodePortOutputsForTest(QStringLiteral("grab"), module.customOutputs());
         const QJsonObject result = actor.executeTool("get_node_runtime_outputs", QJsonObject{{"nodeName", "grab"}});
         QVERIFY2(!result.contains("error"), qPrintable(result.value("error").toString()));
         QVERIFY(result.contains("unsupportedPorts"));
@@ -5301,8 +5388,8 @@ private slots:
         CountingAgentModule probe(QStringLiteral("AgentWorker"));
         QVERIFY(probe.initialize());
         RunEngine::instance().addModule(&probe);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("AgentWorker"),
-                                                                ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("AgentWorker"), ExecutionAffinity::Worker);
 
         const QJsonObject run = actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", true}});
         QVERIFY2(run.value("success").toBool(),
@@ -5328,9 +5415,12 @@ private slots:
         engine.addModule(&second);
         engine.addModule(&third);
         // 后台服务工作者线程执行探针须 worker 亲和内联（探针默认 gui）。
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("AgentB"), ExecutionAffinity::Worker);
-        engine.setModuleExecutionAffinityForTest(QStringLiteral("AgentC"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
+                                                                      ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("AgentB"),
+                                                                      ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("AgentC"),
+                                                                      ExecutionAffinity::Worker);
 
         const QJsonObject started = actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
         QCOMPARE(started.value("status").toString(), QStringLiteral("started"));
@@ -5357,8 +5447,8 @@ private slots:
         BlockingAgentModule blocking(3000);
         QVERIFY(blocking.initialize());
         RunEngine::instance().addModule(&blocking);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
-                                                                ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
 
         const QJsonObject started = actor.executeTool("run_flow", QJsonObject{{"mode", "once"}, {"wait", false}});
         QCOMPARE(started.value("status").toString(), QStringLiteral("started"));
@@ -5376,8 +5466,8 @@ private slots:
         BlockingAgentModule blocking(3000);
         QVERIFY(blocking.initialize());
         RunEngine::instance().addModule(&blocking);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"),
-                                                                ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("agent_blocking"), ExecutionAffinity::Worker);
 
         // 验收建议的定时器触发路径；等待本身由 AgentRunWaiter 的事件循环与信号屏障驱动。
         QTimer::singleShot(100, this, [&actor]() { actor.abortRunningTool(); });
@@ -5396,8 +5486,8 @@ private slots:
         CountingAgentModule probe(QStringLiteral("AgentCycle"));
         QVERIFY(probe.initialize());
         RunEngine::instance().addModule(&probe);
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("AgentCycle"),
-                                                                ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("AgentCycle"), ExecutionAffinity::Worker);
 
         const QJsonObject cycle = actor.executeTool("run_flow", QJsonObject{{"mode", "cycle"}, {"maxCycles", 10}});
         QCOMPARE(cycle.value("status").toString(), QStringLiteral("started"));
@@ -5407,6 +5497,262 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Idle, 5000);
         QCOMPARE(probe.runs.load(), 10);
         QVERIFY(!RunEngine::instance().isBusy());
+    }
+
+    // B3/P0-2：Agent 结构编辑必须补发带来源的 structureChanged(Agent)；
+    // 每个结构命令的 redo/undo 各恰好一次，非结构工具零信号。
+    void testStructureEditsEmitAgentOriginSignals() {
+        AgentActor actor;
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+
+        QSignalSpy structureSpy(project, &Project::structureChanged);
+        QVERIFY(structureSpy.isValid());
+
+        const QJsonObject added =
+            actor.executeTool("add_module", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "grab"}});
+        QVERIFY2(!added.contains("error"), qPrintable(added.value("error").toString()));
+        QCOMPARE(structureSpy.count(), 1);
+        QCOMPARE(static_cast<int>(structureSpy.takeFirst().at(0).value<StructureEditOrigin>()),
+                 static_cast<int>(StructureEditOrigin::Agent));
+
+        const QJsonObject second =
+            actor.executeTool("add_module", QJsonObject{{"plugin", "MeasureCircle"}, {"instanceName", "measure"}});
+        QVERIFY2(!second.contains("error"), qPrintable(second.value("error").toString()));
+        QCOMPARE(structureSpy.count(), 1);
+        QCOMPARE(static_cast<int>(structureSpy.takeFirst().at(0).value<StructureEditOrigin>()),
+                 static_cast<int>(StructureEditOrigin::Agent));
+
+        const QJsonObject connected =
+            actor.executeTool("connect_modules", QJsonObject{{"fromId", "grab"}, {"toId", "measure"}});
+        QVERIFY2(!connected.contains("error"), qPrintable(connected.value("error").toString()));
+        QCOMPARE(project->connections().size(), 1);
+        QCOMPARE(structureSpy.count(), 1);
+        QCOMPARE(static_cast<int>(structureSpy.takeFirst().at(0).value<StructureEditOrigin>()),
+                 static_cast<int>(StructureEditOrigin::Agent));
+
+        // 只读工具不得产生结构信号。
+        const QJsonObject state = actor.executeTool("get_flow_state", QJsonObject());
+        Q_UNUSED(state)
+        QCOMPARE(structureSpy.count(), 0);
+
+        // 一次 Undo 恢复连接，各自恰好一次结构信号；一次 Redo 再恢复。
+        actor.undoStack()->undo();
+        QCOMPARE(structureSpy.count(), 1);
+        QCOMPARE(static_cast<int>(structureSpy.takeFirst().at(0).value<StructureEditOrigin>()),
+                 static_cast<int>(StructureEditOrigin::Agent));
+        QCOMPARE(project->connections().size(), 0);
+
+        actor.undoStack()->redo();
+        QCOMPARE(structureSpy.count(), 1);
+        QCOMPARE(static_cast<int>(structureSpy.takeFirst().at(0).value<StructureEditOrigin>()),
+                 static_cast<int>(StructureEditOrigin::Agent));
+        QCOMPARE(project->connections().size(), 1);
+    }
+
+    // B3：origin=Agent 的结构信号不得把 Agent 自己的撤销命令标记为 obsolete。
+    void testAgentOriginDoesNotInvalidateOwnUndoStack() {
+        AgentActor actor;
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+        const QJsonObject added =
+            actor.executeTool("add_module", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "grab"}});
+        QVERIFY2(!added.contains("error"), qPrintable(added.value("error").toString()));
+        QVERIFY(project->moduleById(QStringLiteral("grab")).has_value());
+        QVERIFY(actor.undoStack()->canUndo());
+
+        actor.undoStack()->undo();
+        QVERIFY(!project->moduleById(QStringLiteral("grab")).has_value());
+        actor.undoStack()->redo();
+        QVERIFY(project->moduleById(QStringLiteral("grab")).has_value());
+    }
+
+    // B3：反向交错。外部（Gui）结构编辑后，Agent 撤销命令失效，
+    // undo/redo 都不得覆盖后续外部编辑。
+    void testExternalGuiOriginInvalidatesAgentUndo() {
+        AgentActor actor;
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project != nullptr);
+        const QJsonObject added =
+            actor.executeTool("add_module", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "grab"}});
+        QVERIFY2(!added.contains("error"), qPrintable(added.value("error").toString()));
+        QVERIFY(project->moduleById(QStringLiteral("grab")).has_value());
+
+        ModuleInstance external;
+        external.id = QStringLiteral("external");
+        external.moduleId = QStringLiteral("GrabImage");
+        external.name = QStringLiteral("External");
+        project->addModule(external);
+        project->notifyStructureChange(StructureEditOrigin::Gui);
+
+        QCOMPARE(actor.undoStack()->count(), 1);
+        const QUndoCommand* pending = actor.undoStack()->command(0);
+        QVERIFY(pending != nullptr);
+        QVERIFY2(pending->isObsolete(), "GUI origin must obsolete the pending Agent command");
+
+        const QString fingerprintBefore = project->structureFingerprint();
+        const int moduleCountBefore = project->modules().size();
+
+        actor.undoStack()->undo();
+        QCOMPARE(project->modules().size(), moduleCountBefore);
+        QVERIFY(project->moduleById(QStringLiteral("grab")).has_value());
+        QVERIFY(project->moduleById(QStringLiteral("external")).has_value());
+        QCOMPARE(project->structureFingerprint(), fingerprintBefore);
+
+        actor.undoStack()->redo();
+        QCOMPARE(project->modules().size(), moduleCountBefore);
+        QVERIFY(project->moduleById(QStringLiteral("grab")).has_value());
+        QCOMPARE(project->structureFingerprint(), fingerprintBefore);
+    }
+
+    // B4：脚本化 create_project → add_module(A) → add_module(B) → connect A→B，
+    // get_flow_state 必须用真实 FlowGraphAnalyzer 计划追加 executionRank/lane/displayIndex，
+    // 且既有字段和值保持原样（字段只增不改）。
+    void testGetFlowStateExposesExecutionOrderFields() {
+        AgentActor actor;
+        const QJsonObject created = actor.executeTool("create_project", QJsonObject{{"name", "B4Fields"}});
+        QVERIFY2(!created.contains("error"), qPrintable(created.value("error").toString()));
+
+        const QJsonObject addedA =
+            actor.executeTool("add_module", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "grab_a"}});
+        QVERIFY2(!addedA.contains("error"), qPrintable(addedA.value("error").toString()));
+        const QJsonObject addedB =
+            actor.executeTool("add_module", QJsonObject{{"plugin", "MeasureCircle"}, {"instanceName", "measure_b"}});
+        QVERIFY2(!addedB.contains("error"), qPrintable(addedB.value("error").toString()));
+        const QJsonObject connected =
+            actor.executeTool("connect_modules", QJsonObject{{"fromId", "grab_a"}, {"toId", "measure_b"}});
+        QVERIFY2(!connected.contains("error"), qPrintable(connected.value("error").toString()));
+
+        Project* project = ProjectManager::instance().currentProject();
+        QVERIFY(project != nullptr);
+        const B4PlanResult expected = b4AnalyzeProject(*project);
+        QVERIFY2(expected.error.isEmpty(), qPrintable(expected.error));
+        QVERIFY(expected.plan.valid);
+        QCOMPARE(expected.plan.displayOrder.size(), 2);
+
+        QHash<QString, FlowOrderNode> nodesById;
+        for (const FlowOrderNode& node : expected.plan.nodes)
+            nodesById.insert(node.instanceId, node);
+
+        const QJsonObject state = actor.executeTool("get_flow_state", QJsonObject());
+        QVERIFY2(!state.contains("error"), qPrintable(state.value("error").toString()));
+        QVERIFY(!state.contains("errors"));
+        QVERIFY(!state.contains("warnings"));
+
+        const QJsonArray modules = state.value("modules").toArray();
+        QCOMPARE(modules.size(), project->modules().size());
+        for (int i = 0; i < modules.size(); ++i) {
+            const QJsonObject obj = modules.at(i).toObject();
+            const ModuleInstance& instance = project->modules().at(i);
+            // 既有键与值一个不少、一个不改
+            QCOMPARE(obj.value("id").toString(), instance.id);
+            QCOMPARE(obj.value("moduleId").toString(), instance.moduleId);
+            QCOMPARE(obj.value("name").toString(), instance.name);
+            QCOMPARE(obj.value("params").toObject(), instance.params);
+            QVERIFY(obj.contains("executionRank"));
+            QVERIFY(obj.contains("lane"));
+            QVERIFY(obj.contains("displayIndex"));
+            QVERIFY(nodesById.contains(instance.id));
+            const FlowOrderNode& node = nodesById.value(instance.id);
+            QCOMPARE(obj.value("executionRank").toInt(), node.rank);
+            QCOMPARE(obj.value("lane").toInt(), node.lane);
+            QCOMPARE(obj.value("displayIndex").toInt(), node.displayIndex);
+        }
+
+        const QJsonArray connections = state.value("connections").toArray();
+        QCOMPARE(connections.size(), project->connections().size());
+        for (int i = 0; i < connections.size(); ++i) {
+            const QJsonObject obj = connections.at(i).toObject();
+            QCOMPARE(obj.value("from").toString(), project->connections().at(i).fromModuleId);
+            QCOMPARE(obj.value("to").toString(), project->connections().at(i).toModuleId);
+        }
+    }
+
+    // B4：无法解析的 moduleId 记结构化 errors/warnings 并跳过该模块，
+    // 不崩溃、不猜测控制类型、不伪造 rank；既有字段与其它模块的顺序字段都不缺失。
+    void testGetFlowStateSkipsUnresolvableModule() {
+        AgentActor actor;
+        const QJsonObject created = actor.executeTool("create_project", QJsonObject{{"name", "B4Degraded"}});
+        QVERIFY2(!created.contains("error"), qPrintable(created.value("error").toString()));
+        const QJsonObject added =
+            actor.executeTool("add_module", QJsonObject{{"plugin", "GrabImage"}, {"instanceName", "grab_ok"}});
+        QVERIFY2(!added.contains("error"), qPrintable(added.value("error").toString()));
+
+        Project* project = ProjectManager::instance().currentProject();
+        QVERIFY(project != nullptr);
+
+        ModuleInstance broken;
+        broken.id = QStringLiteral("broken");
+        broken.moduleId = QStringLiteral("B4.NoSuchPlugin.Missing");
+        broken.name = QStringLiteral("Broken");
+        broken.params = QJsonObject{{"k", 42}};
+        project->addModule(broken);
+
+        ModuleConnection edge;
+        edge.fromModuleId = QStringLiteral("grab_ok");
+        edge.toModuleId = broken.id;
+        edge.fromPort = QStringLiteral("image");
+        edge.toPort = QStringLiteral("image");
+        edge.edgeType = QStringLiteral("data");
+        QList<ModuleConnection> injected;
+        injected.append(edge);
+        project->setConnections(injected);
+
+        // 全图归一化在缺失模块上必然失败：这正是 getFlowState 必须走降级路径的理由。
+        const B4PlanResult naive = b4AnalyzeProject(*project);
+        QVERIFY2(!naive.error.isEmpty(), "full-graph normalization must reject the missing module");
+
+        const QJsonObject state = actor.executeTool("get_flow_state", QJsonObject());
+        QVERIFY2(!state.contains("error"), qPrintable(state.value("error").toString()));
+        const QJsonArray errors = state.value("errors").toArray();
+        const QJsonArray warnings = state.value("warnings").toArray();
+        QVERIFY(!errors.isEmpty());
+        QVERIFY(!warnings.isEmpty());
+
+        bool foundUnresolved = false;
+        for (const QJsonValue& value : errors) {
+            const QJsonObject issue = value.toObject();
+            if (issue.value("code").toString() == QStringLiteral("module_unresolved") &&
+                issue.value("moduleId").toString() == broken.moduleId &&
+                issue.value("instanceId").toString() == broken.id) {
+                foundUnresolved = true;
+            }
+        }
+        QVERIFY2(foundUnresolved, "unresolvable moduleId must be reported structurally");
+
+        const QJsonArray modules = state.value("modules").toArray();
+        QCOMPARE(modules.size(), 2);
+        QJsonObject ok;
+        QJsonObject bad;
+        for (const QJsonValue& value : modules) {
+            const QJsonObject obj = value.toObject();
+            if (obj.value("id").toString() == QStringLiteral("grab_ok"))
+                ok = obj;
+            else if (obj.value("id").toString() == broken.id)
+                bad = obj;
+        }
+
+        QCOMPARE(bad.value("id").toString(), broken.id);
+        QCOMPARE(bad.value("moduleId").toString(), broken.moduleId);
+        QCOMPARE(bad.value("name").toString(), broken.name);
+        QCOMPARE(bad.value("params").toObject(), broken.params);
+        QVERIFY(bad.contains("executionRank"));
+        QVERIFY(bad.contains("lane"));
+        QVERIFY(bad.contains("displayIndex"));
+        QCOMPARE(bad.value("executionRank").toInt(), -1);
+        QCOMPARE(bad.value("lane").toInt(), -1);
+        QCOMPARE(bad.value("displayIndex").toInt(), -1);
+
+        QVERIFY(ok.value("executionRank").isDouble());
+        QVERIFY(ok.value("lane").isDouble());
+        QVERIFY(ok.value("displayIndex").isDouble());
+        QVERIFY(ok.value("executionRank").toInt() >= 0);
+        QVERIFY(ok.value("displayIndex").toInt() >= 0);
+
+        const QJsonArray connections = state.value("connections").toArray();
+        QCOMPARE(connections.size(), 1);
+        QCOMPARE(connections.at(0).toObject().value("from").toString(), QStringLiteral("grab_ok"));
+        QCOMPARE(connections.at(0).toObject().value("to").toString(), broken.id);
     }
 };
 

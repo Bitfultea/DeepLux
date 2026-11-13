@@ -95,9 +95,9 @@ B10 回归期间 `test_mainwindow` 曾在 `-j4` 全量中出现一次失败（`t
 
 ## 6. 偏差、限制与取舍
 
-1. **Stopping 时机与 design §5.1 措辞差异（本轮不改实现）**：design §5.1 的状态列表含 `Stopping`；实现只在停止请求实际胜出时短暂提交 `Stopping` 后立即 `Idle`，正常/失败收尾不经过 `Stopping`。取舍：保持 `Stopping` 仅表示“停止正在收尾”，避免正常完成也对外呈现停止中；调用方以 `jobFinished(stopped)` 判定结果。该差异记录于此，若后续 UI 需要区分“收尾中”可再统一。
+1. **Stopping 状态时序**：`FlowExecutionService::stop()` 只提交取消请求、唤醒 worker 并立即返回；在途模块仍需协作退出。worker 收尾时若本 job 被停止，才依次提交 `Stopping` 和 `Idle`，两次状态提交相邻；正常完成和失败收尾直接进入 `Idle`。因此 `Stopping` 表示停止结果的收尾提交，不代表调用 `stop()` 后会保持可观测的中间状态。
 2. **`-j4` 隔离缺陷处置**：`tests/CMakeLists.txt` 对 `test_agentbridge` 与 `test_mainwindow` 设置 `RUN_SERIAL TRUE`（此前两者并行会因全局插件目录/窗口状态互相抢占出现管道隔离失败）。本轮 `ctest -j 4` 全量 91/91 通过，未降级为 `-j1`。计划 Step3 的 `mktemp HOME` + `scripts/sync-plugins.sh` 隔离脚本为 Unix 口径；Windows 下等价做法是测试内使用 `QTemporaryDir` 安装插件并配合 `RUN_SERIAL`，已在本轮采用。
-3. **Matching 为 design §6.3（审计与标记，第二处 6.3 编号）补审项**：plan B9B 候选清单未列 `Matching`，但 design §6.3 的“耗时模块迁移闸门”点名；本轮补做静态审计 + 一致性冒烟并标记 `worker`，结论与证据并入 §4。
+3. **Matching 为 design §6.4（审计与标记）补审项**：plan B9B 候选清单未列 `Matching`，但 design §6.4 的“耗时模块迁移闸门”点名；本轮补做静态审计 + 一致性冒烟并标记 `worker`，结论与证据并入 §4。
 4. **审计规则以注释沉淀（非自动检查）**：t21 复核新增的“process() 不得创建/移交 QObject”“审计须扫描单例/全局状态”两条规则写在 `tests/test_workerpluginconsistency.cpp` 注释中，未实现自动静态检查；后续可考虑独立 lint/CI 规则。
 5. **StrFormatPlugin 限制（不进入 worker）**：`process()` 在 worker 写 `GlobalVarManager` 并 `new VarModel(QObject)`，GUI 侧 `GlobalVarView` 读写/删除这些 QObject 且 `count()/isEmpty()` 无锁。保持 `gui`，与 QueueIn/QueueOut 按共享状态延后同类；若需迁 worker，应按“process 只做格式化 + queued 写入 GUI”或“GlobalVarManager/VarModel 线程安全化（另立专项）”处理。
 6. **B10 回归发现并修复的测试竞态**：`test_mainwindow::testBreakpointPauseAndContinueFromRunButton` 原先在引擎断点命中后立即断言 Service 为 `Paused`；引擎先暂停、Service 工作线程随后才提交 `Paused`，存在短暂窗口（`-j4` 全量中偶发一次失败，实际读到 `Running`）。已改为等待 Service 状态到达 `Paused`（`QTRY_COMPARE_WITH_TIMEOUT`），随后 `ctest -j 4` 压力复跑 10/10 通过。该修复属测试等待方式的确定性修正，未改变产品行为。
@@ -128,3 +128,48 @@ git diff --check
 ```
 
 截图门禁：`ctest -R ui_capture_mainwindow`（`ui_capture_mainwindow` 已包含在全量中）。
+
+## 13. 当前状态、验收偏差与回退
+
+本节于 2026-11-13 补充，整理本报告已记录的实现证据和未完成门槛；它不替代 [实时状态页](../STATUS.md)，也不把历史报告中的测试数字改写成当前分支结果。
+
+### 13.1 状态矩阵
+
+| 范围 | 状态 | 证据边界 |
+| --- | --- | --- |
+| 后台执行服务、租约、暂停/恢复/停止和异常收尾 | 已实现并有自动化覆盖 | 本报告 §2、§5；当前源码行为仍以对应分支和测试为准。 |
+| GUI 在已审计 worker 流程运行期间保持响应 | 有限通过 | 本报告 §3 验证 FindCircle 合成验收输入、offscreen 事件循环和最终结果；不等于产线吞吐或真实显示设备验收。 |
+| worker 插件静态审计与一致性验证 | 部分通过 | 本报告 §4 的名单及测试覆盖；尚未通过一致性冒烟的插件不得据此标记为 worker。 |
+| 单模块执行窗口超过 500ms | **未通过 / OPEN-BE-01** | 实测约 153ms，未达到阈值；不得以此结果宣称通过。 |
+| Windows 真实显示器、相机/PLC/串口、HALCON/ONNX 硬件路径 | 未验证 | 见本报告 §7；需对应系统、SDK、设备或模型包现场验收。 |
+| 长时间运行与产线负载 | 未验证 | 未执行小时级老化或真实节拍/并发基准。 |
+
+### 13.2 验收闸门偏差
+
+| 插件 | 当前证据 | 未迁移到 worker 的原因/处置 |
+| --- | --- | --- |
+| `MeasureCircle` | 尚无足以准入 worker 的一致性证据 | 现有验收记录要求真实图像与工程参数；在补齐可重复的代表性数据和期望值前保持原亲和性。 |
+| `MeasureGap` | 尚无足以准入 worker 的一致性证据 | 需可复现的真实输入/参数证据后再评估。 |
+| `ColorRecognition` | 尚无足以准入 worker 的一致性证据 | 需补齐代表性图像、类别/颜色配置与结果断言；当前不迁移。 |
+| `QRCode` | 尚无足以准入 worker 的一致性证据 | 需补齐可重复的码图和解码结果断言；当前不迁移。 |
+| `NPointCalibration` | 尚无足以准入 worker 的一致性证据 | 需真实标定点/配置及结果断言；当前不迁移。 |
+| `DefectDetection`（Hymson 3D） | 本报告构建未启用 `ENABLE_HYMSON3D` | 插件未构建，不能声称完成冒烟；需在具备 SDK/插件的目标环境重新验收。 |
+
+以上状态是“验收证据不足或构建条件不具备”，不是对插件线程安全缺陷的推断。新增输入、fixture 或 SDK 后，须针对插件本身重新审计与测试。
+
+### 13.3 OPEN-BE-01：>500ms 单模块窗口
+
+design §13 要求在单个 worker 模块持续超过 500ms 的真实执行窗口内观察 GUI 响应。本报告的 FindCircle 运行窗口约 153ms，因而该门槛仍未满足。不得用测试 sleep、人为阻塞或重复计算伪造模块时长。
+
+关闭该项需二选一并记录裁定：
+
+1. 使用可重复、具代表性的真实输入和工作负载，使模块本身执行超过 500ms，再验证事件循环、停止/状态信号和最终输出；或
+2. 由维护者明确将固定时长降级为可复现的响应性判据或现场验收项，并同步更新设计文档与 `docs/STATUS.md`。
+
+在裁定与证据补齐前，OPEN-BE-01 保持开放。
+
+### 13.4 回退与降级
+
+当前没有运行期“关闭后台执行”的全局开关。若某个插件的 worker 路径出现现场回归，可将该插件 metadata 中的 `execution.affinity` 改回 `gui`，重建并同步对应插件，**重启应用并重新载入工程/模块**，再运行该插件的一致性测试及相关流程验收；恢复前不得只在文档或 UI 中隐藏问题。若故障涉及执行服务或引擎公共路径，应回退对应修复提交并执行其回归测试，不得用 affinity 标签掩盖服务级故障。
+
+本节只记录操作性回退办法，不新增产品开关，也不替代变更审批、日志留存或目标设备复测。

@@ -46,6 +46,15 @@ private slots:
     void testOpenStructurallyInvalidProjectKeepsCurrent();
     void testProjectSwitchSignalsExcludeConcurrentRunStart();
 
+    // B2: 布局/结构 API
+    void testSetModulePosition();
+    void testReorderModules();
+    void testLayoutInitializedRoundTrip();
+    void testSessionTokenDiffersForNewAndLoadedProject();
+    void testStructureFingerprintSensitiveToConnectionDeclarationOrder();
+    void testApplyStructureTransaction();
+    void testApplyStructureTransactionFailureLeavesStateUntouched();
+
 private:
     QString m_tempPath;
 };
@@ -578,6 +587,238 @@ void TestProject::testModuleRuntimeFieldsRoundTrip() {
     QCOMPARE(legacyProj.modules().first().enabled, true);
     QCOMPARE(legacyProj.modules().first().breakpoint, false);
     QVERIFY(legacyProj.modules().first().note.isEmpty());
+}
+
+// ---------------------------------------------------------------------------
+// B2: 布局/结构 API
+// ---------------------------------------------------------------------------
+
+namespace {
+
+ModuleInstance makeModule(const QString& id) {
+    ModuleInstance module;
+    module.id = id;
+    module.moduleId = QStringLiteral("test.module");
+    module.name = id;
+    return module;
+}
+
+ModuleConnection makeConnection(const QString& from, const QString& to, const QString& port = QStringLiteral("image")) {
+    ModuleConnection connection;
+    connection.fromModuleId = from;
+    connection.toModuleId = to;
+    connection.fromPort = port;
+    connection.toPort = port;
+    connection.edgeType = QStringLiteral("data");
+    return connection;
+}
+
+} // namespace
+
+void TestProject::testSetModulePosition() {
+    Project project;
+    project.addModule(makeModule(QStringLiteral("m1")));
+    project.setModified(false);
+
+    QSignalSpy positionSpy(&project, &Project::modulePositionChanged);
+    QSignalSpy updatedSpy(&project, &Project::moduleUpdated);
+    QVERIFY(positionSpy.isValid());
+    QVERIFY(updatedSpy.isValid());
+
+    project.setModulePosition(QStringLiteral("m1"), 120, 340);
+
+    QCOMPARE(project.moduleById(QStringLiteral("m1"))->posX, 120);
+    QCOMPARE(project.moduleById(QStringLiteral("m1"))->posY, 340);
+    QCOMPARE(positionSpy.count(), 1);
+    QCOMPARE(updatedSpy.count(), 0);
+    QVERIFY(project.isModified());
+
+    const QList<QVariant> args = positionSpy.takeFirst();
+    QCOMPARE(args.at(0).toString(), QStringLiteral("m1"));
+    QCOMPARE(args.at(1).toInt(), 120);
+    QCOMPARE(args.at(2).toInt(), 340);
+
+    // 未知模块不改变任何状态
+    project.setModified(false);
+    project.setModulePosition(QStringLiteral("missing"), 1, 2);
+    QCOMPARE(positionSpy.count(), 0);
+    QVERIFY(!project.isModified());
+}
+
+void TestProject::testReorderModules() {
+    Project project;
+    project.addModule(makeModule(QStringLiteral("a")));
+    project.addModule(makeModule(QStringLiteral("b")));
+    project.addModule(makeModule(QStringLiteral("c")));
+
+    QSignalSpy reorderedSpy(&project, &Project::modulesReordered);
+    QVERIFY(reorderedSpy.isValid());
+
+    QVERIFY(project.reorderModules(QStringList() << QStringLiteral("c") << QStringLiteral("a") << QStringLiteral("b")));
+    QCOMPARE(project.modules().at(0).id, QStringLiteral("c"));
+    QCOMPARE(project.modules().at(1).id, QStringLiteral("a"));
+    QCOMPARE(project.modules().at(2).id, QStringLiteral("b"));
+    QCOMPARE(reorderedSpy.count(), 1);
+
+    // 不完整/重复/未知顺序必须拒绝且不改变状态
+    const int before = reorderedSpy.count();
+    QVERIFY(!project.reorderModules(QStringList() << QStringLiteral("a") << QStringLiteral("b")));
+    QVERIFY(
+        !project.reorderModules(QStringList() << QStringLiteral("a") << QStringLiteral("a") << QStringLiteral("b")));
+    QVERIFY(
+        !project.reorderModules(QStringList() << QStringLiteral("a") << QStringLiteral("b") << QStringLiteral("x")));
+    QCOMPARE(reorderedSpy.count(), before);
+    QCOMPARE(project.modules().at(0).id, QStringLiteral("c"));
+}
+
+void TestProject::testLayoutInitializedRoundTrip() {
+    Project project;
+    QVERIFY(!project.layoutInitialized());
+
+    project.setLayoutInitialized(true);
+    QVERIFY(project.layoutInitialized());
+
+    const QJsonObject json = project.toJson();
+    QVERIFY(json.contains("layoutInitialized"));
+    QVERIFY(json.value("layoutInitialized").toBool());
+
+    Project restored;
+    QVERIFY(restored.fromJson(json));
+    QVERIFY(restored.layoutInitialized());
+
+    // 旧工程缺少字段 => false
+    QJsonObject legacy = json;
+    legacy.remove("layoutInitialized");
+    Project oldProject;
+    QVERIFY(oldProject.fromJson(legacy));
+    QVERIFY(!oldProject.layoutInitialized());
+}
+
+void TestProject::testSessionTokenDiffersForNewAndLoadedProject() {
+    Project first;
+    Project second;
+    QVERIFY(!first.sessionToken().isNull());
+    QVERIFY(!second.sessionToken().isNull());
+    QVERIFY(first.sessionToken() != second.sessionToken());
+
+    Project loaded;
+    QVERIFY(loaded.fromJson(first.toJson()));
+    QVERIFY(!loaded.sessionToken().isNull());
+    QVERIFY(loaded.sessionToken() != first.sessionToken());
+}
+
+void TestProject::testStructureFingerprintSensitiveToConnectionDeclarationOrder() {
+    Project project;
+    project.addModule(makeModule(QStringLiteral("A")));
+    project.addModule(makeModule(QStringLiteral("B")));
+    project.addModule(makeModule(QStringLiteral("C")));
+
+    project.addConnection(makeConnection(QStringLiteral("A"), QStringLiteral("B")));
+    project.addConnection(makeConnection(QStringLiteral("A"), QStringLiteral("C")));
+    const QString firstFingerprint = project.structureFingerprint();
+    QVERIFY(!firstFingerprint.isEmpty());
+
+    // 重新构造同样两个连接，但声明顺序交换
+    Project swapped;
+    swapped.addModule(makeModule(QStringLiteral("A")));
+    swapped.addModule(makeModule(QStringLiteral("B")));
+    swapped.addModule(makeModule(QStringLiteral("C")));
+    swapped.addConnection(makeConnection(QStringLiteral("A"), QStringLiteral("C")));
+    swapped.addConnection(makeConnection(QStringLiteral("A"), QStringLiteral("B")));
+
+    QVERIFY(firstFingerprint != swapped.structureFingerprint());
+}
+
+void TestProject::testApplyStructureTransaction() {
+    Project project;
+    project.addModule(makeModule(QStringLiteral("a")));
+    project.addModule(makeModule(QStringLiteral("b")));
+    project.addModule(makeModule(QStringLiteral("c")));
+    project.addConnection(makeConnection(QStringLiteral("a"), QStringLiteral("b")));
+
+    QSignalSpy structureSpy(&project, &Project::structureChanged);
+    QVERIFY(structureSpy.isValid());
+
+    FlowGraphCandidate candidate;
+    candidate.orderedIds = QStringList() << QStringLiteral("c") << QStringLiteral("a") << QStringLiteral("b");
+    candidate.connections = {makeConnection(QStringLiteral("b"), QStringLiteral("c"))};
+
+    QString error = QStringLiteral("sentinel");
+    QVERIFY(project.applyStructureTransaction(candidate, StructureEditOrigin::Agent, &error));
+    QVERIFY(error.isEmpty());
+
+    QCOMPARE(project.modules().size(), 3);
+    QCOMPARE(project.modules().at(0).id, QStringLiteral("c"));
+    QCOMPARE(project.modules().at(1).id, QStringLiteral("a"));
+    QCOMPARE(project.modules().at(2).id, QStringLiteral("b"));
+    QCOMPARE(project.connections().size(), 1);
+    QCOMPARE(project.connections().first().fromModuleId, QStringLiteral("b"));
+    QCOMPARE(project.connections().first().toModuleId, QStringLiteral("c"));
+    QCOMPARE(structureSpy.count(), 1);
+    QCOMPARE(static_cast<int>(structureSpy.takeFirst().at(0).value<StructureEditOrigin>()),
+             static_cast<int>(StructureEditOrigin::Agent));
+    QVERIFY(project.isModified());
+}
+
+void TestProject::testApplyStructureTransactionFailureLeavesStateUntouched() {
+    Project project;
+    project.addModule(makeModule(QStringLiteral("a")));
+    project.addModule(makeModule(QStringLiteral("b")));
+    project.addModule(makeModule(QStringLiteral("c")));
+    project.addConnection(makeConnection(QStringLiteral("a"), QStringLiteral("b")));
+    project.setModified(false);
+
+    const QString originalFingerprint = project.structureFingerprint();
+    const QStringList originalOrder = {project.modules().at(0).id, project.modules().at(1).id,
+                                       project.modules().at(2).id};
+
+    QSignalSpy structureSpy(&project, &Project::structureChanged);
+    QSignalSpy moduleAddedSpy(&project, &Project::moduleAdded);
+    QSignalSpy connectionAddedSpy(&project, &Project::connectionAdded);
+
+    QList<FlowGraphCandidate> invalidCandidates;
+
+    FlowGraphCandidate missingModule;
+    missingModule.orderedIds = QStringList() << QStringLiteral("a") << QStringLiteral("b");
+    invalidCandidates.append(missingModule);
+
+    FlowGraphCandidate duplicateId;
+    duplicateId.orderedIds = QStringList() << QStringLiteral("a") << QStringLiteral("a") << QStringLiteral("b");
+    invalidCandidates.append(duplicateId);
+
+    FlowGraphCandidate unknownId;
+    unknownId.orderedIds = QStringList() << QStringLiteral("a") << QStringLiteral("b") << QStringLiteral("x");
+    invalidCandidates.append(unknownId);
+
+    FlowGraphCandidate incompletePermutation;
+    incompletePermutation.orderedIds = QStringList() << QStringLiteral("a") << QStringLiteral("b")
+                                                     << QStringLiteral("c") << QStringLiteral("d");
+    invalidCandidates.append(incompletePermutation);
+
+    FlowGraphCandidate unknownEndpoint;
+    unknownEndpoint.orderedIds = QStringList() << QStringLiteral("a") << QStringLiteral("b") << QStringLiteral("c");
+    unknownEndpoint.connections = {makeConnection(QStringLiteral("a"), QStringLiteral("x"))};
+    invalidCandidates.append(unknownEndpoint);
+
+    FlowGraphCandidate duplicateEdge;
+    duplicateEdge.orderedIds = QStringList() << QStringLiteral("a") << QStringLiteral("b") << QStringLiteral("c");
+    duplicateEdge.connections = {makeConnection(QStringLiteral("a"), QStringLiteral("b")),
+                                 makeConnection(QStringLiteral("a"), QStringLiteral("b"))};
+    invalidCandidates.append(duplicateEdge);
+
+    for (const FlowGraphCandidate& candidate : invalidCandidates) {
+        QString error;
+        QVERIFY(!project.applyStructureTransaction(candidate, StructureEditOrigin::Gui, &error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!project.isModified());
+        QCOMPARE(project.structureFingerprint(), originalFingerprint);
+        QCOMPARE(project.modules().size(), 3);
+        for (int i = 0; i < originalOrder.size(); ++i)
+            QCOMPARE(project.modules().at(i).id, originalOrder.at(i));
+        QCOMPARE(structureSpy.count(), 0);
+        QCOMPARE(moduleAddedSpy.count(), 0);
+        QCOMPARE(connectionAddedSpy.count(), 0);
+    }
 }
 
 // 阶段1 §3（G1，审核整改 R1）：ProjectManager 共享守卫的 取消/保存/放弃 三态回归——

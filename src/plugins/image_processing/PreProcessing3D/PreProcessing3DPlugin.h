@@ -17,7 +17,7 @@ namespace DeepLux {
 // height_invalid_value 契约键供下游优先采用。
 class DEEPLUX_PLUGIN_API PreProcessing3DPlugin : public ModuleBase {
     Q_OBJECT
-    Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
+    Q_PLUGIN_METADATA(IID DEEPLUX_MODULE_INTERFACE_IID FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
 
 public:

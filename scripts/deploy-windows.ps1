@@ -246,13 +246,84 @@ Write-Host "[DONE] Installed to $Prefix"
 Write-Host "       plugins: $pluginCount"
 Write-Host "       run    : $(Join-Path $binDir 'DeepLux.exe') --gui"
 
-# --- Smoke test with a clean PATH (proves the tree is relocatable) -------------
+# --- Smoke test: isolated user dir + independent manifest ---------------------
 if (-not $SkipSmokeTest) {
     $savedPath = $env:PATH
+    $savedAppData = $env:DEEPLUX_APP_DATA_DIR
+    $savedUserProfile = $env:USERPROFILE
+    $savedHome = $env:HOME
     $stdoutFile = Join-Path $env:TEMP ("deeplux-smoke-" + [guid]::NewGuid().ToString("N") + ".txt")
     $stderrFile = Join-Path $env:TEMP ("deeplux-smoke-" + [guid]::NewGuid().ToString("N") + ".err")
+    $isolatedData = Join-Path $env:TEMP ("deeplux-smoke-data-" + [guid]::NewGuid().ToString("N"))
     try {
+        New-Item -ItemType Directory -Path $isolatedData -Force | Out-Null
+        # Isolate the user plugin dir so a stray ~/.deeplux cannot mask a missing
+        # packaged plugin. DeepLux resolves pluginPath() from DEEPLUX_APP_DATA_DIR.
+        $env:DEEPLUX_APP_DATA_DIR = $isolatedData
+        $env:USERPROFILE = $isolatedData
+        $env:HOME = $isolatedData
         $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+
+        # Independent expected set: the build-generated manifest, NOT the installed
+        # tree (otherwise deleting a plugin dir silently shrinks the expectation).
+        $manifestPath = Join-Path $BuildDir "plugins.manifest"
+        if (-not (Test-Path $manifestPath)) {
+            $manifestPath = Join-Path $Prefix "share\deeplux\plugins.manifest"
+        }
+        if (-not (Test-Path $manifestPath)) {
+            throw "deployed CLI smoke test failed: plugins.manifest not found (build or installed tree)"
+        }
+        $manifestDirs = @(Get-Content $manifestPath -Encoding UTF8 |
+            ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+        if ($manifestDirs.Count -eq 0) {
+            throw "deployed CLI smoke test failed: plugins.manifest is empty ($manifestPath)"
+        }
+
+        # Cross-check against plugin-facts.json (single source of truth).
+        $factsPath = Join-Path $BuildDir "plugin-facts.json"
+        if (-not (Test-Path $factsPath)) {
+            $factsPath = Join-Path $Prefix "share\deeplux\plugin-facts.json"
+        }
+        if (-not (Test-Path $factsPath)) {
+            throw "deployed CLI smoke test failed: plugin-facts.json not found"
+        }
+        $facts = Get-Content $factsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ([int]$facts.packaged_plugin_count -ne $manifestDirs.Count) {
+            throw ("deployed CLI smoke test failed: facts packaged_plugin_count={0} != manifest count={1}" -f `
+                $facts.packaged_plugin_count, $manifestDirs.Count)
+        }
+
+        # Every manifest entry must have its directory, metadata and a library.
+        $pluginRoot = Join-Path $Prefix "plugins"
+        $expectedModules = @()
+        $missingDir = @()
+        $missingMeta = @()
+        $missingLib = @()
+        $invalidName = @()
+        foreach ($dir in $manifestDirs) {
+            $pdir = Join-Path $pluginRoot $dir
+            if (-not (Test-Path $pdir)) { $missingDir += $dir; continue }
+            $metaPath = Join-Path $pdir "metadata.json"
+            if (-not (Test-Path $metaPath)) { $missingMeta += $dir; continue }
+            $dlls = @(Get-ChildItem -Path $pdir -Filter "*.dll" -File -ErrorAction SilentlyContinue)
+            if ($dlls.Count -eq 0) { $missingLib += $dir; continue }
+            try { $j = Get-Content $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $missingMeta += $dir; continue }
+            $ifaces = @($j.interfaces)
+            $isCamera = ($j.category -eq 'camera') -or ($ifaces -contains 'ICameraPlugin')
+            if ($isCamera) { continue }
+            $moduleName = ""
+            if ($null -ne $j.name) { $moduleName = ([string]$j.name).Trim() }
+            if ([string]::IsNullOrEmpty($moduleName)) { $invalidName += $dir; continue }
+            $expectedModules += $moduleName
+        }
+
+        # Duplicate module identity is an error, not something to silently merge:
+        # two manifest entries claiming the same module would shrink the effective
+        # expectation and hide a missing/broken plugin.
+        $duplicateNames = @($expectedModules | Group-Object | Where-Object { $_.Count -gt 1 } |
+            ForEach-Object { $_.Name })
+        $expectedModules = @($expectedModules | Sort-Object -Unique)
+
         $exe = Join-Path $binDir "DeepLux.exe"
         # DeepLux is a WIN32 (GUI subsystem) executable: use Start-Process with
         # redirected streams instead of `&`, which does not reliably wait for or
@@ -260,21 +331,49 @@ if (-not $SkipSmokeTest) {
         $process = Start-Process -FilePath $exe -ArgumentList "--cli", "list-plugins" -Wait -PassThru `
             -NoNewWindow -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
         $output = Get-Content $stdoutFile -Encoding UTF8 -ErrorAction SilentlyContinue
+
         $loaded = 0
+        $okNames = @()
+        $failNames = @()
         $match = $output | Select-String -Pattern "Loaded Plugins \((\d+)\)" | Select-Object -First 1
         if ($match -and $match.Matches.Count -gt 0) {
             $loaded = [int]$match.Matches[0].Groups[1].Value
-        } else {
+        }
+        foreach ($line in $output) {
+            if ($line -match '^\[(OK|FAIL)\]\s+(.+?)\s+v[0-9]') {
+                if ($Matches[1] -eq 'OK') { $okNames += $Matches[2] } else { $failNames += $Matches[2] }
+            }
+        }
+        $missingModules = @($expectedModules | Where-Object { $okNames -notcontains $_ })
+
+        Write-Host ("[SMOKE] exit={0} loaded={1} expectedModules={2} manifest={3} ok={4} fail={5} missingDir={6} missingMeta={7} missingLib={8} invalidName={9} duplicateName={10}" -f `
+            $process.ExitCode, $loaded, $expectedModules.Count, $manifestDirs.Count, $okNames.Count, $failNames.Count, `
+            $missingDir.Count, $missingMeta.Count, $missingLib.Count, $invalidName.Count, $duplicateNames.Count)
+
+        $problems = @()
+        if ($missingDir.Count -gt 0) { $problems += "missing plugin dir(s): " + ($missingDir -join ', ') }
+        if ($missingMeta.Count -gt 0) { $problems += "missing/invalid metadata: " + ($missingMeta -join ', ') }
+        if ($missingLib.Count -gt 0) { $problems += "missing library (.dll): " + ($missingLib -join ', ') }
+        if ($invalidName.Count -gt 0) { $problems += "plugin(s) with missing/empty metadata name: " + ($invalidName -join ', ') }
+        if ($duplicateNames.Count -gt 0) { $problems += "duplicate module name(s): " + ($duplicateNames -join ', ') }
+        if ($failNames.Count -gt 0) { $problems += "plugin(s) failed to load: " + ($failNames -join ', ') }
+        if ($missingModules.Count -gt 0) { $problems += "module(s) not loaded: " + ($missingModules -join ', ') }
+        if ($problems.Count -gt 0) {
             Write-Host ($output | Select-Object -Last 10 | Out-String)
             Write-Host (Get-Content $stderrFile -Encoding UTF8 -ErrorAction SilentlyContinue | Out-String)
+            throw ("deployed CLI smoke test failed: " + ($problems -join '; '))
         }
-        Write-Host "[SMOKE] exit=$($process.ExitCode) loaded=$loaded"
-        if ($process.ExitCode -ne 0 -or $loaded -lt 10) {
-            throw "deployed CLI smoke test failed"
+        if ($process.ExitCode -ne 0 -or $loaded -ne $expectedModules.Count) {
+            Write-Host ($output | Select-Object -Last 10 | Out-String)
+            throw "deployed CLI smoke test failed: expected $($expectedModules.Count) modules, got $loaded (exit=$($process.ExitCode))"
         }
     } finally {
         $env:PATH = $savedPath
+        $env:DEEPLUX_APP_DATA_DIR = $savedAppData
+        $env:USERPROFILE = $savedUserProfile
+        $env:HOME = $savedHome
         Remove-Item $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+        Remove-Item $isolatedData -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 

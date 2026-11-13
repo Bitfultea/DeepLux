@@ -1,0 +1,8 @@
+# Qt platform screen registries and Fontconfig's process-global value cache
+# observed in QtTest shutdown; project allocation stacks remain unsuppressed.
+leak:QScreen::QScreen
+leak:QPlatformScreen::QPlatformScreen
+leak:QWindowSystemInterface::handleScreenAdded
+leak:FcPatternObjectCount
+leak:FcValueDestroy
+leak:FcValueSave

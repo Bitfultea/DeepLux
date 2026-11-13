@@ -103,9 +103,55 @@ sequenceDiagram
   - `gui`：模块在 GUI 线程执行；后台工作者通过 `BlockingQueuedConnection` 回投 GUI 线程。
   - `worker`：模块直接在服务工作线程内联执行；满足 `threadSafe && !blocking` 时也可进入并行批次。
   - 串行与并行入口共用同一亲和性判定；`worker` 亲和模块不得触碰 QWidget/QPixmap/QPainter/OpenGL/相机/事件循环或创建跨线程 QObject。只有通过 B9 审计（静态 + GUI/worker 双实例一致性）的插件才标记 `worker`，当前名单与限制见 [插件手册](plugins.md#执行亲和性executionaffinity与审计状态)。
-- **暂停、停止与收尾**：用户暂停在模块边界生效（`pauseForJob`），保留已完成的流水线、控制队列与运行模式且**不**发 `runFinished`；`continueRun()` 提交一个 `Resume` 段恢复执行。`stop()` 设置 job 级取消标志并立即返回，状态 `Stopping→Idle`，`jobFinished(stopped=true)`。断点暂停与用户暂停在 Agent 侧分别以 `pauseReason=breakpoint/user` 区分。
+- **暂停、停止与收尾**：用户暂停在模块边界生效（`pauseForJob`），保留已完成的流水线、控制队列与运行模式且**不**发 `runFinished`；`continueRun()` 提交一个 `Resume` 段恢复执行。`FlowExecutionService::stop()` 设置取消请求并唤醒 worker 后立即返回；在途 job 仍需协作退出，随后 worker 在收尾时依次提交 `Stopping`、`Idle`，再发 `jobFinished(stopped=true)`。正常完成和失败收尾不经过 `Stopping`。断点暂停与用户暂停在 Agent 侧分别以 `pauseReason=breakpoint/user` 区分。
 - **结果回传与刷新链路**：`RunEngine::displayFrameReady`（工作线程发出）→ MainWindow 按 `(jobId, runId)` 取 `latestDisplayFrame(viewportId)` 并做身份校验（`DisplayFrame::matchesIdentity`，旧 job/旧轮迟到帧直接丢弃）→ `ImageRefreshCoalescer`（约 50ms 频率上限 + latest-wins）→ `DisplayManager::displayImage(..., preserveView=true)` → 视口；`dataDisplayed(viewportId)` 在渲染后发出，仅用于视口绑定（测量叠加归属）。`moduleFinished` 只更新节点状态、耗时与检查器（点云 3D 专用路径例外），不再直接刷新大图。测量叠加只读同帧快照，不读引擎实时输出。Agent 的 `run_flow/pause_flow/resume_flow/stop_flow` 同样经服务执行，`run_flow(wait=true)` 在 job 真正回到 Idle 后才返回。
-- **Stopping 语义备注**：设计文档 §5.1 的状态转换列表包含 `Stopping`；实现只在停止请求实际胜出时短暂提交 `Stopping` 后立即 `Idle`（正常/失败收尾不经过 `Stopping`）。该措辞差异的取舍与理由见 [后台执行验收报告](reports/background-execution-acceptance.md)。
+- **执行顺序布局**：B1–B5 已实施。`Project::modules()` 与连接声明顺序经 `FlowGraphAnalyzer` 生成 `FlowOrderPlan`，分别驱动引擎 `dataOrder`、流程树 `displayOrder`、画布布局和 Agent 流程状态；规则与现状见本页后文的“执行顺序布局”章节，逐项证据见[执行顺序布局验收报告](reports/execution-order-layout-acceptance.md)。
+- **Stopping 状态边界**：`Stopping` 是 job 收尾时的短暂服务状态提交，不是在调用 `stop()` 时同步设置；在途模块返回前仍处于协作取消阶段。实现取舍与验收范围见[后台执行验收报告](reports/background-execution-acceptance.md)。
+
+## 执行顺序布局（FlowGraphAnalyzer / FlowOrderPlan / FlowLayoutCoordinator）
+
+针对「同一工程在引擎、流程树、画布上出现三套顺序」的问题，B1–B5 引入单一计划源：所有展示与运行顺序都由 `Project` 的模块声明顺序、连接声明顺序和插件端口契约推导，不再由流程树行序或显示名反推。
+
+```mermaid
+flowchart LR
+    P[Project<br/>modules 顺序 + connections 声明顺序] --> Catalog[FlowGraphCatalog<br/>flowControlType / inputPorts / outputPorts]
+    Catalog --> Analyzer[FlowGraphAnalyzer<br/>normalizeConnections + analyze]
+    Analyzer --> Plan[FlowOrderPlan]
+    Plan -->|dataOrder| Engine[RunEngine<br/>m_executionOrder]
+    Plan -->|displayOrder| Tree[流程树<br/>ProcessTreeController::applyExecutionOrder]
+    Plan -->|rank / lane / branchLabel / loopBackEdges| Canvas[FlowCanvas<br/>applyExecutionLayout / applyControlFlowVisuals]
+    Plan -->|executionRank / lane / displayIndex| Agent[AgentActor::getFlowState]
+    Coordinator[FlowLayoutCoordinator<br/>单一 QTimer 合并结构信号] --> Plan
+    P -->|structureChanged origin| Coordinator
+```
+
+### 职责
+
+| 组件 | 职责 | 不承担 |
+| --- | --- | --- |
+| `FlowGraphAnalyzer` | 纯逻辑：`normalizeConnections`（统一边类型归一化，隐式 `next`/`control` 与 `PortSpec.control` 判定只在此实现一次）与 `analyze`（生成计划）；`validateCandidate` 只读校验拖动候选 | 不访问 `PluginManager`/`ModuleBase` 单例，不修改 `Project` |
+| `FlowGraphCatalog` | 一次分析/校验范围内全部模块描述符，字段为 `instanceId`、`flowType`、`inputPorts`、`outputPorts`。引擎从已加载 `ModuleBase*` 构建、UI 从 `m_flowModules` 构建、Agent 按 `ModuleInstance.moduleId` 用 `PluginManager::createModule()` 构建 | 调用方不得各自推断边类型或从树顺序/显示名推断模块 |
+| `FlowOrderPlan` | `dataOrder`（旧 FIFO 运行顺序）、`displayOrder`（前向依赖拓扑展示序）、`nodes`（`rank`/`lane`/`displayIndex`/`branchLabel`/`controlParent`）、`controlEdges`、`loopBackEdges`、`reentrantModules`、`loopRegions` | 不等于动态执行轨迹；控制分支只保证前向依赖与分组 |
+| `FlowLayoutCoordinator` | 连接 `Project` 结构信号，用**单一 single-shot `QTimer`** 合并同一事件循环内的多次变更；`Full`/`Normalize` 布局画布、把 `displayOrder` 写入流程树；`suppressAutoLayout` 用于命令应用期间抑制自动重排 | 不决定引擎顺序；不覆盖用户手工拖动的位置 |
+| `Project::layoutInitialized` | 工程 JSON 中的布局标志。`true` 且坐标有效时工程切换**原样保留画布坐标**，仅按计划排流程树；`false` 或坐标非法时才执行 `Full` 并置 `true` | 不在已初始化工程上强制重排 |
+| `Project::structureFingerprint` / `structureFingerprintFor` | 模块顺序 + 连接声明顺序（含声明下标与四元组 + `edgeType`）的 SHA-1，**不排序连接**；为 `ReorderLinearChainCommand` 的 before/after 快照与跨栈失效提供一致性判据 | 不替代图/端口校验（由 `validateCandidate` 完成） |
+
+### 三套顺序如何分离
+
+1. **规范输入**：`Project::modules()` 是分析器的 `moduleOrder`，`Project::connections()` 保持声明顺序；二者共同决定 `dataOrder`。
+2. **引擎 `dataOrder`**：`RunEngine::buildExecutionOrder()` 从已加载 `ModuleBase*` 构建 catalog，调用 `analyze` 后取 `plan.dataOrder`。`MainWindow::syncModulesToRunEngine()` 按 `Project::modules()` 顺序 `engine.addModule()`，流程树只提供 `instanceId -> QTreeWidgetItem*` 映射（B3.1b 的 P0-3 修复）；因此重排流程树不会改变运行顺序。
+3. **展示 `displayOrder`**：`FlowLayoutCoordinator` 成功后调用 `ProcessTreeController::applyExecutionOrder(plan.displayOrder)`；纯数据图 `displayOrder == dataOrder`，控制流图是前向依赖图的合法拓扑序。
+4. **画布 rank/lane**：`FlowCanvas::applyExecutionLayout(plan, Full/Normalize)` 用 `rank` 决定 Y、`lane` 决定 X；`applyControlFlowVisuals(plan)` 把 `branchLabel` 画成节点徽标、把 `loopBackEdges` 画成虚线 + 箭头 + `LOOP` 标记。徽标只扩大 `boundingRect()`，`shape()` 固定为原始矩形，**不影响鼠标命中与选择**。
+5. **Agent 只读字段**：`get_flow_state` 按 `Project` 顺序构建 catalog 并追加 `executionRank`/`lane`/`displayIndex`（字段只增不改）；布局仍由 `Project` 结构信号驱动协调器，Agent 不直接改画布/流程树。
+
+### 结构编辑与跨栈撤销
+
+- `Project::applyStructureTransaction(candidate, origin, error)` 一次性替换模块顺序与连接，成功后 `touch()` 并发 `structureChanged(origin)`；任一前置校验失败直接返回、零修改。
+- `StructureEditOrigin` 取值为 `Gui` / `Agent` / `System`。Gui 与 Agent 撤销栈互相监听对方来源的结构变更，按 session token + 指纹把已失效命令 `setObsolete(true)`，避免交错撤销覆盖后续编辑。
+- 流程树拖动先经 `FlowGraphAnalyzer::validateCandidate` 只读校验（无连接顺序列表任意重排；已连接简单线性链按统一端口模式重连；分支/汇合拒绝），再由 `ReorderLinearChainCommand` 在**首次 `redo()`** 内提交唯一一次事务；命令应用期间抑制自动布局，由命令内显式刷新树、连线、位置与引擎同步。
+- `FlowCanvas::connectionKey` 与 `FlowGraphAnalyzer` / `RunEngine` 生成 `loopBackEdges` 的规范键一致（`from + 0x1F + to + 0x1F + fromPort + 0x1F + toPort`），画布去重与回边判定共用同一条规则。
+
+验收命令、逐项结论与风险登记见 [执行顺序布局验收报告](reports/execution-order-layout-acceptance.md)。
 
 ## 插件契约
 

@@ -195,11 +195,17 @@ DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& r
     // 未执行/被拒绝的确认批次：为每个 call 补一条 tool 结果，保持 OpenAI 对话合法性
     void appendToolResultsForCalls(const QJsonArray& calls, const QJsonObject& result);
 
-    int turnDeadlineMs() const;
-    void setTurnDeadlineMsForTest(int ms);
-    void setTurnDeadlineConfigForTest(int ms);
-    bool turnDeadlineExceeded() const;
-    void endTurnWithReason(const QString& responseText, const QString& errorText, bool suppressClientError);
+    // ---- 上下文治理（设计 §7/§8）：唯一配置读取点 + 预算/阈值访问器 ----
+    int contextBudgetTokens() const;     // agent/contextBudgetTokens 默认 128000，clamp [16000,1048576]
+    int toolResultMaxChars() const;      // agent/toolResultMaxChars 默认 6000，clamp [1000,64000]
+    int flowSummaryThreshold() const;    // agent/flowSummaryThreshold 默认 24，clamp [1,1000]
+    int flowSummaryPreviewCount() const; // agent/flowSummaryPreviewCount 默认 24，clamp [1,200]
+    /// 测试用固定上限（-1 = 沿用配置；避免依赖 ConfigManager 初始化时序）
+#ifdef DEEPLUX_BUILD_TESTS
+    DEEPLUX_TEST_VISIBILITY : void setContextLimitsForTest(int budgetTokens, int toolResultMaxChars,
+                                                           int summaryThreshold, int summaryPreviewCount);
+#endif
+
     bool sendPreparedContext();
     void failContextSend(const QString& code, const QString& detail);
     void bindProjectSignals(Project* project);
@@ -216,15 +222,23 @@ DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& r
     qint64 estimateTokensFor(const QList<AgentMessage>& messages, const QString& systemPrompt,
                              bool countReasoning) const;
     bool echoesReasoning() const;
-    int contextBudgetTokens() const;
-    int toolResultMaxChars() const;
-    int flowSummaryThreshold() const;
-    int flowSummaryPreviewCount() const;
-    void setContextLimitsForTest(int budgetTokens, int toolResultMaxChars, int summaryThreshold,
-                                 int summaryPreviewCount);
+
+public:
+    /// 保首尾的 tool 结果截断（设计 §7.4；maxChars 会 clamp 到 [1000,64000]）
     static QString truncateToolResult(const QString& json, int maxChars);
 
-    bool m_initialized = false;
+    // ---- R1/L9：非流式 reasoning 只读访问器 + 单轮全局 deadline ----
+    int turnDeadlineMs() const; // agent/turnDeadlineMs 默认 600000，clamp [10000,3600000]
+    // 绕过 clamp，仅用于触发超时。
+#ifdef DEEPLUX_BUILD_TESTS
+    DEEPLUX_TEST_VISIBILITY : void setTurnDeadlineMsForTest(int ms);
+    DEEPLUX_TEST_VISIBILITY : void setTurnDeadlineConfigForTest(int ms); // 模拟配置值（走 clamp）
+#endif
+    DEEPLUX_TEST_VISIBILITY : bool turnDeadlineExceeded() const;
+    DEEPLUX_TEST_VISIBILITY : void endTurnWithReason(const QString& responseText, const QString& errorText,
+                                                     bool suppressClientError);
+
+    DEEPLUX_TEST_VISIBILITY : bool m_initialized = false;
     PermissionLevel m_permissionLevel = PermissionLevel::Advisor;
 
     AgentObserver* m_observer = nullptr;
@@ -275,17 +289,25 @@ DEEPLUX_TEST_VISIBILITY slots : void onLLMResponse(const struct AgentResponse& r
     bool m_streamActive = false;
     QString m_lastResponseReasoning;
     QElapsedTimer m_turnTimer;
-    int m_turnDeadlineOverride = -1;
-    int m_turnDeadlineConfigOverride = -1;
+#ifdef DEEPLUX_BUILD_TESTS
+    int m_turnDeadlineOverride = -1;       // 测试触发值（绕过 clamp）
+    int m_turnDeadlineConfigOverride = -1; // 模拟配置值（走 clamp）
+#endif
+
+    // ---- 工程会话身份/版本（B2：确认有效期；内部递增，不以指针/路径为唯一身份）----
     quint64 m_projectSessionId = 0;
     quint64 m_projectRevision = 0;
     quint64 m_confirmationSessionId = 0;
     quint64 m_confirmationRevision = 0;
     QList<QMetaObject::Connection> m_projectConnections;
+
+    // ---- 上下文治理（设计 §7）：测试覆盖值（-1 = 沿用配置）----
+#ifdef DEEPLUX_BUILD_TESTS
     int m_contextBudgetOverride = -1;
     int m_toolResultMaxCharsOverride = -1;
     int m_summaryThresholdOverride = -1;
     int m_summaryPreviewOverride = -1;
+#endif
 
     int m_agentTurnCount = 0;
     int m_parameterCorrectionRetries = 0;

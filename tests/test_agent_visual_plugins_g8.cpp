@@ -20,6 +20,10 @@
 #include <QUuid>
 #include <QtTest/QtTest>
 #include <algorithm>
+#if __has_include(<opencv2/cvconfig.h>)
+#include <opencv2/cvconfig.h>
+#define DEEPLUX_OPENCV_CVCONFIG_AVAILABLE
+#endif
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/objdetect.hpp>
@@ -686,9 +690,14 @@ private slots:
         const QString blankPath = QDir(m_appDataDir.path()).filePath(QStringLiteral("g8-blank.png"));
         const QString expectedQr = createQrFixture(qrPath);
         QVERIFY(!expectedQr.isEmpty());
+#ifndef DEEPLUX_OPENCV_CVCONFIG_AVAILABLE
+        QSKIP("OpenCV package does not install cvconfig.h; QUIRC capability cannot be verified");
+#elif !defined(HAVE_QUIRC)
+        QSKIP("OpenCV was built without QUIRC QR decoding support");
+#endif
         cv::QRCodeDetector qrCapabilityProbe;
-        if (qrCapabilityProbe.detectAndDecode(cv::imread(qrPath.toStdString())).empty())
-            QSKIP("The OpenCV build does not include QR decoding support (QUIRC)");
+        const std::string decodedQr = qrCapabilityProbe.detectAndDecode(cv::imread(qrPath.toStdString()));
+        QVERIFY2(decodedQr == expectedQr.toStdString(), "OpenCV with QUIRC failed to decode the generated QR fixture");
         QVERIFY(cv::imwrite(blankPath.toStdString(), cv::Mat(296, 296, CV_8UC1, cv::Scalar(255))));
 
         AgentActor actor;

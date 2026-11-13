@@ -1,5 +1,7 @@
 # 阶段 2 验收记录：完整参数契约和可发现性
 
+> 历史验收快照：本文状态与结果对应其记录日期和基线；当前项目状态见 [docs/STATUS.md](../STATUS.md)。
+
 依据 `docs/agent-capability-improvement-plan.md` §7。阶段 1 G1 已由独立审核 Agent 于 2026-09-30 判 PASS（见 `agent-phase-1-acceptance.md` §12）。**状态：G2 PASS（2026-09-30，第 2 轮独立复审）；仅放行阶段 3。**本文件的接口契约在阶段 2 编码前冻结。
 
 ## 1. 接口契约（编码前冻结）

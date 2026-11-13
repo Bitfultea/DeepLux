@@ -2502,14 +2502,17 @@ void AgentController::endTurnWithReason(const QString& responseText, const QStri
 }
 
 int AgentController::turnDeadlineMs() const {
-    const int configured = m_turnDeadlineConfigOverride >= 0
-                               ? m_turnDeadlineConfigOverride
-                               : (ConfigManager::instance().isInitialized()
-                                      ? ConfigManager::instance().groupInt("agent", "turnDeadlineMs", 600000)
-                                      : 600000);
+    int configured = ConfigManager::instance().isInitialized()
+                         ? ConfigManager::instance().groupInt("agent", "turnDeadlineMs", 600000)
+                         : 600000;
+#ifdef DEEPLUX_BUILD_TESTS
+    if (m_turnDeadlineConfigOverride >= 0)
+        configured = m_turnDeadlineConfigOverride;
+#endif
     return qBound(10000, configured, 3600000);
 }
 
+#ifdef DEEPLUX_BUILD_TESTS
 void AgentController::setTurnDeadlineMsForTest(int ms) {
     m_turnDeadlineOverride = ms;
 }
@@ -2517,11 +2520,16 @@ void AgentController::setTurnDeadlineMsForTest(int ms) {
 void AgentController::setTurnDeadlineConfigForTest(int ms) {
     m_turnDeadlineConfigOverride = ms;
 }
+#endif
 
 bool AgentController::turnDeadlineExceeded() const {
     if (!m_turnTimer.isValid())
         return false;
-    const int deadline = m_turnDeadlineOverride >= 0 ? m_turnDeadlineOverride : turnDeadlineMs();
+    int deadline = turnDeadlineMs();
+#ifdef DEEPLUX_BUILD_TESTS
+    if (m_turnDeadlineOverride >= 0)
+        deadline = m_turnDeadlineOverride;
+#endif
     return deadline > 0 && m_turnTimer.elapsed() >= deadline;
 }
 
@@ -3137,6 +3145,8 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls, const QString
         qWarning() << "[AgentController] Unexpected extendAgentLoop in state" << stateName(currentState);
         return;
     }
+    // 中止代号：工具执行（可能含嵌套运行等待）返回后据此判定本轮是否已被用户中止
+    const quint64 turn = m_turnGeneration;
     // 阶段1 审核整改 R3：超限路径也必须保证"每个原始 call ID 恰有一个结果"——
     // assistant 消息（含 tool_calls）已入历史,若不逐 call 补结构化失败结果,
     // 对话将留下孤立 tool_calls（违反 OpenAI 协议与计划 §12.5 对话合法性）
@@ -3164,7 +3174,18 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls, const QString
         }
         trimHistoryIfNeeded();
     };
-
+    // L9 检查点 1：超时批次不执行，并为原始调用补齐协议结果。
+    if (turnDeadlineExceeded()) {
+#ifdef DEEPLUX_BUILD_TESTS
+        const int deadline = m_turnDeadlineOverride >= 0 ? m_turnDeadlineOverride : turnDeadlineMs();
+#else
+        const int deadline = turnDeadlineMs();
+#endif
+        const QString message = QStringLiteral("已超过单轮总时长上限（%1 ms），本轮已中止").arg(deadline);
+        appendLimitResults(toolCalls, QStringLiteral("TURN_DEADLINE_EXCEEDED"), message);
+        endTurnWithReason(message, message, false);
+        return;
+    }
     if (toolCalls.size() > kMaxToolCallsPerTurn) {
         appendLimitResults(toolCalls, QStringLiteral("BATCH_LIMIT_EXCEEDED"),
                            QStringLiteral("已达到单轮工具数量上限（%1），本批次未执行").arg(kMaxToolCallsPerTurn));
@@ -3332,7 +3353,23 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls, const QString
             m_pendingQueries.append({parsed[i].id, parsed[i].name, boundParams});
         }
     }
+    // 中止后仍保留审计与 tool 消息（保持 assistant.tool_calls 配对），但不续跑 LLM
+    if (turn != m_turnGeneration || state() != AgentState::Executing) {
+        qWarning() << "[AgentController] tool batch finished after abort; dropping continuation";
+        return;
+    }
     attachToolImages(resultsArray);
+    // L9 检查点 2：等待类工具可能跨过 deadline
+    if (turnDeadlineExceeded()) {
+#ifdef DEEPLUX_BUILD_TESTS
+        const int deadline = m_turnDeadlineOverride >= 0 ? m_turnDeadlineOverride : turnDeadlineMs();
+#else
+        const int deadline = turnDeadlineMs();
+#endif
+        const QString message = QStringLiteral("已超过单轮总时长上限（%1 ms），本轮已中止").arg(deadline);
+        endTurnWithReason(message, message, false);
+        return;
+    }
     trimHistoryIfNeeded();
 
     // 已经执行过任一工具的批次不自动重试。只有全批预校验零执行、明确可修正的参数错误
@@ -3499,7 +3536,11 @@ void AgentController::continueAgentLoop() {
         return;
     }
     if (turnDeadlineExceeded()) {
+#ifdef DEEPLUX_BUILD_TESTS
         const int deadline = m_turnDeadlineOverride >= 0 ? m_turnDeadlineOverride : turnDeadlineMs();
+#else
+        const int deadline = turnDeadlineMs();
+#endif
         const QString message = QStringLiteral("已超过单轮总时长上限（%1 ms），本轮已中止").arg(deadline);
         endTurnWithReason(message, message, false);
         return;
@@ -3658,8 +3699,10 @@ bool AgentController::stripImagesFromLastUserMessage() {
 }
 
 int AgentController::contextBudgetTokens() const {
+#ifdef DEEPLUX_BUILD_TESTS
     if (m_contextBudgetOverride >= 0)
         return m_contextBudgetOverride;
+#endif
     const int configured = ConfigManager::instance().isInitialized()
                                ? ConfigManager::instance().groupInt("agent", "contextBudgetTokens", 128000)
                                : 128000;
@@ -3667,8 +3710,10 @@ int AgentController::contextBudgetTokens() const {
 }
 
 int AgentController::toolResultMaxChars() const {
+#ifdef DEEPLUX_BUILD_TESTS
     if (m_toolResultMaxCharsOverride >= 0)
         return m_toolResultMaxCharsOverride;
+#endif
     const int configured = ConfigManager::instance().isInitialized()
                                ? ConfigManager::instance().groupInt("agent", "toolResultMaxChars", 6000)
                                : 6000;
@@ -3676,8 +3721,10 @@ int AgentController::toolResultMaxChars() const {
 }
 
 int AgentController::flowSummaryThreshold() const {
+#ifdef DEEPLUX_BUILD_TESTS
     if (m_summaryThresholdOverride >= 0)
         return m_summaryThresholdOverride;
+#endif
     const int configured = ConfigManager::instance().isInitialized()
                                ? ConfigManager::instance().groupInt("agent", "flowSummaryThreshold", 24)
                                : 24;
@@ -3685,14 +3732,17 @@ int AgentController::flowSummaryThreshold() const {
 }
 
 int AgentController::flowSummaryPreviewCount() const {
+#ifdef DEEPLUX_BUILD_TESTS
     if (m_summaryPreviewOverride >= 0)
         return m_summaryPreviewOverride;
+#endif
     const int configured = ConfigManager::instance().isInitialized()
                                ? ConfigManager::instance().groupInt("agent", "flowSummaryPreviewCount", 24)
                                : 24;
     return qBound(1, configured, 200);
 }
 
+#ifdef DEEPLUX_BUILD_TESTS
 void AgentController::setContextLimitsForTest(int budgetTokens, int toolResultMaxChars, int summaryThreshold,
                                               int summaryPreviewCount) {
     if (budgetTokens >= 0)
@@ -3704,6 +3754,7 @@ void AgentController::setContextLimitsForTest(int budgetTokens, int toolResultMa
     if (summaryPreviewCount >= 0)
         m_summaryPreviewOverride = qBound(1, summaryPreviewCount, 200);
 }
+#endif
 
 QString AgentController::truncateToolResult(const QString& json, int maxChars) {
     maxChars = qBound(1000, maxChars, 64000);

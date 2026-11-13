@@ -1,5 +1,9 @@
 # 阶段 6 验收记录
 
+> 历史验收快照：本文状态与结果对应其记录日期和基线；当前项目状态见 [docs/STATUS.md](../STATUS.md)。
+>
+> **证据可达性：**文中 `build-codex-agent/agent-phase6-*-evidence/` 是当时被 `.gitignore` 排除的本地构建输出目录，未随仓库归档；目录当前不在交付树中。本文保留当时记录的摘要结果，但读者无法从本仓库复核其原始日志、哈希清单或独立审核附件。当前候选的可复核门禁见 [docs/STATUS.md](../STATUS.md) 及其链接证据。
+
 ## 当前状态
 
 **PASS（阶段 6 软件验收范围）。** G6 标准 1–6 均通过；G6-3 限定于当前仓库 69 项内置插件，第三方动态插件、真实设备物理标定和 GPU 验证仍归阶段 8。最近完整全量回归为 Slice200：全量构建退出码 0；在允许本机 loopback listener 的隔离环境运行全量 CTest **108/108 通过、0 失败、0 跳过**。Slice201 随后加强 3D queued-continuation 回归断言，当前源码重建和四个相关用例 6/6 通过；此后未重跑全量 CTest。Slice200 全量证据见 `build-codex-agent/agent-phase6-slice200-evidence/`，Slice201 刷新证据见 `build-codex-agent/agent-phase6-slice201-refresh-evidence/`。

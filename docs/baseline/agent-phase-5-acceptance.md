@@ -1,5 +1,7 @@
 # Agent 改进计划阶段 5 验收记录
 
+> 历史验收快照：本文状态与结果对应其记录日期和基线；当前项目状态见 [docs/STATUS.md](../STATUS.md)。
+
 依据 `docs/agent-capability-improvement-plan.md` §10。**当前状态：Slice 1–130 全部通过独立实现审核；G5 标准 1–7 均有 PASS 证据，G5 阶段 5 PASS（限定于计划 §10 的软件与证据范围）；阶段 6 可进入，阶段 8 现场验收仍未通过。**标准 5/6/7 的独立只读审核结论已归档于 `build-codex-agent/agent-phase5-slice127-evidence/g5-standards-audit.txt`。Slice 127 已补齐 WriteText、SaveData、SaveImage 的批准后执行边界复核；Slice 128 关闭 SaveData/SaveImage 成功 bounded cycle 扩展证据缺口，Slice 129 关闭 PLCRead/PLCCommunicate 成功 bounded cycle 扩展证据缺口，Slice 130 关闭 TCPServer 成功 bounded cycle 逐轮收发计数缺口；标准 5 的直接工具/插件入口对账见 `docs/baseline/agent-phase-5-side-effect-crosswalk.md`，阶段 8 外部门槛见 `docs/baseline/agent-phase-8-external-validation-gates.md`。阶段 8 真实设备、生产模型与 LLM provider、Windows/Qt 6 和性能门槛均保持 `NOT_RUN`，不由软件审核 PASS 推定通过。工作区仍包含前序阶段和既有未提交修改；本工作未提交、未推送。
 
 ## 1. 前置门

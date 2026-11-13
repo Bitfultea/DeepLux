@@ -262,6 +262,8 @@ SamAnnotatorDialog::SamAnnotatorDialog(QWidget* parent, bool environmentSetupOnl
 }
 
 SamAnnotatorDialog::~SamAnnotatorDialog() {
+    if (m_samClient)
+        m_samClient->disconnect(this);
     if (m_externalImageWidget)
         m_externalImageWidget->removeEventFilter(this);
     if (m_imageWidget)
@@ -274,10 +276,12 @@ SamAnnotatorDialog::~SamAnnotatorDialog() {
 }
 
 bool SamAnnotatorDialog::eventFilter(QObject* watched, QEvent* event) {
-    HImageWidget* target = activeImageWidget();
-    if (watched == target && event->type() == QEvent::Resize && m_overlay) {
-        m_overlay->setGeometry(target->rect());
-        m_overlay->raise();
+    if (event->type() == QEvent::Resize && m_overlay) {
+        auto* resizedWidget = qobject_cast<QWidget*>(watched);
+        if (resizedWidget && resizedWidget == m_overlay->parentWidget()) {
+            m_overlay->setGeometry(resizedWidget->rect());
+            m_overlay->raise();
+        }
     }
     return QDialog::eventFilter(watched, event);
 }
@@ -2212,7 +2216,7 @@ void SamAnnotatorDialog::attachToImageWidgetImpl(HImageWidget* imageWidget, cons
     if (m_externalImageWidget)
         m_externalImageWidget->disconnect(this);
     m_externalImageWidget = imageWidget;
-    auto clearExternalImage = [this, imageWidget]() {
+    auto clearExternalImage = [this]() {
         m_agentBackendImageSnapshotPinned = false;
         m_agentBackendImageSnapshot = QImage();
         m_currentImage = QImage();
@@ -2232,11 +2236,7 @@ void SamAnnotatorDialog::attachToImageWidgetImpl(HImageWidget* imageWidget, cons
         refreshSamControlState();
     };
     connect(imageWidget, &HImageWidget::imageCleared, this, clearExternalImage);
-    connect(imageWidget, &QObject::destroyed, this, [this, imageWidget, clearExternalImage]() {
-        clearExternalImage();
-        if (m_externalImageWidget == imageWidget)
-            m_externalImageWidget = nullptr;
-    });
+    connect(imageWidget, &QObject::destroyed, this, [this, clearExternalImage]() { clearExternalImage(); });
     // 共享视口像素内容变化时重置标注会话，与 openImageFromFile/setImageSnapshot 一致。
     // 像素不变而 provenance 变化只更新 lineage；局部提示和标注仍指向相同像素。
     connect(imageWidget, &HImageWidget::imageLoaded, this, [this](const QImage& newImage) {

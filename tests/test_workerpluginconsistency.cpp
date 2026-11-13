@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -11,12 +12,15 @@
 #include <QPainter>
 #include <QPointF>
 #include <QRectF>
+#include <QSemaphore>
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QVariant>
 #include <QVector>
 #include <QtTest/QtTest>
+#include <array>
+#include <atomic>
 #include <cmath>
 #include <core/base/ModuleBase.h>
 #include <core/deeplux/DataContract.h>
@@ -27,6 +31,7 @@
 #include <core/model/ImageData.h>
 #include <memory>
 #include <thread>
+#include <vector>
 
 using namespace DeepLux;
 using DeepLuxTest::PluginEntry;
@@ -270,12 +275,99 @@ Snapshot snapshotOf(IModule* module, const PortValueMap& inputs, qint64 frameId)
 
 QByteArray imageSignature(const ImageData& image) {
     const QImage converted = image.toQImage().convertToFormat(QImage::Format_RGBA8888);
-    QCryptographicHash hash(QCryptographicHash::Sha256);
-    hash.addData(QByteArray::number(converted.width()) + "x" + QByteArray::number(converted.height()));
+    // 单次 addData：把尺寸前缀与全部像素字节聚合成一个连续缓冲后一次性喂给 SHA256。
+    // Qt 5.15.3 上「convertToFormat 输出 + 逐行分块 addData」组合会产生非确定性签名
+    // （图像字节恒定却偶发不同的 SHA256，见 NF 证据文档 5.3）。聚合后喂入的字节序列
+    // 与原先逐行版本完全一致，因此严格比较强度不变。
+    QByteArray payload = QByteArray::number(converted.width()) + "x" + QByteArray::number(converted.height());
+    payload.reserve(payload.size() + converted.width() * 4 * converted.height());
     for (int y = 0; y < converted.height(); ++y) {
-        hash.addData(reinterpret_cast<const char*>(converted.constScanLine(y)), converted.width() * 4);
+        payload.append(reinterpret_cast<const char*>(converted.constScanLine(y)), converted.width() * 4);
     }
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    hash.addData(payload);
     return hash.result();
+}
+
+/// 失败时捕获双方图像与像素级差异；仅供诊断，不改变 imageSignature 的严格判等。
+/// 输出目录可用 DEEPLUX_IMAGE_DIFF_DIR 覆盖，缺省 /var/tmp/deeplux-image-diff。
+QString dumpImageDifference(const ImageData& reference, const ImageData& actual) {
+    const QImage a = reference.toQImage().convertToFormat(QImage::Format_RGBA8888);
+    const QImage b = actual.toQImage().convertToFormat(QImage::Format_RGBA8888);
+    if (a.isNull() || b.isNull()) {
+        return QStringLiteral("null image (reference=%1 actual=%2)").arg(a.isNull() ? 1 : 0).arg(b.isNull() ? 1 : 0);
+    }
+    if (a.size() != b.size()) {
+        return QStringLiteral("size %1x%2 vs %3x%4").arg(a.width()).arg(a.height()).arg(b.width()).arg(b.height());
+    }
+
+    const int w = a.width();
+    const int h = a.height();
+    static std::atomic<int> sequence{0};
+    const int seq = ++sequence;
+    const QByteArray configured = qgetenv("DEEPLUX_IMAGE_DIFF_DIR");
+    const QString dir =
+        QString::fromLocal8Bit(configured.isEmpty() ? QByteArrayLiteral("/var/tmp/deeplux-image-diff") : configured);
+    QDir().mkpath(dir);
+    const QString base = QStringLiteral("%1/diff-%2").arg(dir).arg(seq, 4, 10, QLatin1Char('0'));
+    const QString pathA = base + QStringLiteral("-reference.png");
+    const QString pathB = base + QStringLiteral("-actual.png");
+    const bool savedA = a.save(pathA, "PNG");
+    const bool savedB = b.save(pathB, "PNG");
+
+    int firstX = -1;
+    int firstY = -1;
+    QByteArray firstA(4, '\0');
+    QByteArray firstB(4, '\0');
+    qlonglong differentPixels = 0;
+    int minX = w;
+    int minY = h;
+    int maxX = -1;
+    int maxY = -1;
+    for (int y = 0; y < h; ++y) {
+        const uchar* rowA = a.constScanLine(y);
+        const uchar* rowB = b.constScanLine(y);
+        for (int x = 0; x < w; ++x) {
+            const uchar* pa = rowA + x * 4;
+            const uchar* pb = rowB + x * 4;
+            if (pa[0] != pb[0] || pa[1] != pb[1] || pa[2] != pb[2] || pa[3] != pb[3]) {
+                ++differentPixels;
+                if (firstX < 0) {
+                    firstX = x;
+                    firstY = y;
+                    firstA = QByteArray(reinterpret_cast<const char*>(pa), 4);
+                    firstB = QByteArray(reinterpret_cast<const char*>(pb), 4);
+                }
+                minX = qMin(minX, x);
+                minY = qMin(minY, y);
+                maxX = qMax(maxX, x);
+                maxY = qMax(maxY, y);
+            }
+        }
+    }
+
+    const QString detail = QStringLiteral("dump#%1 %2x%3 reference=%4(save=%5) actual=%6(save=%7); "
+                                          "firstDiffPixel=(%8,%9) refRGBA=%10 actRGBA=%11; "
+                                          "differentPixels=%12/%13; diffBBox=(%14,%15)-(%16,%17)")
+                               .arg(seq)
+                               .arg(w)
+                               .arg(h)
+                               .arg(pathA)
+                               .arg(savedA ? 1 : 0)
+                               .arg(pathB)
+                               .arg(savedB ? 1 : 0)
+                               .arg(firstX)
+                               .arg(firstY)
+                               .arg(QString::fromLatin1(firstA.toHex()))
+                               .arg(QString::fromLatin1(firstB.toHex()))
+                               .arg(differentPixels)
+                               .arg(static_cast<qlonglong>(w) * h)
+                               .arg(minX)
+                               .arg(minY)
+                               .arg(maxX)
+                               .arg(maxY);
+    qWarning().noquote() << QStringLiteral("[image-diff]") << detail;
+    return detail;
 }
 
 bool fuzzyEqual(double a, double b) {
@@ -314,8 +406,11 @@ bool mapsEqual(const QVariantMap& a, const QVariantMap& b, QString& reason) {
 
 bool valuesEqual(const QVariant& a, const QVariant& b, QString& reason) {
     if (a.canConvert<ImageData>() && b.canConvert<ImageData>()) {
-        if (imageSignature(a.value<ImageData>()) != imageSignature(b.value<ImageData>())) {
-            reason = QStringLiteral("image payload differs");
+        const QImage imageA = a.value<ImageData>().toQImage().convertToFormat(QImage::Format_RGBA8888);
+        const QImage imageB = b.value<ImageData>().toQImage().convertToFormat(QImage::Format_RGBA8888);
+        if (imageA != imageB) {
+            reason = QStringLiteral("image payload differs; %1")
+                         .arg(dumpImageDifference(a.value<ImageData>(), b.value<ImageData>()));
             return false;
         }
         return true;
@@ -596,6 +691,34 @@ private:
     }
 
 private slots:
+    /// #5 回归：签名必须稳定，且修复不得降低严格比较强度。
+    void testImageSignatureStabilityAndSensitivity() {
+        // 1) 稳定性：同一 ImageData 连续 200 次签名必须完全一致。
+        const ImageData ref = syntheticImage();
+        const QByteArray baseline = imageSignature(ref);
+        for (int i = 0; i < 200; ++i) {
+            QCOMPARE(imageSignature(ref), baseline);
+        }
+
+        // 2) 敏感性：真实 1 像素差异必须仍被 valuesEqual 拒绝。
+        QImage modified = ref.toQImage().copy();
+        const QRgb original = modified.pixel(5, 5);
+        const QRgb changed = (original == qRgb(255, 0, 0)) ? qRgb(0, 255, 0) : qRgb(255, 0, 0);
+        modified.setPixel(5, 5, changed);
+        const ImageData other(modified);
+        QString reason;
+        QVERIFY2(!valuesEqual(QVariant::fromValue(ref), QVariant::fromValue(other), reason),
+                 "imageSignature must still reject a real one-pixel difference");
+        QVERIFY2(
+            reason.contains(QStringLiteral("image payload differs")),
+            qPrintable(QStringLiteral("difference must be reported as image payload differs, got: %1").arg(reason)));
+
+        // 3) 相同内容（不同 ImageData 实例）必须判等，避免修复引入假阳性。
+        QString noReason;
+        QVERIFY2(valuesEqual(QVariant::fromValue(ref), QVariant::fromValue(ImageData(ref)), noReason),
+                 qPrintable(QStringLiteral("identical images must compare equal: %1").arg(noReason)));
+    }
+
     void initTestCase() {
         QVERIFY2(m_tempDir.isValid(), "temporary plugin directory must be valid");
         qputenv("DEEPLUX_APP_DATA_DIR", m_tempDir.filePath(QStringLiteral("appdata")).toLocal8Bit());
@@ -668,22 +791,10 @@ private slots:
         decorateInputs(pluginName, inputs);
         const Snapshot guiSnapshot = snapshotOf(first.get(), inputs, 1);
 
-        Snapshot sameInstanceWorker;
-        std::thread sameInstanceThread([&]() { sameInstanceWorker = snapshotOf(first.get(), inputs, 1); });
-        sameInstanceThread.join();
-
-        Snapshot secondInstanceWorker;
-        std::thread secondInstanceThread([&]() { secondInstanceWorker = snapshotOf(second.get(), inputs, 1); });
-        secondInstanceThread.join();
-
         QStringList failures;
-        const SnapshotComparisonResult threadResult =
-            compareSnapshots(guiSnapshot, sameInstanceWorker, *candidate, "same-instance");
-        if (!threadResult.equal) {
-            failures.append(QStringLiteral("%1: %2").arg(threadResult.label, threadResult.reason));
-        }
+        const Snapshot secondGuiSnapshot = snapshotOf(second.get(), inputs, 1);
         const SnapshotComparisonResult instanceResult =
-            compareSnapshots(sameInstanceWorker, secondInstanceWorker, *candidate, "two-instances");
+            compareSnapshots(guiSnapshot, secondGuiSnapshot, *candidate, "two-GUI-instances");
         if (!instanceResult.equal) {
             failures.append(QStringLiteral("%1: %2").arg(instanceResult.label, instanceResult.reason));
         }
@@ -694,6 +805,65 @@ private slots:
                                                          .arg(pluginName, guiSnapshot.userMessage)));
             QVERIFY2(!guiSnapshot.outputs.isEmpty(),
                      qPrintable(QStringLiteral("%1 audited as worker but produced no output port").arg(pluginName)));
+
+            constexpr int kWorkerCount = 4;
+            constexpr int kIterations = 100;
+            std::array<std::unique_ptr<IModule>, kWorkerCount> workerModules;
+            for (int i = 0; i < kWorkerCount; ++i) {
+                workerModules[static_cast<size_t>(i)].reset(PluginManager::instance().createModule(pluginName));
+                QVERIFY2(workerModules[static_cast<size_t>(i)] != nullptr,
+                         qPrintable(QStringLiteral("createModule(worker %1) failed: %2").arg(i).arg(pluginName)));
+                applyTestParams(workerModules[static_cast<size_t>(i)].get(), pluginName,
+                                QStringLiteral("parallel_%1").arg(i));
+                QVERIFY2(workerModules[static_cast<size_t>(i)]->initialize(),
+                         qPrintable(QStringLiteral("initialize(worker %1) failed: %2").arg(i).arg(pluginName)));
+            }
+
+            QSemaphore ready;
+            QSemaphore start;
+            std::array<std::thread, kWorkerCount> workers;
+            std::array<int, kWorkerCount> completed{};
+            std::array<QString, kWorkerCount> mismatches;
+            std::atomic<int> activeExecutions{0};
+            std::atomic<int> maxConcurrentExecutions{0};
+            for (int i = 0; i < kWorkerCount; ++i) {
+                workers[static_cast<size_t>(i)] = std::thread([&, i] {
+                    ready.release();
+                    start.acquire();
+                    IModule* worker = workerModules[static_cast<size_t>(i)].get();
+                    for (int iteration = 0; iteration < kIterations; ++iteration) {
+                        const int active = activeExecutions.fetch_add(1, std::memory_order_relaxed) + 1;
+                        int maximum = maxConcurrentExecutions.load(std::memory_order_relaxed);
+                        while (active > maximum && !maxConcurrentExecutions.compare_exchange_weak(
+                                                       maximum, active, std::memory_order_relaxed)) {
+                        }
+                        const Snapshot actual = snapshotOf(worker, inputs, 1);
+                        activeExecutions.fetch_sub(1, std::memory_order_relaxed);
+                        const SnapshotComparisonResult comparison =
+                            compareSnapshots(guiSnapshot, actual, *candidate, "parallel-worker");
+                        if (!comparison.equal && mismatches[static_cast<size_t>(i)].isEmpty())
+                            mismatches[static_cast<size_t>(i)] = comparison.reason;
+                        ++completed[static_cast<size_t>(i)];
+                    }
+                });
+            }
+            const bool allReady = ready.tryAcquire(kWorkerCount, 10000);
+            start.release(kWorkerCount);
+            for (std::thread& worker : workers) {
+                worker.join();
+            }
+            QVERIFY2(allReady,
+                     qPrintable(QStringLiteral("%1 workers did not reach the start barrier").arg(pluginName)));
+            QVERIFY2(maxConcurrentExecutions.load(std::memory_order_relaxed) > 1,
+                     qPrintable(QStringLiteral("%1 worker calls did not overlap").arg(pluginName)));
+            for (int i = 0; i < kWorkerCount; ++i) {
+                QCOMPARE(completed[static_cast<size_t>(i)], kIterations);
+                QVERIFY2(mismatches[static_cast<size_t>(i)].isEmpty(),
+                         qPrintable(QStringLiteral("%1 worker %2: %3")
+                                        .arg(pluginName)
+                                        .arg(i)
+                                        .arg(mismatches[static_cast<size_t>(i)])));
+            }
         }
 
         qInfo().noquote() << QStringLiteral("[audit] %1 (%2): success=%3 errorCode=%4 outputs=%5 message=%6")

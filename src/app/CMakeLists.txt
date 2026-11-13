@@ -45,7 +45,7 @@ install(TARGETS DeepLux
 )
 
 # Install CLI wrapper (Linux only)
-if(LINUX)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/deeplux
             DESTINATION ${CMAKE_INSTALL_BINDIR}
             RENAME deeplux)
@@ -82,6 +82,11 @@ endif()
 
 add_executable(deeplux-mcp-bridge mcp/main.cpp)
 target_link_libraries(deeplux-mcp-bridge PRIVATE deeplux_mcp)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set_target_properties(deeplux-mcp-bridge PROPERTIES
+        INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}"
+    )
+endif()
 
 install(TARGETS deeplux-mcp-bridge
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

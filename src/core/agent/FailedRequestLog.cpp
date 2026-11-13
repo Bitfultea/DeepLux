@@ -78,6 +78,7 @@ FailedRequestLog& FailedRequestLog::instance() {
     return instance;
 }
 
+#ifdef DEEPLUX_BUILD_TESTS
 void FailedRequestLog::setEnabledForTest(bool enabled) {
     m_enabledOverride = enabled ? 1 : 0;
 }
@@ -115,10 +116,13 @@ void FailedRequestLog::resetForTest() {
     m_consecutiveFailures = 0;
     m_droppedRecords = 0;
 }
+#endif
 
 bool FailedRequestLog::enabled() const {
+#ifdef DEEPLUX_BUILD_TESTS
     if (m_enabledOverride >= 0)
         return m_enabledOverride == 1;
+#endif
     if (!ConfigManager::instance().isInitialized())
         return false;
     // B5：未显式配置的用户默认不保存失败请求正文；已有显式值继续尊重
@@ -126,8 +130,10 @@ bool FailedRequestLog::enabled() const {
 }
 
 int FailedRequestLog::maxFileBytes() const {
+#ifdef DEEPLUX_BUILD_TESTS
     if (m_maxFileBytesOverride > 0)
         return m_maxFileBytesOverride; // 测试注入（可低于生产下限）
+#endif
     const int configured = ConfigManager::instance().isInitialized()
                                ? ConfigManager::instance().groupInt("agent", "failedRequestMaxBytes", 1048576)
                                : 1048576;
@@ -135,8 +141,10 @@ int FailedRequestLog::maxFileBytes() const {
 }
 
 int FailedRequestLog::recordMaxBytes() const {
+#ifdef DEEPLUX_BUILD_TESTS
     if (m_recordMaxBytesOverride > 0)
         return m_recordMaxBytesOverride;
+#endif
     const int configured = ConfigManager::instance().isInitialized()
                                ? ConfigManager::instance().groupInt("agent", "failedRequestRecordMaxBytes", 262144)
                                : 262144;
@@ -144,8 +152,10 @@ int FailedRequestLog::recordMaxBytes() const {
 }
 
 int FailedRequestLog::retentionDays() const {
+#ifdef DEEPLUX_BUILD_TESTS
     if (m_retentionDaysOverride > 0)
         return m_retentionDaysOverride;
+#endif
     const int configured = ConfigManager::instance().isInitialized()
                                ? ConfigManager::instance().groupInt("agent", "auditRetentionDays", 14)
                                : 14;
@@ -153,11 +163,19 @@ int FailedRequestLog::retentionDays() const {
 }
 
 QString FailedRequestLog::logDir() const {
+#ifdef DEEPLUX_BUILD_TESTS
     return m_logDirOverride.isEmpty() ? PathUtils::logPath() : m_logDirOverride;
+#else
+    return PathUtils::logPath();
+#endif
 }
 
 QDateTime FailedRequestLog::now() const {
+#ifdef DEEPLUX_BUILD_TESTS
     return m_nowOverride.isValid() ? m_nowOverride : QDateTime::currentDateTime();
+#else
+    return QDateTime::currentDateTime();
+#endif
 }
 
 QString FailedRequestLog::filePathFor(const QDate& date) const {
@@ -208,8 +226,7 @@ QJsonObject FailedRequestLog::buildRecord(const LLMErrorInfo& info, const QByteA
                                           const QString& endpoint, const QString& model,
                                           const QList<AgentMessage>& messages, QStringList& redactionApplied) const {
     QJsonObject record;
-    record.insert(QStringLiteral("ts"),
-                  (m_nowOverride.isValid() ? m_nowOverride : QDateTime::currentDateTime()).toString(Qt::ISODateWithMs));
+    record.insert(QStringLiteral("ts"), now().toString(Qt::ISODateWithMs));
     record.insert(QStringLiteral("category"), llmErrorCategoryName(info.category));
     record.insert(QStringLiteral("httpStatus"), info.httpStatus);
     record.insert(QStringLiteral("attempts"), info.attempts);
@@ -365,8 +382,10 @@ void FailedRequestLog::record(const LLMErrorInfo& info, const QByteArray& reques
     m_consecutiveFailures = 0;
 }
 
+#ifdef DEEPLUX_BUILD_TESTS
 QString FailedRequestLog::currentFilePath() const {
     return filePathFor(now().date());
 }
+#endif
 
 } // namespace DeepLux

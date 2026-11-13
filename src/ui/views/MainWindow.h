@@ -3,6 +3,7 @@
 #include "core/common/Logger.h"
 #include "core/display/DisplayData.h"
 #include "core/engine/DisplayFrame.h"
+#include "core/engine/FlowGraphAnalyzer.h"
 #include "core/model/ImageData.h"
 #include "core/model/Project.h"
 
@@ -16,6 +17,7 @@
 #include <QLineEdit>
 #include <QMainWindow>
 #include <QMap>
+#include <QPoint>
 #include <QPointer>
 #include <QPushButton>
 #include <QSet>
@@ -28,8 +30,10 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
+#include <QUndoCommand>
 #include <QUndoStack>
 #include <QUrl>
+#include <QUuid>
 #include <QVector>
 
 class QDialog;
@@ -45,6 +49,7 @@ class TerminalWidget;
 class AgentActionLogWidget;
 class AgentChatPanel;
 class ProcessTreeController;
+class FlowLayoutCoordinator;
 class ModuleInspectorPanel;
 class SamAnnotatorDialog;
 class SystemParamView;
@@ -57,13 +62,18 @@ class IModule;
 struct PointCloudData;
 struct PluginInfo;
 
+class ReorderLinearChainCommand;
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
+
+    friend class ReorderLinearChainCommand;
 
 public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
 
+#ifdef DEEPLUX_BUILD_TESTS
     // 测试辅助：直接注册运行时模块到 m_flowModules
     Q_INVOKABLE void registerFlowModule(const QString& instanceId, IModule* module);
 
@@ -72,6 +82,14 @@ public:
 
     // 测试辅助：重置检查器关闭状态
     void resetInspectorClosed();
+    // 测试辅助：按 (源行, 目标插入行) 走一次真实的流程树拖动分发路径；
+    // 返回空串表示成功，否则为拒绝/提交失败原因。
+    Q_INVOKABLE QString reorderProcessTreeForTest(int sourceRow, int insertRow);
+    // 测试辅助：在候选构造完成后、push 之前注入一次外部结构编辑，
+    // 用于验证命令的 session + 指纹校验能令失效命令 obsolete 且零残留。
+    Q_INVOKABLE void setInvalidateNextReorderForTest(bool enabled);
+    // 测试辅助：最近一次结构编辑失败原因。
+    Q_INVOKABLE QString lastStructureError() const;
     // 测试/截图辅助：统一选择入口（同步流程树/画布/检查器）
     void selectModuleForCapture(const QString& instanceId) {
         selectModule(instanceId, true, true);
@@ -81,11 +99,13 @@ public:
     void clearSelectionForCapture() {
         selectModule(QString(), false);
     }
+#endif
 
 private slots:
     void onNewSolution();
     void onSolutionList();
     void onOpenProject();
+    void onOpenProjectPath(const QString& filePath);
     void onSaveProject();
     void onQuickMode();
     void onQuickMeasure();
@@ -245,7 +265,7 @@ protected:
     void applyTheme();
     void setUiRunningState(bool running, bool cycleMode);
     void updateBreakpointRunControls(bool paused);
-    bool syncModulesToRunEngine();
+    Q_INVOKABLE bool syncModulesToRunEngine();
     // 后台执行（设计 §8.1）：运行控制统一走 FlowExecutionService，
     // MainWindow 只负责同步模块、更新按钮状态与 job 级收尾。
     bool startRunThroughService(bool cycleMode);
@@ -342,6 +362,8 @@ protected:
 
     // 流程画布（图形化节点编辑器）
     FlowCanvas* m_flowCanvas = nullptr;
+    // 按执行计划维护画布布局（B2）
+    FlowLayoutCoordinator* m_flowLayoutCoordinator = nullptr;
 
     // 主 Splitter 成员（提升自局部变量）
     QSplitter* m_mainSplitter = nullptr;
@@ -438,6 +460,74 @@ protected:
     bool m_inspectorClosed = false;
     bool m_toolPanelUserClosed = false;
     bool m_toolPanelSuppressSignal = false; // 自适应隐藏时抑制 visibilityChanged 设 userClosed
+
+signals:
+    void structureEditFailed(const QString& error);
+
+private:
+    // ===== B3：流程树拖动、事务刷新与跨栈撤销失效 =====
+    QString handleProcessTreeReorder(int sourceRow, int insertRow);
+    void refreshAfterStructureTransaction(const FlowOrderPlan& plan, const QHash<QString, QPoint>& positions);
+    void reportStructureEditError(const QString& error);
+    void invalidateReorderCommands(StructureEditOrigin origin, Project* project);
+    FlowOrderPlan currentStructurePlan() const;
+    FlowGraphCatalog currentStructureCatalog() const;
+    QStringList currentDisplayOrder() const;
+    QHash<QString, QPoint> captureModulePositions() const;
+
+    bool m_refreshingStructure = false;
+    QString m_lastStructureError;
+#ifdef DEEPLUX_BUILD_TESTS
+    bool m_invalidateNextReorderForTest = false;
+#endif
+};
+
+/**
+ * @brief 线性链/顺序列表重排的撤销命令（B3.3）
+ *
+ * 首次提交只发生在 redo() 内（QUndoStack::push 会立即调用一次 redo）。
+ * redo/undo 都通过 sessionToken + before/after 结构指纹校验；不匹配时
+ * 只 setObsolete(true)，不修改工程，避免覆盖外部（Agent/System）结构编辑。
+ */
+class ReorderLinearChainCommand : public QUndoCommand {
+public:
+    ReorderLinearChainCommand(MainWindow* window, Project* project, const FlowGraphCandidate& before,
+                              const FlowGraphCandidate& after, const QHash<QString, QPoint>& beforePositions,
+                              const QHash<QString, QPoint>& afterPositions, const FlowOrderPlan& beforePlan,
+                              const FlowOrderPlan& afterPlan, const QUuid& sessionToken,
+                              const QString& beforeFingerprint, const QString& afterFingerprint,
+                              bool* firstRedoCommitted, QUndoCommand* parent = nullptr);
+
+    void redo() override;
+    void undo() override;
+
+    const QString& beforeFingerprint() const {
+        return m_beforeFingerprint;
+    }
+    const QString& afterFingerprint() const {
+        return m_afterFingerprint;
+    }
+    QUuid sessionToken() const {
+        return m_sessionToken;
+    }
+
+private:
+    bool applyCandidate(const FlowGraphCandidate& candidate, const QHash<QString, QPoint>& positions,
+                        const FlowOrderPlan& plan, const QString& expectedFingerprint, QString* error);
+
+    MainWindow* m_window = nullptr;
+    QPointer<Project> m_project;
+    FlowGraphCandidate m_before;
+    FlowGraphCandidate m_after;
+    QHash<QString, QPoint> m_beforePositions;
+    QHash<QString, QPoint> m_afterPositions;
+    FlowOrderPlan m_beforePlan;
+    FlowOrderPlan m_afterPlan;
+    QUuid m_sessionToken;
+    QString m_beforeFingerprint;
+    QString m_afterFingerprint;
+    bool* m_firstRedoCommitted = nullptr;
+    bool m_firstRedo = true;
 };
 
 } // namespace DeepLux

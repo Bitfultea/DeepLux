@@ -35,6 +35,7 @@ set(TEST_SOURCES
     test_logger.cpp
     test_imagedata.cpp
     test_runengine.cpp
+    test_flowgraphanalyzer.cpp
     test_executionaffinity.cpp
     test_runenginefinalizer.cpp
     test_runenginejoblease.cpp
@@ -45,6 +46,7 @@ set(TEST_SOURCES
     test_measureline.cpp
     test_fitcircle.cpp
     test_fitellipse.cpp
+    test_fitellipse_flow.cpp
     test_detection_batch2.cpp
     test_3d_batch3.cpp
     test_batch4.cpp
@@ -63,7 +65,10 @@ set(TEST_SOURCES
     test_tiffloader.cpp
     test_himagewidget.cpp
     test_imagerefreshcoalescer.cpp
+    test_flowidentitycontract.cpp
     test_flowcanvas.cpp
+    test_flowlayoutcoordinator.cpp
+    test_processtreeorder.cpp
     test_propertypanel.cpp
     test_toolschema.cpp
     test_agentobserver.cpp
@@ -139,6 +144,83 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(APPEND TEST_SOURCES test_v4l2discovery.cpp)
 endif()
 
+set(_deeplux_registered_test_sources
+    ${TEST_SOURCES}
+    test_agent_core_plugins_g8.cpp
+    test_agent_visual_plugins_g8.cpp
+    test_agent_variable_plugins_g8.cpp
+    test_agent_plugin_g5.cpp
+)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND _deeplux_registered_test_sources test_v4l2discovery.cpp)
+endif()
+if(DEEPLUX_NATIVE_SAM)
+    list(APPEND _deeplux_registered_test_sources test_sam_onnx_inference.cpp)
+endif()
+file(GLOB _deeplux_top_level_test_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cpp")
+foreach(_source_path IN LISTS _deeplux_top_level_test_sources)
+    get_filename_component(_source_name "${_source_path}" NAME)
+    if(_source_name STREQUAL "test_sam_onnx_inference.cpp" AND NOT DEEPLUX_NATIVE_SAM)
+        continue()
+    endif()
+    list(FIND _deeplux_registered_test_sources "${_source_name}" _registered_index)
+    if(_registered_index EQUAL -1)
+        message(FATAL_ERROR "Top-level test source is not registered with CMake: ${_source_name}")
+    endif()
+endforeach()
+
+set(DEEPLUX_ABI_FIXTURE_DIR "${CMAKE_CURRENT_BINARY_DIR}/abi-fixtures")
+add_library(AbiDependency SHARED plugins/abi/AbiDependencyExports.cpp)
+add_library(AbiValidPlugin SHARED
+    plugins/abi/AbiFixturePlugin.cpp
+    plugins/abi/AbiFixtureNativeLoadMarker.cpp
+    plugins/abi/AbiFixturePlugin.h
+    plugins/abi/metadata.json
+    "${CMAKE_SOURCE_DIR}/src/core/interface/PluginAbiExports.cpp")
+add_library(AbiWrongVersionPlugin SHARED
+    plugins/abi/AbiFixturePlugin.cpp
+    plugins/abi/AbiFixturePlugin.h
+    plugins/abi/AbiWrongVersionExports.cpp
+    plugins/abi/metadata.json)
+add_library(AbiWrongFingerprintPlugin SHARED
+    plugins/abi/AbiFixturePlugin.cpp
+    plugins/abi/AbiFixturePlugin.h
+    plugins/abi/AbiWrongFingerprintExports.cpp
+    plugins/abi/metadata.json)
+add_library(AbiLegacyPlugin SHARED
+    plugins/abi/AbiFixturePlugin.cpp
+    plugins/abi/AbiFixturePlugin.h
+    plugins/abi/metadata.json)
+add_library(AbiDependencyPlugin SHARED
+    plugins/abi/AbiFixturePlugin.cpp
+    plugins/abi/AbiDependencyAnchor.cpp
+    plugins/abi/AbiFixturePlugin.h
+    plugins/abi/metadata.json)
+
+foreach(_target AbiDependency AbiValidPlugin AbiWrongVersionPlugin AbiWrongFingerprintPlugin AbiLegacyPlugin
+        AbiDependencyPlugin)
+    target_include_directories(${_target} PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/src/core")
+    set_target_properties(${_target} PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${DEEPLUX_ABI_FIXTURE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY "${DEEPLUX_ABI_FIXTURE_DIR}")
+endforeach()
+target_compile_definitions(AbiWrongVersionPlugin PRIVATE DEEPLUX_PLUGIN_EXPORTS)
+target_compile_definitions(AbiValidPlugin PRIVATE DEEPLUX_PLUGIN_EXPORTS)
+target_compile_definitions(AbiWrongFingerprintPlugin PRIVATE DEEPLUX_PLUGIN_EXPORTS)
+target_compile_definitions(AbiLegacyPlugin PRIVATE DEEPLUX_PLUGIN_EXPORTS)
+target_compile_definitions(AbiDependencyPlugin PRIVATE DEEPLUX_PLUGIN_EXPORTS)
+target_link_libraries(AbiDependency PRIVATE deeplux_core Qt${QT_VERSION_MAJOR}::Core)
+target_link_libraries(AbiValidPlugin PRIVATE deeplux_core Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets)
+target_link_libraries(AbiWrongVersionPlugin PRIVATE deeplux_core Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets)
+target_link_libraries(AbiWrongFingerprintPlugin PRIVATE
+    deeplux_core Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets)
+target_link_libraries(AbiLegacyPlugin PRIVATE deeplux_core Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets)
+target_link_libraries(AbiDependencyPlugin PRIVATE
+    AbiDependency deeplux_core Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets)
+if(WIN32)
+    target_sources(AbiDependencyPlugin PRIVATE plugins/abi/AbiDependencyForwarders.def)
+endif()
+
 # G5 Slices 27-28 keep plugin lifecycle/cache fixtures in a process-isolated test.
 add_library(AgentAbiMismatchFixture MODULE
     fixtures/agent_g5/AgentAbiMismatchFixture.cpp
@@ -148,22 +230,28 @@ add_library(AgentAbiMismatchFixture MODULE
 add_library(AgentSchemaCacheFixture MODULE
     fixtures/agent_g5/AgentSchemaCacheFixture.cpp
     fixtures/agent_g5/AgentSchemaCacheFixture.h
+    ${CMAKE_SOURCE_DIR}/src/core/interface/PluginAbiExports.cpp
     fixtures/agent_g5/schema_metadata.json
 )
 add_library(AgentInterfaceVersionMismatchFixture MODULE
     fixtures/agent_g5/AgentInterfaceVersionMismatchFixture.cpp
     fixtures/agent_g5/AgentInterfaceVersionMismatchFixture.h
+    ${CMAKE_SOURCE_DIR}/src/core/interface/PluginAbiExports.cpp
     fixtures/agent_g5/version_mismatch_metadata.json
 )
 add_library(AgentVariableArraySourceFixture MODULE
     fixtures/agent_g5/VariableArraySourceFixture.cpp
     fixtures/agent_g5/VariableArraySourceFixture.h
+    ${CMAKE_SOURCE_DIR}/src/core/interface/PluginAbiExports.cpp
     fixtures/agent_g5/variable_array_source_metadata.json
 )
 target_link_libraries(AgentAbiMismatchFixture PRIVATE Qt${QT_VERSION_MAJOR}::Core)
 target_link_libraries(AgentSchemaCacheFixture PRIVATE deeplux_core)
 target_link_libraries(AgentInterfaceVersionMismatchFixture PRIVATE deeplux_core)
 target_link_libraries(AgentVariableArraySourceFixture PRIVATE deeplux_core)
+foreach(_target AgentSchemaCacheFixture AgentInterfaceVersionMismatchFixture AgentVariableArraySourceFixture)
+    target_compile_definitions(${_target} PRIVATE DEEPLUX_PLUGIN_EXPORTS)
+endforeach()
 set_target_properties(AgentAbiMismatchFixture AgentSchemaCacheFixture AgentInterfaceVersionMismatchFixture
     AgentVariableArraySourceFixture PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test-fixtures"
@@ -374,6 +462,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
     target_link_libraries(${TEST_NAME}
         PRIVATE
             deeplux_core
+            deeplux_core_test_support
             deeplux_ui
     )
 
@@ -388,8 +477,11 @@ foreach(TEST_FILE ${TEST_SOURCES})
         target_include_directories(${TEST_NAME} PRIVATE ${OpenCV_INCLUDE_DIRS})
     endif()
 
-    if(TEST_NAME MATCHES "^(test_acceptance_flows|test_mainwindow|test_plugincontracts|test_pluginparametercontracts|test_workerpluginconsistency)$")
+    if(TEST_NAME MATCHES "^(test_acceptance_flows|test_mainwindow|test_plugincontracts|test_pluginparametercontracts|test_workerpluginconsistency|test_agentpermissions)$")
         deeplux_add_test_plugin_defs(${TEST_NAME})
+        if(TEST_NAME STREQUAL "test_agentpermissions")
+            add_dependencies(${TEST_NAME} GrabImagePlugin)
+        endif()
         if(TEST_NAME STREQUAL "test_pluginparametercontracts" OR TEST_NAME STREQUAL "test_workerpluginconsistency")
             # 这些测试会安装并校验全部/候选插件，必须确保插件库先于测试构建完成。
             foreach(_plugin_entry IN LISTS DEEPLUX_PLUGIN_TARGET_ENTRIES)
@@ -401,8 +493,17 @@ foreach(TEST_FILE ${TEST_SOURCES})
             endforeach()
         endif()
     endif()
+    if(TEST_NAME STREQUAL "test_plugincontracts")
+        foreach(_plugin_entry IN LISTS DEEPLUX_PLUGIN_TARGET_ENTRIES)
+            string(REPLACE "|" ";" _plugin_parts "${_plugin_entry}")
+            list(GET _plugin_parts 0 _plugin_target)
+            if(TARGET ${_plugin_target})
+                add_dependencies(${TEST_NAME} ${_plugin_target})
+            endif()
+        endforeach()
+    endif()
 
-    if(TEST_NAME STREQUAL "test_fitline" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_fitline")
         target_link_libraries(${TEST_NAME} PRIVATE FitLinePlugin)
     endif()
     if(TEST_NAME STREQUAL "test_v4l2discovery")
@@ -415,9 +516,17 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
     if(TEST_NAME STREQUAL "test_pluginmanager")
         add_dependencies(${TEST_NAME} MeasurementInputPlugin)
+        add_dependencies(${TEST_NAME} AbiValidPlugin AbiWrongVersionPlugin AbiWrongFingerprintPlugin AbiLegacyPlugin
+            AbiDependencyPlugin)
         target_compile_definitions(${TEST_NAME} PRIVATE
             TEST_PLUGINMANAGER_LIB="$<TARGET_FILE:MeasurementInputPlugin>"
-            TEST_PLUGINMANAGER_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json")
+            TEST_PLUGINMANAGER_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/geometry/MeasurementInput/metadata.json"
+            TEST_ABI_WRONG_VERSION_PLUGIN="$<TARGET_FILE:AbiWrongVersionPlugin>"
+            TEST_ABI_VALID_PLUGIN="$<TARGET_FILE:AbiValidPlugin>"
+            TEST_ABI_WRONG_FINGERPRINT_PLUGIN="$<TARGET_FILE:AbiWrongFingerprintPlugin>"
+            TEST_ABI_LEGACY_PLUGIN="$<TARGET_FILE:AbiLegacyPlugin>"
+            TEST_ABI_DEPENDENCY_PLUGIN="$<TARGET_FILE:AbiDependencyPlugin>"
+            TEST_ABI_DEPENDENCY_LIB="$<TARGET_FILE:AbiDependency>")
         if(UNIX AND NOT APPLE)
             add_dependencies(${TEST_NAME} V4L2CameraPlugin)
             target_compile_definitions(${TEST_NAME} PRIVATE
@@ -425,18 +534,21 @@ foreach(TEST_FILE ${TEST_SOURCES})
                 TEST_PLUGINMANAGER_CAMERA_METADATA="${CMAKE_SOURCE_DIR}/src/plugins/camera/V4L2Camera/metadata.json")
         endif()
     endif()
-    if(TEST_NAME STREQUAL "test_findcircle" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_findcircle")
         target_link_libraries(${TEST_NAME} PRIVATE FindCirclePlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_measureline" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_measureline")
         target_link_libraries(${TEST_NAME} PRIVATE MeasureLinePlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_fitcircle" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_fitcircle")
         target_link_libraries(${TEST_NAME} PRIVATE FitCirclePlugin)
     endif()
     # 阶7 批1：FitEllipse 行为+流程验收
     if(TEST_NAME STREQUAL "test_fitellipse")
         target_link_libraries(${TEST_NAME} PRIVATE FitEllipsePlugin)
+    endif()
+    if(TEST_NAME STREQUAL "test_fitellipse_flow")
+        add_dependencies(${TEST_NAME} FitEllipsePlugin MeasurementInputPlugin)
         target_compile_definitions(${TEST_NAME} PRIVATE
             TEST_FITELLIPSE_LIB_FitEllipse="$<TARGET_FILE:FitEllipsePlugin>"
             TEST_FITELLIPSE_LIB_MeasurementInput="$<TARGET_FILE:MeasurementInputPlugin>"
@@ -509,28 +621,28 @@ foreach(TEST_FILE ${TEST_SOURCES})
             TEST_BATCH4_META_CalculateOffset="${CMAKE_SOURCE_DIR}/src/plugins/calibration/CalculateOffset/metadata.json"
             TEST_BATCH4_DATA_Circle="${CMAKE_SOURCE_DIR}/tests/acceptance/data/circle_640x480.png")
     endif()
-    if(TEST_NAME STREQUAL "test_measurerect" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_measurerect")
         target_link_libraries(${TEST_NAME} PRIVATE MeasureRectPlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_distancepl" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_distancepl")
         target_link_libraries(${TEST_NAME} PRIVATE DistancePLPlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_distancepp" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_distancepp")
         target_link_libraries(${TEST_NAME} PRIVATE DistancePPPlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_linesdistance" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_linesdistance")
         target_link_libraries(${TEST_NAME} PRIVATE LinesDistancePlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_measuregap" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_measuregap")
         target_link_libraries(${TEST_NAME} PRIVATE MeasureGapPlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_pointsurfacedistance" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_pointsurfacedistance")
         target_link_libraries(${TEST_NAME} PRIVATE PointSurfaceDistancePlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_freeformsurface" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_freeformsurface")
         target_link_libraries(${TEST_NAME} PRIVATE FreeformSurfacePlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_measurementinput" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_measurementinput")
         target_link_libraries(${TEST_NAME} PRIVATE MeasurementInputPlugin)
     endif()
     if(TEST_NAME STREQUAL "test_grabimage")
@@ -674,7 +786,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
             TEST_CLOSEDLOOP_LIB_ShowImage="$<TARGET_FILE:ShowImagePlugin>"
             TEST_CLOSEDLOOP_META_ShowImage="${CMAKE_SOURCE_DIR}/src/plugins/image_processing/ShowImage/metadata.json")
     endif()
-    if(TEST_NAME STREQUAL "test_loadpointcloud" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_loadpointcloud")
         target_link_libraries(${TEST_NAME} PRIVATE LoadPointCloudPlugin)
     endif()
     # 阶段 0：F01–F13 基线特征化复现（docs/agent-capability-improvement-plan.md §5.5）
@@ -725,7 +837,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_finalplugins")
         target_link_libraries(${TEST_NAME} PRIVATE ImageScriptPlugin ShowPointPlugin FreeformSurfacePlugin)
     endif()
-    if(TEST_NAME STREQUAL "test_clihandler" OR TEST_NAME STREQUAL "test_plugincontracts")
+    if(TEST_NAME STREQUAL "test_clihandler")
         target_link_libraries(${TEST_NAME} PRIVATE SystemTimePlugin)
     endif()
     if(TEST_NAME STREQUAL "test_clihandler")
@@ -741,20 +853,6 @@ foreach(TEST_FILE ${TEST_SOURCES})
                 LoopPlugin
                 WhilePlugin
                 DelayPlugin
-        )
-    endif()
-    if(TEST_NAME STREQUAL "test_plugincontracts")
-        target_link_libraries(${TEST_NAME}
-            PRIVATE
-                BlobPlugin
-                PerProcessingPlugin
-                MatchingPlugin
-                LoopPlugin
-                FolderPlugin
-                SaveDataPlugin
-                CreateStringPlugin
-                SplitStringPlugin
-                MathPlugin
         )
     endif()
     if(TEST_NAME STREQUAL "test_variable_system_plugins")
@@ -833,13 +931,27 @@ foreach(TEST_FILE ${TEST_SOURCES})
             DEEPLUX_MCP_BRIDGE_PATH="$<TARGET_FILE:deeplux-mcp-bridge>")
     endif()
 
+    # GUI integration suites can emit many Qt warnings during plugin scans and theme changes.
+    set(GUI_TESTS
+        test_3d_interaction
+        test_annotationoverlaywidget
+        test_flowcanvas
+        test_himagewidget
+        test_knowledgebasedialog
+        test_mainwindow
+        test_moduleinspectorpanel
+        test_propertypanel
+        test_samannotatordialog
+    )
     if((TEST_NAME STREQUAL "test_mainwindow" OR TEST_NAME STREQUAL "test_agent_viewport_snapshot_handoff") AND
        CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_test(NAME ${TEST_NAME}
             COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/run-mainwindow-test-isolated.sh
                 ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR} $<TARGET_FILE:${TEST_NAME}>)
-    else()
+    elseif(TEST_NAME IN_LIST GUI_TESTS)
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME} -maxwarnings 100000)
+    else()
+        add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
     endif()
     set_tests_properties(${TEST_NAME} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=${DEEPLUX_TEST_QPA_PLATFORM}")
     if(TEST_NAME STREQUAL "test_pluginmanager")
@@ -851,7 +963,23 @@ foreach(TEST_FILE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_agentbridge" OR TEST_NAME STREQUAL "test_mainwindow")
         set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
     endif()
-    if(TEST_NAME STREQUAL "test_mainwindow" OR TEST_NAME STREQUAL "test_agent_viewport_snapshot_handoff")
+    # B3：该用例会安装并校验全部插件参数契约，插件库/全局插件目录不能与其它用例并行抢占。
+    if(TEST_NAME STREQUAL "test_pluginparametercontracts")
+        set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
+    endif()
+    if(TEST_NAME STREQUAL "test_acceptance_flows")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 120)
+    endif()
+    if(TEST_NAME STREQUAL "test_cameramanager")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 30)
+    endif()
+    # 并发/服务用例在 -j4 与慢机上有正常长尾，给足显式下限，避免全局 --timeout 误杀。
+    if(TEST_NAME STREQUAL "test_flowexecutionservice" OR TEST_NAME STREQUAL "test_executionaffinity")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
+    endif()
+    if(TEST_NAME STREQUAL "test_mainwindow")
+        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 240)
+    elseif(TEST_NAME STREQUAL "test_agent_viewport_snapshot_handoff")
         set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 120)
     endif()
     if(TEST_NAME STREQUAL "test_acceptance_flows")
@@ -979,3 +1107,14 @@ if(DEEPLUX_NATIVE_SAM)
     add_test(NAME test_sam_native_pool_exit COMMAND test_sam_onnx_inference persistentPoolSessionSurvivesShutdown)
     set_tests_properties(test_sam_native_pool_exit PROPERTIES TIMEOUT 60)
 endif()
+
+# ========== 统一超时兜底 ==========
+# 未显式设置 TIMEOUT 的用例给宽松默认，避免 CI 去掉全局 --timeout 后，
+# 挂起回归只能等外部超时。显式 TIMEOUT（60/120/300 等）保持不变。
+get_property(_deeplux_all_tests DIRECTORY PROPERTY TESTS)
+foreach(_t IN LISTS _deeplux_all_tests)
+    get_test_property(${_t} TIMEOUT _deeplux_existing_timeout)
+    if(_deeplux_existing_timeout STREQUAL "NOTFOUND")
+        set_tests_properties(${_t} PROPERTIES TIMEOUT 600)
+    endif()
+endforeach()

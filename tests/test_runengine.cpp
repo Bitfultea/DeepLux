@@ -1,4 +1,6 @@
+#include <core/engine/EngineTestSupport.h>
 #define DEEPLUX_BUILD_TESTS 1
+#include <QElapsedTimer>
 #include <QMutex>
 #include <QSemaphore>
 #include <QSet>
@@ -12,7 +14,9 @@
 #include <core/engine/RunEngine.h>
 #include <core/manager/GlobalVarManager.h>
 #include <core/model/Project.h>
+#include <memory>
 #include <thread>
+#include <utility>
 
 using namespace DeepLux;
 
@@ -76,6 +80,137 @@ protected:
     QWidget* createConfigWidget() override {
         return nullptr;
     }
+};
+
+class ParallelDispatchCounterModule : public ModuleBase {
+    Q_OBJECT
+
+public:
+    ParallelDispatchCounterModule(const QString& name, std::atomic<int>& calls) : m_calls(calls) {
+        m_moduleId = QStringLiteral("com.deeplux.test.parallel-counter.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+        setThreadSafe(true);
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        m_calls.fetch_add(1, std::memory_order_relaxed);
+        output = input;
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    std::atomic<int>& m_calls;
+};
+
+class BlockingParallelModule : public ModuleBase {
+    Q_OBJECT
+public:
+    BlockingParallelModule(std::atomic<int>& calls, QSemaphore& entered, QSemaphore& release,
+                           bool clearRunningStateWhileBlocked = false)
+        : m_calls(calls), m_entered(entered), m_release(release),
+          m_clearRunningStateWhileBlocked(clearRunningStateWhileBlocked) {
+        m_moduleId = QStringLiteral("com.deeplux.test.parallel-blocking");
+        m_name = QStringLiteral("parallel-blocking");
+        m_category = QStringLiteral("test");
+        setThreadSafe(true);
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        m_calls.fetch_add(1, std::memory_order_relaxed);
+        if (m_clearRunningStateWhileBlocked) {
+            m_state = ModuleState::Idle;
+            m_stateClearedWhileRunning.store(true, std::memory_order_release);
+        }
+        m_entered.release();
+        m_release.acquire();
+        output = input;
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+public:
+    bool stateClearedWhileRunning() const {
+        return m_stateClearedWhileRunning.load(std::memory_order_acquire);
+    }
+
+private:
+    std::atomic<int>& m_calls;
+    QSemaphore& m_entered;
+    QSemaphore& m_release;
+    bool m_clearRunningStateWhileBlocked = false;
+    std::atomic<bool> m_stateClearedWhileRunning{false};
+};
+
+class ParallelFailureGateModule : public ModuleBase {
+public:
+    explicit ParallelFailureGateModule(QSemaphore& peerEntered, std::atomic<bool>& waitedForPeer)
+        : m_peerEntered(peerEntered), m_waitedForPeer(waitedForPeer) {
+        m_moduleId = QStringLiteral("com.deeplux.test.parallel-failure-gate");
+        m_name = QStringLiteral("fail");
+        m_category = QStringLiteral("test");
+        setThreadSafe(true);
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        m_waitedForPeer.store(m_peerEntered.tryAcquire(1, 2000), std::memory_order_release);
+        output = input;
+        return false;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    QSemaphore& m_peerEntered;
+    std::atomic<bool>& m_waitedForPeer;
+};
+
+class CancellationAwareParallelModule : public ModuleBase {
+public:
+    explicit CancellationAwareParallelModule(QSemaphore& entered, std::atomic<bool>& started,
+                                             std::atomic<bool>& cancelled)
+        : m_entered(entered), m_started(started), m_cancelled(cancelled) {
+        m_moduleId = QStringLiteral("com.deeplux.test.parallel-cancellation-probe");
+        m_name = QStringLiteral("slow");
+        m_category = QStringLiteral("test");
+        setThreadSafe(true);
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        m_started.store(true, std::memory_order_release);
+        m_entered.release();
+        QElapsedTimer elapsed;
+        elapsed.start();
+        while (!elapsed.hasExpired(2000)) {
+            if (isCancellationRequested()) {
+                m_cancelled.store(true, std::memory_order_release);
+                return false;
+            }
+            QThread::msleep(1);
+        }
+        output = input;
+        return true;
+    }
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    QSemaphore& m_entered;
+    std::atomic<bool>& m_started;
+    std::atomic<bool>& m_cancelled;
 };
 
 class StopAwareModule : public ModuleBase {
@@ -303,6 +438,7 @@ public:
         m_moduleId = "com.deeplux.test.parallel." + name;
         m_name = name;
         m_category = "test";
+        setThreadSafe(true);
     }
 
 protected:
@@ -351,9 +487,27 @@ public:
         return ModuleBase::execute(inputs, outputs, context);
     }
 
+    // 是否让 process() 产出真实图像。
+    //
+    // T2.9（2026-11-11 复核 P2 整改）：上一版用例里 process 只是 output = input，
+    // 而入口的输入没有任何图像，于是 ImageData::toQImage() 为空——
+    // RunEngine::publishDisplayFrame() 在 frameImage.isNull() 处直接返回，
+    // **本轮修改的赋值根本没有执行**。用例照样通过，也就没有保护到任何东西。
+    // 打开此开关后 process 会生成一张真实小图，图像帧发布路径才能真正被覆盖。
+    void enableSyntheticImage(bool enable) {
+        m_emitSyntheticImage = enable;
+    }
+
 protected:
     bool process(const ImageData& input, ImageData& output) override {
-        output = input;
+        if (m_emitSyntheticImage) {
+            // 真实的小尺寸图像：不依赖输入，保证 publishDisplayFrame 能取到非空图像。
+            QImage img(8, 8, QImage::Format_RGB32);
+            img.fill(QColor(20, 40, 60));
+            output = ImageData(img);
+        } else {
+            output = input;
+        }
         output.setData(QStringLiteral("runmark"), m_mark);
         return true;
     }
@@ -366,6 +520,7 @@ private:
     QStringList* m_sink;
     QList<qint64>* m_frameSink = nullptr;
     QString m_mark;
+    bool m_emitSyntheticImage = false;
 };
 
 // 阶6 五轮：确定性同步门模块——进入 process 时释放 entered 信号量，随后阻塞在
@@ -406,6 +561,376 @@ private:
     QStringList* m_log;
 };
 
+// ========== B1：冻结旧 buildExecutionOrder 行为的差分基准 ==========
+// 该基准逐行复刻接入 FlowGraphAnalyzer 之前的引擎排序/回边/重入逻辑，
+// 作为兼容性门禁：分析器接入后这些期望值不得变化。测试夹具显式声明端口
+// 与 edgeType，因此不依赖 normalizeConnections 的推断结果。
+struct LegacyFlowPlan {
+    bool valid = false;
+    QString error;
+    QStringList executionOrder;
+    QList<ModuleConnection> controlEdges;
+    QStringList loopBackEdges;
+    QStringList reentrantModules;
+    QMap<QString, QStringList> loopRegions;
+};
+
+struct LegacyFixture {
+    QString name;
+    QStringList moduleOrder;
+    QMap<QString, ControlFlowType> flowTypes;
+    QList<ModuleConnection> connections;
+    QStringList expectedExecutionOrder;
+    QStringList expectedControlEdges;
+    QStringList expectedLoopBackEdges;
+    QStringList expectedReentrantModules;
+    QMap<QString, QStringList> expectedLoopRegions;
+};
+
+static QString legacyConnectionKey(const ModuleConnection& connection) {
+    return connection.fromModuleId + QLatin1Char('\x1f') + connection.toModuleId + QLatin1Char('\x1f') +
+           connection.fromPort + QLatin1Char('\x1f') + connection.toPort;
+}
+
+static ModuleConnection legacyEdge(const QString& from, const QString& to,
+                                   const QString& fromPort = QStringLiteral("image"),
+                                   const QString& toPort = QStringLiteral("image"),
+                                   const QString& type = QStringLiteral("data")) {
+    ModuleConnection connection;
+    connection.fromModuleId = from;
+    connection.toModuleId = to;
+    connection.fromPort = fromPort;
+    connection.toPort = toPort;
+    connection.edgeType = type;
+    return connection;
+}
+
+static LegacyFlowPlan legacyExecutionOrder(const QStringList& moduleOrder,
+                                           const QMap<QString, ControlFlowType>& flowTypes,
+                                           QList<ModuleConnection> connections) {
+    LegacyFlowPlan plan;
+    if (connections.isEmpty()) {
+        plan.valid = true;
+        return plan;
+    }
+
+    QStringList moduleIds = moduleOrder;
+    QSet<QString> moduleIdSet;
+    for (const QString& id : moduleIds)
+        moduleIdSet.insert(id);
+
+    QMap<QString, int> indegree;
+    QSet<QString> uniqueEdges;
+    for (const QString& id : moduleIds)
+        indegree[id] = 0;
+    QMap<QString, QStringList> adjacency;
+    QList<ModuleConnection> normalized;
+
+    for (ModuleConnection conn : connections) {
+        if (!moduleIdSet.contains(conn.fromModuleId)) {
+            plan.error = QStringLiteral("missing source");
+            return plan;
+        }
+        if (!moduleIdSet.contains(conn.toModuleId)) {
+            plan.error = QStringLiteral("missing target");
+            return plan;
+        }
+        if (conn.edgeType == QLatin1String("pending")) {
+            plan.error = QStringLiteral("pending");
+            return plan;
+        }
+        if (conn.fromPort.isEmpty())
+            conn.fromPort = QStringLiteral("image");
+        if (conn.toPort.isEmpty())
+            conn.toPort = QStringLiteral("image");
+        if (conn.edgeType != QLatin1String("data") && conn.edgeType != QLatin1String("control")) {
+            plan.error = QStringLiteral("unknown edge type");
+            return plan;
+        }
+        const QString edgeKey = legacyConnectionKey(conn);
+        if (uniqueEdges.contains(edgeKey)) {
+            plan.error = QStringLiteral("duplicate connection");
+            return plan;
+        }
+        uniqueEdges.insert(edgeKey);
+        normalized.append(conn);
+        if (conn.edgeType == QLatin1String("control")) {
+            plan.controlEdges.append(conn);
+            continue;
+        }
+        adjacency[conn.fromModuleId].append(conn.toModuleId);
+        ++indegree[conn.toModuleId];
+    }
+
+    QStringList ready;
+    for (const QString& id : moduleIds) {
+        if (indegree.value(id) == 0)
+            ready.append(id);
+    }
+    while (!ready.isEmpty()) {
+        const QString current = ready.takeFirst();
+        plan.executionOrder.append(current);
+        for (const QString& downstream : adjacency.value(current)) {
+            if (--indegree[downstream] == 0)
+                ready.append(downstream);
+        }
+    }
+    if (plan.executionOrder.size() != moduleIds.size()) {
+        plan.executionOrder.clear();
+        plan.error = QStringLiteral("data cycle");
+        return plan;
+    }
+
+    struct CombinedEdge {
+        QString target;
+        bool control = false;
+    };
+    QMap<QString, QList<CombinedEdge>> combinedAdj;
+    for (const ModuleConnection& connection : normalized) {
+        combinedAdj[connection.fromModuleId].append(
+            {connection.toModuleId, connection.edgeType == QLatin1String("control")});
+    }
+
+    const auto reachable = [&combinedAdj](QStringList pending, const QString& excludedLoopTarget) {
+        QSet<QString> reached;
+        while (!pending.isEmpty()) {
+            const QString current = pending.takeFirst();
+            if (reached.contains(current))
+                continue;
+            reached.insert(current);
+            for (const CombinedEdge& edge : combinedAdj.value(current)) {
+                if (edge.control && edge.target == excludedLoopTarget)
+                    continue;
+                pending.append(edge.target);
+            }
+        }
+        return reached;
+    };
+
+    for (const ModuleConnection& candidate : plan.controlEdges) {
+        const ControlFlowType targetType = flowTypes.value(candidate.toModuleId, ControlFlowType::Sequential);
+        if (candidate.fromModuleId == candidate.toModuleId ||
+            (targetType != ControlFlowType::Loop && targetType != ControlFlowType::While)) {
+            continue;
+        }
+        QStringList bodyStarts;
+        QStringList doneStarts;
+        for (const ModuleConnection& edge : plan.controlEdges) {
+            if (edge.fromModuleId != candidate.toModuleId)
+                continue;
+            if (edge.fromPort == QLatin1String("body"))
+                bodyStarts.append(edge.toModuleId);
+            else if (edge.fromPort == QLatin1String("done"))
+                doneStarts.append(edge.toModuleId);
+        }
+        if (reachable(bodyStarts, candidate.toModuleId).contains(candidate.fromModuleId) &&
+            !reachable(doneStarts, candidate.toModuleId).contains(candidate.fromModuleId)) {
+            plan.loopBackEdges.append(legacyConnectionKey(candidate));
+        }
+    }
+    plan.loopBackEdges.sort();
+
+    QMap<QString, QStringList> reducedAdj;
+    QMap<QString, QStringList> reducedReverse;
+    QMap<QString, int> combinedIndegree;
+    for (const QString& moduleId : moduleIds)
+        combinedIndegree.insert(moduleId, 0);
+    for (const ModuleConnection& connection : normalized) {
+        if (plan.loopBackEdges.contains(legacyConnectionKey(connection)))
+            continue;
+        reducedAdj[connection.fromModuleId].append(connection.toModuleId);
+        reducedReverse[connection.toModuleId].append(connection.fromModuleId);
+        ++combinedIndegree[connection.toModuleId];
+    }
+
+    ready.clear();
+    for (const QString& moduleId : moduleIds) {
+        if (combinedIndegree.value(moduleId) == 0)
+            ready.append(moduleId);
+    }
+    int visitedCount = 0;
+    while (!ready.isEmpty()) {
+        const QString current = ready.takeFirst();
+        ++visitedCount;
+        for (const QString& downstream : reducedAdj.value(current)) {
+            if (--combinedIndegree[downstream] == 0)
+                ready.append(downstream);
+        }
+    }
+    if (visitedCount != moduleIds.size()) {
+        plan.error = QStringLiteral("unstructured cycle");
+        return plan;
+    }
+
+    const auto reachableIn = [](const QMap<QString, QStringList>& graph, QStringList pending) {
+        QSet<QString> reached;
+        while (!pending.isEmpty()) {
+            const QString current = pending.takeFirst();
+            if (reached.contains(current))
+                continue;
+            reached.insert(current);
+            pending.append(graph.value(current));
+        }
+        return reached;
+    };
+    QSet<QString> reentrant;
+    QMap<QString, QSet<QString>> loopRegions;
+    for (const ModuleConnection& backEdge : plan.controlEdges) {
+        if (!plan.loopBackEdges.contains(legacyConnectionKey(backEdge)))
+            continue;
+        QStringList bodyStarts;
+        for (const ModuleConnection& edge : plan.controlEdges) {
+            if (edge.fromModuleId == backEdge.toModuleId && edge.fromPort == QLatin1String("body"))
+                bodyStarts.append(edge.toModuleId);
+        }
+        const QSet<QString> bodyReach = reachableIn(reducedAdj, bodyStarts);
+        const QSet<QString> reachesBackSource = reachableIn(reducedReverse, {backEdge.fromModuleId});
+        reentrant.insert(backEdge.toModuleId);
+        for (const QString& moduleId : bodyReach) {
+            if (reachesBackSource.contains(moduleId)) {
+                reentrant.insert(moduleId);
+                loopRegions[backEdge.toModuleId].insert(moduleId);
+            }
+        }
+    }
+    plan.reentrantModules = reentrant.values();
+    plan.reentrantModules.sort();
+    for (auto it = loopRegions.constBegin(); it != loopRegions.constEnd(); ++it) {
+        plan.loopRegions.insert(it.key(), it.value().values());
+        plan.loopRegions[it.key()].sort();
+    }
+    plan.valid = true;
+    return plan;
+}
+
+static QList<LegacyFixture> legacyFixtures() {
+    QList<LegacyFixture> fixtures;
+
+    {
+        LegacyFixture f;
+        f.name = QStringLiteral("pure data chain");
+        f.moduleOrder = QStringList{QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")};
+        for (const QString& id : f.moduleOrder)
+            f.flowTypes.insert(id, ControlFlowType::Sequential);
+        f.connections = {legacyEdge("A", "B"), legacyEdge("B", "C")};
+        f.expectedExecutionOrder = QStringList{QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")};
+        fixtures.append(f);
+    }
+    {
+        LegacyFixture f;
+        f.name = QStringLiteral("diamond");
+        f.moduleOrder = QStringList{QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C"), QStringLiteral("D")};
+        for (const QString& id : f.moduleOrder)
+            f.flowTypes.insert(id, ControlFlowType::Sequential);
+        f.connections = {legacyEdge("A", "B"), legacyEdge("A", "C"), legacyEdge("B", "D"), legacyEdge("C", "D")};
+        f.expectedExecutionOrder =
+            QStringList{QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C"), QStringLiteral("D")};
+        fixtures.append(f);
+    }
+    {
+        LegacyFixture f;
+        f.name = QStringLiteral("if true/false");
+        f.moduleOrder = QStringList{QStringLiteral("cond"), QStringLiteral("bodyTrue"), QStringLiteral("bodyFalse")};
+        f.flowTypes.insert(QStringLiteral("cond"), ControlFlowType::Conditional);
+        f.flowTypes.insert(QStringLiteral("bodyTrue"), ControlFlowType::Sequential);
+        f.flowTypes.insert(QStringLiteral("bodyFalse"), ControlFlowType::Sequential);
+        f.connections = {legacyEdge("cond", "bodyTrue"), legacyEdge("cond", "bodyFalse"),
+                         legacyEdge("cond", "bodyTrue", "true", "control", "control"),
+                         legacyEdge("cond", "bodyFalse", "false", "control", "control")};
+        f.expectedExecutionOrder =
+            QStringList{QStringLiteral("cond"), QStringLiteral("bodyTrue"), QStringLiteral("bodyFalse")};
+        f.expectedControlEdges =
+            QStringList{legacyConnectionKey(f.connections.at(2)), legacyConnectionKey(f.connections.at(3))};
+        fixtures.append(f);
+    }
+    {
+        LegacyFixture f;
+        f.name = QStringLiteral("loop back edge");
+        f.moduleOrder = QStringList{QStringLiteral("loop"), QStringLiteral("body"), QStringLiteral("after")};
+        f.flowTypes.insert(QStringLiteral("loop"), ControlFlowType::Loop);
+        f.flowTypes.insert(QStringLiteral("body"), ControlFlowType::Sequential);
+        f.flowTypes.insert(QStringLiteral("after"), ControlFlowType::Sequential);
+        f.connections = {legacyEdge("loop", "body"), legacyEdge("loop", "after"),
+                         legacyEdge("loop", "body", "body", "control", "control"),
+                         legacyEdge("body", "loop", "next", "control", "control"),
+                         legacyEdge("loop", "after", "done", "control", "control")};
+        f.expectedExecutionOrder = QStringList{QStringLiteral("loop"), QStringLiteral("body"), QStringLiteral("after")};
+        f.expectedControlEdges =
+            QStringList{legacyConnectionKey(f.connections.at(2)), legacyConnectionKey(f.connections.at(3)),
+                        legacyConnectionKey(f.connections.at(4))};
+        f.expectedLoopBackEdges = QStringList{legacyConnectionKey(f.connections.at(3))};
+        f.expectedReentrantModules = QStringList{QStringLiteral("body"), QStringLiteral("loop")};
+        f.expectedLoopRegions.insert(QStringLiteral("loop"), {QStringLiteral("body")});
+        fixtures.append(f);
+    }
+    {
+        LegacyFixture f;
+        f.name = QStringLiteral("while back edge");
+        f.moduleOrder = QStringList{QStringLiteral("while"), QStringLiteral("body"), QStringLiteral("after")};
+        f.flowTypes.insert(QStringLiteral("while"), ControlFlowType::While);
+        f.flowTypes.insert(QStringLiteral("body"), ControlFlowType::Sequential);
+        f.flowTypes.insert(QStringLiteral("after"), ControlFlowType::Sequential);
+        f.connections = {legacyEdge("while", "body"), legacyEdge("while", "after"),
+                         legacyEdge("while", "body", "body", "control", "control"),
+                         legacyEdge("body", "while", "next", "control", "control"),
+                         legacyEdge("while", "after", "done", "control", "control")};
+        f.expectedExecutionOrder =
+            QStringList{QStringLiteral("while"), QStringLiteral("body"), QStringLiteral("after")};
+        f.expectedControlEdges =
+            QStringList{legacyConnectionKey(f.connections.at(2)), legacyConnectionKey(f.connections.at(3)),
+                        legacyConnectionKey(f.connections.at(4))};
+        f.expectedLoopBackEdges = QStringList{legacyConnectionKey(f.connections.at(3))};
+        f.expectedReentrantModules = QStringList{QStringLiteral("body"), QStringLiteral("while")};
+        f.expectedLoopRegions.insert(QStringLiteral("while"), {QStringLiteral("body")});
+        fixtures.append(f);
+    }
+    {
+        LegacyFixture f;
+        f.name = QStringLiteral("parallel");
+        f.moduleOrder = QStringList{QStringLiteral("fork"), QStringLiteral("left"), QStringLiteral("right")};
+        f.flowTypes.insert(QStringLiteral("fork"), ControlFlowType::Parallel);
+        f.flowTypes.insert(QStringLiteral("left"), ControlFlowType::Sequential);
+        f.flowTypes.insert(QStringLiteral("right"), ControlFlowType::Sequential);
+        f.connections = {legacyEdge("fork", "left", "branch", "control", "control"),
+                         legacyEdge("fork", "right", "branch", "control", "control")};
+        f.expectedExecutionOrder = QStringList{QStringLiteral("fork"), QStringLiteral("left"), QStringLiteral("right")};
+        f.expectedControlEdges =
+            QStringList{legacyConnectionKey(f.connections.at(0)), legacyConnectionKey(f.connections.at(1))};
+        fixtures.append(f);
+    }
+    {
+        LegacyFixture f;
+        f.name = QStringLiteral("nested control");
+        f.moduleOrder =
+            QStringList{QStringLiteral("outer"),     QStringLiteral("outerTrue"),  QStringLiteral("inner"),
+                        QStringLiteral("innerTrue"), QStringLiteral("innerFalse"), QStringLiteral("outerFalse")};
+        f.flowTypes.insert(QStringLiteral("outer"), ControlFlowType::Conditional);
+        f.flowTypes.insert(QStringLiteral("outerTrue"), ControlFlowType::Sequential);
+        f.flowTypes.insert(QStringLiteral("inner"), ControlFlowType::Conditional);
+        f.flowTypes.insert(QStringLiteral("innerTrue"), ControlFlowType::Sequential);
+        f.flowTypes.insert(QStringLiteral("innerFalse"), ControlFlowType::Sequential);
+        f.flowTypes.insert(QStringLiteral("outerFalse"), ControlFlowType::Sequential);
+        f.connections = {legacyEdge("outer", "outerTrue", "true", "control", "control"),
+                         legacyEdge("outer", "outerFalse", "false", "control", "control"),
+                         legacyEdge("outerTrue", "inner", "next", "control", "control"),
+                         legacyEdge("inner", "innerTrue", "true", "control", "control"),
+                         legacyEdge("inner", "innerFalse", "false", "control", "control")};
+        f.expectedExecutionOrder = f.moduleOrder;
+        for (const ModuleConnection& connection : f.connections)
+            f.expectedControlEdges.append(legacyConnectionKey(connection));
+        fixtures.append(f);
+    }
+    {
+        LegacyFixture f;
+        f.name = QStringLiteral("no connections");
+        f.moduleOrder = QStringList{QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")};
+        for (const QString& id : f.moduleOrder)
+            f.flowTypes.insert(id, ControlFlowType::Sequential);
+        fixtures.append(f);
+    }
+    return fixtures;
+}
+
 class TestRunEngine : public QObject {
     Q_OBJECT
 
@@ -413,11 +938,17 @@ private slots:
     void initTestCase();
     void cleanupTestCase();
     void testParallelExecutesConcurrently();
+    void testExecuteParallelRejectsDuplicateModuleInBatch();
+    void testExecuteParallelRejectsSameInstanceAcrossRequests();
+    void testWorkerExecutionLogIncludesThreadId();
     void testParallelFailureCancelsGroup();
     // 阶段 6 并发收口定向测试
     void testParallelSignalsDeliveredOnReceiverThread();
     void testParallelTasksSeeStableRunId();
     void testExecuteParallelPrimitiveStableRunId();
+    // T2.9（2026-11-10 评审裁定）：串行路径的 runId 与发布帧同源（预防性加固守门）。
+    void testSerialRunIdMatchesPublishedFrameRunId();
+    void testFinalDisplayFrameKeepsCompletedRunIdWhenNextRunStarts();
     void testParallelStressFiftyRunsNoPollution();
     // 阶段 6 复核（三轮）并发生命周期回归
     void testConcurrentStopDuringRunKeepsStoppedState();
@@ -426,6 +957,7 @@ private slots:
     void testDataSourceImportCommitLeaseExcludesRunStart();
     void testGlobalVariableExecutionLeaseLinearizesRunsAndWrites();
     void testSnapshotConcurrentWithRun();
+    void testRunOutputSnapshotConcurrentWithClearModules();
     void testStopSimultaneousWithBreakpointHit();
     void testClearAndLoadRejectedWhileRunning();
     // 阶6 八轮回归：恢复/tick/循环断点/校验收尾/维护停止
@@ -545,6 +1077,8 @@ private slots:
     void testGraphExecutesIsolatedModulesIndependently();
     void testLoadProjectSupportsDisconnectedChains();
     void testLoadProjectSupportsFanOutAndMerge();
+    void testExecutionOrderFifoMatchesLegacy();
+    void testLegacyFixturesFreezeEngineBehavior();
     void testLoadProjectRejectsIncompatiblePortTypes();
     void testLoadProjectRejectsConnectionWithMissingModule();
     void testLoadProjectRejectsConnectionCycle();
@@ -1358,7 +1892,7 @@ void TestRunEngine::testParallelExecutesConcurrently() {
         engine.addModule(mod);
         // 后台执行（设计 §6.3）：并行池只接受 worker 亲和模块；探针模块未注册插件，
         // 默认 gui，因此测试侧显式标记 worker（不放宽产品代码）。
-        engine.setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
         names << name;
     }
 
@@ -1372,32 +1906,174 @@ void TestRunEngine::testParallelExecutesConcurrently() {
     engine.clearModules();
 }
 
+void TestRunEngine::testExecuteParallelRejectsDuplicateModuleInBatch() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    const int previousThreadCount = engine.parallelThreadCount();
+    std::atomic<int> processCalls{0};
+    auto module = std::make_unique<ParallelDispatchCounterModule>(QStringLiteral("duplicate"), processCalls);
+    struct ClearModulesOnExit {
+        RunEngine& engine;
+        int previousThreadCount;
+        ~ClearModulesOnExit() {
+            engine.clearModules();
+            engine.setParallelThreadCount(previousThreadCount);
+        }
+    } clearOnExit{engine, previousThreadCount};
+    engine.setParallelThreadCount(1);
+
+    QVERIFY(module->initialize());
+    engine.addModule(module.get());
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("duplicate"),
+                                                                  ExecutionAffinity::Worker);
+
+    RunEngineTestAccess(engine).resetParallelPoolStartCountForTest();
+    const ExecutionResult result =
+        engine.executeParallel(QStringList{QStringLiteral("duplicate"), QStringLiteral("duplicate")}, {});
+    QCOMPARE(RunEngineTestAccess(engine).parallelPoolStartCountForTest(), 0);
+    QVERIFY2(!result.success, "the same module instance must not be dispatched twice in one parallel batch");
+    QCOMPARE(result.errorCode, ExecError::DuplicateModuleInBatch);
+    QVERIFY2(result.diagnostics.contains(QStringLiteral("duplicate_module_in_batch")), qPrintable(result.diagnostics));
+    QVERIFY2(result.diagnostics.contains(QStringLiteral("module=duplicate")), qPrintable(result.diagnostics));
+    QCOMPARE(processCalls.load(std::memory_order_relaxed), 0);
+}
+
+void TestRunEngine::testExecuteParallelRejectsSameInstanceAcrossRequests() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    const int previousThreadCount = engine.parallelThreadCount();
+
+    std::atomic<int> processCalls{0};
+    QSemaphore entered;
+    QSemaphore release;
+    std::unique_ptr<BlockingParallelModule> module =
+        std::make_unique<BlockingParallelModule>(processCalls, entered, release, true);
+    QSemaphore secondReturned;
+    ExecutionResult firstResult;
+    ExecutionResult secondResult;
+    std::thread firstRequest;
+    std::thread secondRequest;
+    struct Cleanup {
+        RunEngine& engine;
+        int previousThreadCount;
+        QSemaphore& release;
+        std::thread& firstRequest;
+        std::thread& secondRequest;
+        ~Cleanup() {
+            release.release(2);
+            if (firstRequest.joinable())
+                firstRequest.join();
+            if (secondRequest.joinable())
+                secondRequest.join();
+            engine.clearModules();
+            engine.setParallelThreadCount(previousThreadCount);
+        }
+    } cleanup{engine, previousThreadCount, release, firstRequest, secondRequest};
+
+    engine.setParallelThreadCount(1);
+    QVERIFY(module->initialize());
+    engine.addModule(module.get());
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("parallel-blocking"),
+                                                                  ExecutionAffinity::Worker);
+    firstRequest =
+        std::thread([&] { firstResult = engine.executeParallel({QStringLiteral("parallel-blocking")}, {}); });
+
+    QVERIFY2(entered.tryAcquire(1, 5000), "first request must enter the module before the second request");
+    QVERIFY(module->stateClearedWhileRunning());
+    secondRequest = std::thread([&] {
+        secondResult = engine.executeParallel({QStringLiteral("parallel-blocking")}, {});
+        secondReturned.release();
+    });
+    const bool rejectedBeforeFirstCompleted = secondReturned.tryAcquire(1, 2000);
+    release.release(2); // A broken lease may queue the second task behind the first on the single-thread pool.
+    firstRequest.join();
+    secondRequest.join();
+
+    QVERIFY2(rejectedBeforeFirstCompleted, "the engine must reject the second request while the first holds its lease");
+    QVERIFY(firstResult.success);
+    QVERIFY(!secondResult.success);
+    QCOMPARE(secondResult.diagnostics, QStringLiteral("lease"));
+    QCOMPARE(processCalls.load(std::memory_order_relaxed), 1);
+}
+
+void TestRunEngine::testWorkerExecutionLogIncludesThreadId() {
+#ifdef NDEBUG
+    QSKIP("Worker execution thread IDs are emitted only in debug builds");
+#else
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    const int previousThreadCount = engine.parallelThreadCount();
+    std::atomic<int> processCalls{0};
+    auto module = std::make_unique<ParallelDispatchCounterModule>(QStringLiteral("thread-log"), processCalls);
+    struct ClearModulesOnExit {
+        RunEngine& engine;
+        int previousThreadCount;
+        ~ClearModulesOnExit() {
+            engine.clearModules();
+            engine.setParallelThreadCount(previousThreadCount);
+        }
+    } cleanup{engine, previousThreadCount};
+    engine.setParallelThreadCount(1);
+
+    QVERIFY(module->initialize());
+    engine.addModule(module.get());
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("thread-log"),
+                                                                  ExecutionAffinity::Worker);
+    const int previousLogCount = Logger::instance().logs(QStringLiteral("Run")).size();
+
+    const ExecutionResult result = engine.executeParallel({QStringLiteral("thread-log")}, {});
+    QVERIFY(result.success);
+    const QList<LogEntry> logs = Logger::instance().logs(QStringLiteral("Run"));
+    bool foundThreadRecord = false;
+    for (int i = previousLogCount; i < logs.size(); ++i) {
+        const QString& message = logs.at(i).message;
+        if (message.contains(QStringLiteral("worker_execution module=thread-log thread_id=0x"))) {
+            foundThreadRecord = true;
+            break;
+        }
+    }
+    QVERIFY2(foundThreadRecord, "Debug worker execution must log its module name and thread ID");
+#endif
+}
+
 void TestRunEngine::testParallelFailureCancelsGroup() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
+    const int previousThreadCount = engine.parallelThreadCount();
     engine.setParallelThreadCount(2);
 
-    std::atomic<int> running{0};
-    std::atomic<int> maxConc{0};
-    // 一个失败模块 + 一个睡眠模块
-    auto* failing = new TestExecutionModule("fail");
-    failing->executeResult = false;
-    failing->errorText = "parallel failure";
-    failing->initialize();
-    engine.addModule(failing);
-    auto* slow = new ParallelSleepModule("slow", &running, &maxConc, 200);
-    slow->initialize();
-    engine.addModule(slow);
-    // 后台执行（设计 §6.3）：并行池只接受 worker 亲和模块，探针默认 gui → 测试显式标记。
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("fail"), ExecutionAffinity::Worker);
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("slow"), ExecutionAffinity::Worker);
+    QSemaphore slowEntered;
+    std::atomic<bool> failureWaitedForPeer{false};
+    std::atomic<bool> slowStarted{false};
+    std::atomic<bool> slowCancelled{false};
+    ParallelFailureGateModule failing(slowEntered, failureWaitedForPeer);
+    CancellationAwareParallelModule slow(slowEntered, slowStarted, slowCancelled);
+    struct Cleanup {
+        RunEngine& engine;
+        int previousThreadCount;
+        ~Cleanup() {
+            engine.clearModules();
+            engine.setParallelThreadCount(previousThreadCount);
+        }
+    } cleanup{engine, previousThreadCount};
+    QVERIFY(failing.initialize());
+    QVERIFY(slow.initialize());
+    engine.addModule(&failing);
+    engine.addModule(&slow);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("fail"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("slow"), ExecutionAffinity::Worker);
 
     PortValueMap input;
+    QElapsedTimer elapsed;
+    elapsed.start();
     const ExecutionResult result = engine.executeParallel(QStringList{"fail", "slow"}, input);
     QVERIFY(!result.success);
     QVERIFY(!result.userMessage.isEmpty());
-
-    engine.clearModules();
+    QVERIFY(failureWaitedForPeer.load(std::memory_order_acquire));
+    QVERIFY(slowStarted.load(std::memory_order_acquire));
+    QVERIFY(slowCancelled.load(std::memory_order_acquire));
+    QVERIFY2(elapsed.elapsed() < 1000,
+             qPrintable(QString("parallel sibling was not cancelled promptly: %1ms").arg(elapsed.elapsed())));
 }
 
 namespace {
@@ -1405,8 +2081,8 @@ namespace {
 // 故测试侧显式标记 worker 亲和，不改动产品判定。
 void markWorkerAffinity(int fanout, const QString& prefix = QStringLiteral("par")) {
     for (int i = 0; i < fanout; ++i)
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("%1%2").arg(prefix).arg(i),
-                                                                ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("%1%2").arg(prefix).arg(i), ExecutionAffinity::Worker);
 }
 
 // 阶段 6 辅助：entry(非线程安全,单独执行) 经隐式控制边 next→control 扇出到
@@ -1534,7 +2210,7 @@ void TestRunEngine::testExecuteParallelPrimitiveStableRunId() {
         auto* mod = new RunIdRecordingModule(name, &mutex, &sink);
         mod->initialize();
         engine.addModule(mod);
-        engine.setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
         names << name;
     }
 
@@ -1564,7 +2240,7 @@ void TestRunEngine::testExecuteParallelPrimitiveStableRunId() {
         auto* mod = new RunIdRecordingModule(name, &mutex2, &sink2);
         mod->initialize();
         engine.addModule(mod);
-        engine.setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
         names2 << name;
     }
     QVERIFY(engine.executeParallel(names2, input).success);
@@ -1669,8 +2345,8 @@ void TestRunEngine::testConcurrentStopDuringRunKeepsStoppedState() {
     }));
     // 后台执行（设计 §6.2）：探针默认 gui，但基线语义要求模块在后台执行线程内联执行
     // （主线程此时阻塞在信号量上，无法服务 BlockingQueuedConnection），故标记 worker。
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("gate"), ExecutionAffinity::Worker);
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("after"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("gate"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("after"), ExecutionAffinity::Worker);
 
     std::thread runner([&engine]() { engine.runOnce(); });
     QVERIFY2(entered.tryAcquire(1, 5000), "gate module must enter execution");
@@ -1737,7 +2413,8 @@ void TestRunEngine::testProjectMutationLeaseLinearizesWithRunStart() {
     QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& item) -> ModuleBase* {
         return new GateModule(item.id, &moduleEntered, &releaseModule, nullptr);
     }));
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("project_mutation_gate"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("project_mutation_gate"),
+                                                                  ExecutionAffinity::Worker);
 
     QSemaphore mutationLeaseEntered;
     QSemaphore releaseMutation;
@@ -1845,7 +2522,8 @@ void TestRunEngine::testGlobalVariableExecutionLeaseLinearizesRunsAndWrites() {
     QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& instance) -> ModuleBase* {
         return new GateModule(instance.id, &moduleEntered, &releaseModule, &log);
     }));
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("global_variable_gate"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("global_variable_gate"),
+                                                                  ExecutionAffinity::Worker);
 
     // If a user mutation owns the gate first, run admission waits and no module can
     // observe an intermediate variable state. Releasing the mutation admits the run.
@@ -2036,7 +2714,7 @@ void TestRunEngine::testClearAndLoadRejectedWhileRunning() {
     }));
     // 后台执行（设计 §6.2）：后台线程运行探针时必须 worker 亲和，才能内联执行而不依赖
     // 主线程事件循环（主线程随后用 msleep 等待，不处理事件）。
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("s"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("s"), ExecutionAffinity::Worker);
 
     std::thread runner([&engine]() { engine.runOnce(); });
     QThread::msleep(20);
@@ -4952,6 +5630,62 @@ void TestRunEngine::testControlJoinPoliciesArePerPort() {
 // 阶段 E2: Parallel 接入主循环测试
 // ---------------------------------------------------------------------------
 
+struct ParallelBatchBarrier {
+    QSemaphore releaseBoth;
+    std::atomic<int> entered{0};
+    std::atomic<int> completed{0};
+    std::atomic<bool> overlapProven{false};
+};
+
+class ThreadSafeBarrierModule : public ModuleBase {
+    Q_OBJECT
+public:
+    ThreadSafeBarrierModule(const QString& name, std::shared_ptr<ParallelBatchBarrier> barrier)
+        : m_barrier(std::move(barrier)) {
+        m_moduleId = QStringLiteral("com.deeplux.test.parallel-barrier.") + name;
+        m_name = name;
+        m_category = QStringLiteral("test");
+        setThreadSafe(true);
+        PortSpec out;
+        out.id = "image";
+        out.displayName = "image";
+        out.type = DataType::Image2D;
+        setPorts({}, {out});
+    }
+
+    QList<PortSpec> outputPorts() const override {
+        PortSpec out;
+        out.id = "image";
+        out.displayName = "image";
+        out.type = DataType::Image2D;
+        return {out};
+    }
+
+    ControlFlowType flowControlType() const override {
+        return ControlFlowType::Sequential;
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        if (m_barrier->entered.fetch_add(1, std::memory_order_acq_rel) + 1 == 2) {
+            m_barrier->overlapProven.store(true, std::memory_order_release);
+            m_barrier->releaseBoth.release(2);
+        }
+        if (!m_barrier->releaseBoth.tryAcquire(1, 10000))
+            return false;
+        m_barrier->completed.fetch_add(1, std::memory_order_relaxed);
+        output = input;
+        return true;
+    }
+
+    QWidget* createConfigWidget() override {
+        return nullptr;
+    }
+
+private:
+    std::shared_ptr<ParallelBatchBarrier> m_barrier;
+};
+
 // 线程安全的 sleep 模块（用于验证并发）
 class ThreadSafeSleepModule : public ModuleBase {
     Q_OBJECT
@@ -5050,8 +5784,9 @@ void TestRunEngine::testParallelBatchExecutesConcurrently() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
     engine.setParallelThreadCount(2);
+    auto barrier = std::make_shared<ParallelBatchBarrier>();
 
-    // Parallel 显式分叉到 A、B；两个线程安全分支各 sleep 100ms，最后汇合到 C。
+    // Parallel 显式分叉到 A、B；屏障证明两个分支在任一分支继续前都已进入 process。
     Project project;
     ModuleInstance fork;
     fork.id = QStringLiteral("Fork");
@@ -5074,16 +5809,16 @@ void TestRunEngine::testParallelBatchExecutesConcurrently() {
     project.addConnection(controlConnection("A", "next", "C"));
     project.addConnection(controlConnection("B", "next", "C"));
 
-    QVERIFY(engine.loadProject(&project, [](const ModuleInstance& inst) -> ModuleBase* {
+    QVERIFY(engine.loadProject(&project, [barrier](const ModuleInstance& inst) -> ModuleBase* {
         if (inst.id == "Fork")
             return new ParallelForkModule(inst.id);
         if (inst.id == "C")
             return new ControlJoinAllModule(inst.id);
-        return new ThreadSafeSleepModule(inst.id, 100);
+        return new ThreadSafeBarrierModule(inst.id, barrier);
     }));
     // 后台执行（设计 §6.3）：并行分支 A/B 必须 worker 亲和才可进入并行批次。
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("A"), ExecutionAffinity::Worker);
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("B"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("A"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("B"), ExecutionAffinity::Worker);
 
     RunResult result;
     QMetaObject::Connection conn =
@@ -5092,8 +5827,8 @@ void TestRunEngine::testParallelBatchExecutesConcurrently() {
     disconnect(conn);
 
     QVERIFY(result.success);
-    // A||B 并行约 100ms；顺序则约 200ms。
-    QVERIFY2(result.elapsedMs < 200, qPrintable(QString("parallel should be < 200ms, got %1").arg(result.elapsedMs)));
+    QVERIFY2(barrier->overlapProven.load(std::memory_order_acquire), "both branches must reach the barrier together");
+    QCOMPARE(barrier->completed.load(std::memory_order_relaxed), 2);
     QVERIFY2(engine.lastParallelMaxConcurrency() >= 2,
              qPrintable(QString("max concurrency should be >= 2, got %1").arg(engine.lastParallelMaxConcurrency())));
     engine.clearModules();
@@ -5220,8 +5955,8 @@ void TestRunEngine::testParallelFailureCancelsRemaining() {
         return new ThreadSafeSleepModule("C", 10);
     }));
     // 后台执行（设计 §6.3）：A/B 需要进入并行批次才能验证失败取消同组。
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("A"), ExecutionAffinity::Worker);
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("B"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("A"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("B"), ExecutionAffinity::Worker);
 
     RunResult result;
     QMetaObject::Connection conn =
@@ -5965,8 +6700,8 @@ void TestRunEngine::testStopDuringLoopRun() {
     }));
     // 后台执行（设计 §6.2）：后台线程运行期间主线程只做 msleep/stop，不服务
     // BlockingQueuedConnection，故探针模块标记 worker 以保持内联执行语义。
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("loop"), ExecutionAffinity::Worker);
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("body"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("loop"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("body"), ExecutionAffinity::Worker);
 
     // runOnce 同步阻塞事件循环，故在后台线程运行，主线程延迟 stop
     std::thread runner([&engine]() { engine.runOnce(); });
@@ -6007,7 +6742,7 @@ void TestRunEngine::testCancelDuringParallelBatch() {
     }));
     // 后台执行（设计 §6.2/§6.3）：后台线程运行 + 并行分支，全部需要 worker 亲和。
     for (const QString& name : {QStringLiteral("Fork"), QStringLiteral("A"), QStringLiteral("B")})
-        engine.setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
+        RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
 
     // runOnce 同步阻塞事件循环，QTimer 不会按时触发。
     // 故在后台线程运行，主线程 30ms 后 stop()（取消令牌），验证协作取消真实中止。
@@ -6067,7 +6802,7 @@ void TestRunEngine::testStopStability50Repeats() {
         }));
         // 后台执行（设计 §6.2）：后台线程运行，主线程仅 msleep/stop，故标记 worker。
         for (const QString& name : {QStringLiteral("loop"), QStringLiteral("body"), QStringLiteral("after")})
-            engine.setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
+            RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
 
         std::thread runner([&engine]() { engine.runOnce(); });
         QThread::msleep(5);
@@ -6097,8 +6832,10 @@ void TestRunEngine::testSnapshotConcurrentWithRun() {
     QVERIFY(slow->initialize());
     engine.addModule(slow);
     // 后台执行（设计 §6.2）：runOnceAsync 在运行池线程执行，探针标记 worker 保持内联语义。
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("SnapSource"), ExecutionAffinity::Worker);
-    engine.setModuleExecutionAffinityForTest(QStringLiteral("SnapSlow"), ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("SnapSource"),
+                                                                  ExecutionAffinity::Worker);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("SnapSlow"),
+                                                                  ExecutionAffinity::Worker);
 
     std::atomic<int> reads{0};
     std::thread reader([&engine, &reads]() {
@@ -6120,6 +6857,413 @@ void TestRunEngine::testSnapshotConcurrentWithRun() {
     QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 10000);
     QVERIFY(!engine.nodePortOutputs(QStringLiteral("SnapSource")).isEmpty());
     engine.clearModules();
+}
+
+void TestRunEngine::testRunOutputSnapshotConcurrentWithClearModules() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    auto module = std::make_unique<TestExecutionModule>(QStringLiteral("OutputSnapshotClear"));
+    module->outputTag = QStringLiteral("snapshot-value");
+    if (!module->initialize()) {
+        QFAIL("test module initialization failed");
+        return;
+    }
+    engine.addModule(module.get());
+    engine.runOnce();
+
+    const QString runId = engine.runObservation(QString()).runId;
+    const QString moduleName = module->name();
+    if (runId.isEmpty() || !RunEngineTestAccess(engine).hasCompletedOutputSnapshotForTest()) {
+        engine.clearModules();
+        QFAIL("completed output snapshot was not recorded");
+        return;
+    }
+
+    RunEngineTestAccess access(engine);
+    auto observationLock = access.lockRunObservationForTest();
+    QSemaphore clearStarted;
+    QSemaphore clearAtSnapshotBoundary;
+    QSemaphore allowSnapshotClear;
+    QSemaphore clearReturned;
+    access.setBeforeCompletedSnapshotClearHookForTest([&] {
+        clearAtSnapshotBoundary.release();
+        allowSnapshotClear.acquire();
+    });
+    std::thread clearer([&] {
+        clearStarted.release();
+        engine.clearModules();
+        clearReturned.release();
+    });
+
+    const bool started = clearStarted.tryAcquire(1, 1000);
+    const bool reachedBoundary = started && clearAtSnapshotBoundary.tryAcquire(1, 1000);
+    const bool currentStateCleared =
+        reachedBoundary && engine.modules().isEmpty() && !engine.getOutput(moduleName, QStringLiteral("tag")).isValid();
+    const bool completedSnapshotPreserved = reachedBoundary && access.hasCompletedOutputSnapshotForTest();
+    allowSnapshotClear.release();
+    const bool returnedBeforeUnlock = clearReturned.tryAcquire(1, 100);
+    const bool snapshotPreservedUntilUnlock = access.hasCompletedOutputSnapshotForTest();
+    observationLock.unlock();
+    const bool returned = returnedBeforeUnlock || clearReturned.tryAcquire(1, 1000);
+    clearer.join();
+    access.clearBeforeCompletedSnapshotClearHookForTest();
+    module.reset();
+
+    if (!started)
+        QFAIL("module clearing thread did not start");
+    if (!reachedBoundary || !currentStateCleared)
+        QFAIL("module clearing did not reach the output-snapshot boundary");
+    if (!completedSnapshotPreserved || !snapshotPreservedUntilUnlock || returnedBeforeUnlock)
+        QFAIL("completed snapshot was cleared before the observation lock was released");
+    if (!returned || access.hasCompletedOutputSnapshotForTest())
+        QFAIL("module clearing did not remove completed output snapshots");
+    if (!engine.modules().isEmpty())
+        QFAIL("module list was not cleared");
+}
+
+static ModuleBase* createLegacyFixtureModule(const ModuleInstance& instance) {
+    const QString id = instance.id;
+    if (id == QLatin1String("cond") || id == QLatin1String("outer") || id == QLatin1String("inner"))
+        return new IfControlModule(id, true);
+    if (id == QLatin1String("loop"))
+        return new LoopControlModule(id, 3);
+    if (id == QLatin1String("while"))
+        return new WhileControlModule(id, true);
+    if (id == QLatin1String("fork"))
+        return new ParallelForkModule(id);
+    return new TestExecutionModule(id);
+}
+
+void TestRunEngine::testExecutionOrderFifoMatchesLegacy() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    Project project;
+    for (const QString& id : {QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}) {
+        ModuleInstance instance;
+        instance.id = id;
+        instance.moduleId = id;
+        instance.name = id;
+        project.addModule(instance);
+    }
+    project.addConnection(legacyEdge("A", "B"));
+    QVERIFY2(engine.loadProject(&project, createLegacyFixtureModule), "load should succeed");
+    QCOMPARE(RunEngineTestAccess(engine).executionOrderForTest(), (QStringList{"A", "C", "B"}));
+    engine.clearModules();
+}
+
+void TestRunEngine::testLegacyFixturesFreezeEngineBehavior() {
+    const QList<LegacyFixture> fixtures = legacyFixtures();
+    QVERIFY(!fixtures.isEmpty());
+    for (const LegacyFixture& fixture : fixtures) {
+        const QString context = QStringLiteral("fixture: %1").arg(fixture.name);
+
+        const LegacyFlowPlan legacy = legacyExecutionOrder(fixture.moduleOrder, fixture.flowTypes, fixture.connections);
+        QVERIFY2(legacy.valid, qPrintable(context + QStringLiteral(" legacy invalid: ") + legacy.error));
+        QCOMPARE(legacy.executionOrder, fixture.expectedExecutionOrder);
+        QStringList legacyControlKeys;
+        for (const ModuleConnection& connection : legacy.controlEdges)
+            legacyControlKeys.append(legacyConnectionKey(connection));
+        QCOMPARE(legacyControlKeys, fixture.expectedControlEdges);
+        QCOMPARE(legacy.loopBackEdges, fixture.expectedLoopBackEdges);
+        QCOMPARE(legacy.reentrantModules, fixture.expectedReentrantModules);
+        QCOMPARE(legacy.loopRegions, fixture.expectedLoopRegions);
+
+        RunEngine& engine = RunEngine::instance();
+        engine.clearModules();
+        Project project;
+        for (const QString& id : fixture.moduleOrder) {
+            ModuleInstance instance;
+            instance.id = id;
+            instance.moduleId = id;
+            instance.name = id;
+            project.addModule(instance);
+        }
+        for (const ModuleConnection& connection : fixture.connections)
+            project.addConnection(connection);
+
+        QVERIFY2(engine.loadProject(&project, createLegacyFixtureModule), qPrintable(context + ": load failed"));
+
+        QCOMPARE(RunEngineTestAccess(engine).executionOrderForTest(), fixture.expectedExecutionOrder);
+        QStringList engineControlKeys;
+        for (const ModuleConnection& connection : RunEngineTestAccess(engine).controlEdgesForTest())
+            engineControlKeys.append(legacyConnectionKey(connection));
+        QCOMPARE(engineControlKeys, fixture.expectedControlEdges);
+
+        const QVariantMap metadata = RunEngineTestAccess(engine).loopMetadataForTest();
+        QCOMPARE(metadata.value(QStringLiteral("loopBackEdges")).toStringList(), fixture.expectedLoopBackEdges);
+        QCOMPARE(metadata.value(QStringLiteral("reentrantModules")).toStringList(), fixture.expectedReentrantModules);
+        const QVariantMap regions = metadata.value(QStringLiteral("loopRegions")).toMap();
+        QMap<QString, QStringList> engineRegions;
+        for (auto it = regions.constBegin(); it != regions.constEnd(); ++it)
+            engineRegions.insert(it.key(), it.value().toStringList());
+        QCOMPARE(engineRegions, fixture.expectedLoopRegions);
+
+        engine.clearModules();
+    }
+}
+
+// ==== T2.9（2026-11-10 评审裁定）：runId 跨线程快照，预防性加固 ====
+//
+// T2.9 的早期静态排查没有发现串行入口的真实竞态；后续时序探针证明，执行租约释放后、
+// 最终帧发布前启动下一轮时，旧发布路径会与新一轮写 m_runId 并发。修复应在释放租约前
+// 快照身份，并让最终帧发布只使用该快照；并行池任务仍使用既有 batchRunId 值拷贝。
+//
+// 本用例守的是加固后的不变式：**模块执行期看到的 runId 必须与最终发布帧的 runId 同源**。
+// 若将来有人在 executeModule 内改用别处的值、或让发布帧重新读成员而与执行期脱节，
+// 本条即失败。
+//
+// **T2.9（2026-11-11 复核 P2 整改）：必须真正覆盖图像帧发布路径**
+//
+// 复核指出的缺口：上一版用例的模块只传递空图像和元数据，于是
+// publishDisplayFrame() 在 `frameImage.isNull()` 处直接返回——**本轮修改的图像帧赋值
+// 根本没有执行**。独立观测为「图像帧 0 个、最终快照帧 1 个」，现有断言却仍通过；
+// 因此第 13.8 节把首轮反证无效归因于「最终帧覆盖」并不准确：真实原因是一处都没跑到。
+// 只改 publishFinalDisplayFrame() 能变红，并不证明新增的快照传参受到保护。
+//
+// 现在的做法：
+//   ① 模块产出**真实小图**，使 publishDisplayFrame 真的走到 frame.runId = runId；
+//   ② 用 displayFrameReady 信号在**每帧发布时**捕获该帧的 runId 与图像，
+//      不依赖 latestDisplayFrame()（它会被最终快照帧覆盖，无法区分中间帧）；
+//   ③ 分别断言：模块图像帧的 runId == 执行期 runId；最终快照帧的 runId 也同源。
+// 这样**只破坏本轮改动的赋值就必须失败**——最终快照帧的断言兜不住它。
+void TestRunEngine::testSerialRunIdMatchesPublishedFrameRunId() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(1);      // 强制走串行路径
+    engine.setDisplayCaptureEnabled(true); // 发布帧默认不采集，需显式开启才能验证 runId
+
+    QMutex mutex;
+    QStringList sink;
+    QList<QPair<QString, bool>> published; // (runId, 是否有图像)，按发布顺序记录
+    QMetaObject::Connection frameConn = QObject::connect(
+        &engine, &RunEngine::displayFrameReady, &engine,
+        [&](const QString& viewportId, quint64, const QString& runId) {
+            const DisplayFrame f = engine.latestDisplayFrame(viewportId);
+            QMutexLocker locker(&mutex);
+            published.append(qMakePair(runId, f.hasImage()));
+        },
+        Qt::DirectConnection);
+
+    Project project;
+    buildParallelBatchProject(project, 1); // 单模块工程：entry → runid0 串行链
+    QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& inst) -> ModuleBase* {
+        auto* mod = new RunIdRecordingModule(inst.id, &mutex, &sink);
+        mod->setThreadSafe(inst.id != QLatin1String("entry"));
+        // 让模块产出真实图像：这是覆盖 publishDisplayFrame 的前提。
+        mod->enableSyntheticImage(true);
+        return mod;
+    }));
+    markWorkerAffinity(1);
+
+    engine.runOnce();
+    QTRY_VERIFY_WITH_TIMEOUT(!engine.isBusy(), 5000);
+
+    QObject::disconnect(frameConn);
+
+    QStringList observed;
+    QList<QPair<QString, bool>> frames;
+    {
+        QMutexLocker locker(&mutex);
+        observed = sink;
+        frames = published;
+    }
+    QVERIFY2(!observed.isEmpty(), "the serial run must actually execute at least one module");
+    for (const QString& id : observed) {
+        QVERIFY2(!id.isEmpty(), "a serial execution must carry a non-empty runId");
+        QCOMPARE(id, observed.first());
+    }
+
+    // ① 必须真的产生了**带图像的模块帧**——否则本用例又退回到"一处都没跑到"。
+    int imageFrames = 0;
+    for (const auto& f : frames) {
+        if (f.second) {
+            ++imageFrames;
+        }
+    }
+    QVERIFY2(imageFrames >= 1,
+             qPrintable(QStringLiteral("the run must publish at least one image frame so that "
+                                       "publishDisplayFrame() actually runs (imageFrames=%1, totalFrames=%2): "
+                                       "without it the runId assignment under test never executes")
+                            .arg(imageFrames)
+                            .arg(frames.size())));
+
+    // ② 每个**带图像**的模块帧，其 runId 必须等于执行期 runId。
+    //    这一条直接守住本轮改动（publishDisplayFrame 收到的 runId 参数）。
+    int labelledImageFrames = 0;
+    for (const auto& f : frames) {
+        if (!f.second) {
+            continue;
+        }
+        ++labelledImageFrames;
+        QVERIFY2(!f.first.isEmpty(), "an image frame must carry a non-empty runId");
+        QCOMPARE(f.first, observed.first());
+    }
+    QCOMPARE(labelledImageFrames, imageFrames);
+
+    // ③ 最终快照帧另行断言：它可能不带图像（本轮无图像时也要发布身份），
+    //    但 runId 必须同样同源。此处与 ② 分开，避免再次出现"用最终帧掩盖中间帧"。
+    const DisplayFrame frame = engine.latestDisplayFrame();
+    QVERIFY2(!frame.runId.isEmpty(), "the published display frame must carry the runId");
+    QCOMPARE(frame.runId, observed.first());
+
+    engine.setDisplayCaptureEnabled(false);
+    engine.clearModules();
+}
+
+void TestRunEngine::testFinalDisplayFrameKeepsCompletedRunIdWhenNextRunStarts() {
+    RunEngine& engine = RunEngine::instance();
+    engine.clearModules();
+    engine.setParallelThreadCount(1);
+    engine.setDisplayCaptureEnabled(true);
+
+    QSemaphore firstFinalPublishEntered;
+    QSemaphore releaseFirstFinalPublish;
+    QSemaphore secondFinalPublishEntered;
+    QSemaphore releaseSecondFinalPublish;
+    QSemaphore secondFinalPublished;
+    std::atomic<int> finalPublishCalls{0};
+    RunEngineTestAccess(engine).setBeforeFinalDisplayFrameHookForTest([&] {
+        const int call = finalPublishCalls.fetch_add(1, std::memory_order_relaxed);
+        if (call == 0) {
+            firstFinalPublishEntered.release();
+            releaseFirstFinalPublish.acquire();
+        } else if (call == 1) {
+            secondFinalPublishEntered.release();
+            releaseSecondFinalPublish.acquire();
+        }
+    });
+
+    QMutex recordsMutex;
+    QStringList moduleRunIds;
+    QMutex publishedMutex;
+    QStringList publishedRunIds;
+    std::atomic<bool> firstRunFinished{false};
+    std::atomic<bool> secondRunStarted{false};
+    std::atomic<int> runFinishedCount{0};
+    const QMetaObject::Connection finishConnection = connect(
+        &engine, &RunEngine::runFinished, &engine, [&] { runFinishedCount.fetch_add(1, std::memory_order_release); },
+        Qt::DirectConnection);
+    const QMetaObject::Connection frameConnection = connect(
+        &engine, &RunEngine::displayFrameReady, &engine,
+        [&](const QString& viewportId, quint64, const QString& runId) {
+            {
+                QMutexLocker locker(&publishedMutex);
+                publishedRunIds.append(runId);
+            }
+            const DisplayFrame frame = engine.latestDisplayFrame(viewportId);
+            if (frame.runId == runId && frame.hasSnapshot()) {
+                secondFinalPublished.release();
+            }
+        },
+        Qt::DirectConnection);
+
+    std::thread firstRun;
+    struct Cleanup {
+        RunEngine& engine;
+        QSemaphore& releaseFirstFinalPublish;
+        QSemaphore& releaseSecondFinalPublish;
+        std::thread& firstRun;
+        std::atomic<bool>& firstRunFinished;
+        std::atomic<bool>& secondRunStarted;
+        std::atomic<int>& runFinishedCount;
+        QMetaObject::Connection finishConnection;
+        QMetaObject::Connection frameConnection;
+
+        ~Cleanup() {
+            RunEngineTestAccess(engine).clearBeforeFinalDisplayFrameHookForTest();
+            releaseFirstFinalPublish.release();
+            releaseSecondFinalPublish.release();
+            engine.stop();
+            QElapsedTimer cleanupTimer;
+            cleanupTimer.start();
+            const int expectedFinished =
+                (firstRun.joinable() ? 1 : 0) + (secondRunStarted.load(std::memory_order_acquire) ? 1 : 0);
+            while ((firstRun.joinable() && !firstRunFinished.load(std::memory_order_acquire)) || engine.isBusy() ||
+                   runFinishedCount.load(std::memory_order_acquire) < expectedFinished) {
+                engine.stop();
+                if (cleanupTimer.elapsed() >= 60000) {
+                    qCritical("T2.9 regression cleanup: execution did not quiesce within 60s; "
+                              "terminating rather than unwinding captured test state");
+                    std::abort();
+                }
+                QThread::msleep(5);
+            }
+            if (firstRun.joinable()) {
+                firstRun.join();
+            }
+            QObject::disconnect(finishConnection);
+            QObject::disconnect(frameConnection);
+            engine.setDisplayCaptureEnabled(false);
+            engine.clearModules();
+        }
+    } cleanup{engine,           releaseFirstFinalPublish, releaseSecondFinalPublish, firstRun,       firstRunFinished,
+              secondRunStarted, runFinishedCount,         finishConnection,          frameConnection};
+
+    Project project;
+    buildParallelBatchProject(project, 1);
+    QVERIFY(engine.loadProject(&project, [&](const ModuleInstance& instance) -> ModuleBase* {
+        auto* module = new RunIdRecordingModule(instance.id, &recordsMutex, &moduleRunIds);
+        module->enableSyntheticImage(true);
+        return module;
+    }));
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("entry"), ExecutionAffinity::Worker);
+    markWorkerAffinity(1);
+
+    firstRun = std::thread([&] {
+        engine.runOnce();
+        firstRunFinished.store(true, std::memory_order_release);
+    });
+    QVERIFY(firstFinalPublishEntered.tryAcquire(1, 5000));
+    QVERIFY(!engine.isBusy());
+
+    QString expectedFirstRunId;
+    {
+        QMutexLocker locker(&recordsMutex);
+        QVERIFY(!moduleRunIds.isEmpty());
+        expectedFirstRunId = moduleRunIds.first();
+    }
+
+    QVERIFY(engine.runOnceAsync());
+    secondRunStarted.store(true, std::memory_order_release);
+    QVERIFY(secondFinalPublishEntered.tryAcquire(1, 5000));
+
+    QString expectedSecondRunId;
+    {
+        QMutexLocker locker(&recordsMutex);
+        QVERIFY(moduleRunIds.size() >= 2);
+        expectedSecondRunId = moduleRunIds.last();
+    }
+    QVERIFY(expectedSecondRunId != expectedFirstRunId);
+    releaseSecondFinalPublish.release();
+    QVERIFY2(secondFinalPublished.tryAcquire(1, 5000),
+             "second run final frame must publish before releasing the first");
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedCount.load(std::memory_order_acquire), 1, 5000);
+
+    int frameCountBeforeFirstPublish;
+    {
+        QMutexLocker locker(&publishedMutex);
+        frameCountBeforeFirstPublish = publishedRunIds.size();
+    }
+    const DisplayFrame expectedSecondFrame = engine.latestDisplayFrame();
+    QCOMPARE(expectedSecondFrame.runId, expectedSecondRunId);
+    QVERIFY(expectedSecondFrame.hasSnapshot());
+    releaseFirstFinalPublish.release();
+
+    QTRY_VERIFY_WITH_TIMEOUT(firstRunFinished.load(std::memory_order_acquire), 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(runFinishedCount.load(std::memory_order_acquire), 2, 5000);
+    {
+        QMutexLocker locker(&publishedMutex);
+        QCOMPARE(publishedRunIds.size(), frameCountBeforeFirstPublish);
+    }
+    const DisplayFrame latestFrame = engine.latestDisplayFrame();
+    QCOMPARE(latestFrame.jobId, expectedSecondFrame.jobId);
+    QCOMPARE(latestFrame.runId, expectedSecondFrame.runId);
+    QCOMPARE(latestFrame.frameId, expectedSecondFrame.frameId);
+    QCOMPARE(latestFrame.moduleId, expectedSecondFrame.moduleId);
+    QCOMPARE(latestFrame.viewportId, expectedSecondFrame.viewportId);
+    QCOMPARE(latestFrame.image, expectedSecondFrame.image);
+    QCOMPARE(latestFrame.moduleDataSnapshot, expectedSecondFrame.moduleDataSnapshot);
+    firstRun.join();
 }
 
 QTEST_MAIN(TestRunEngine)

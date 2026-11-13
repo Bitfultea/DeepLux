@@ -126,11 +126,11 @@ private slots:
         source.filePath = sourcePath;
         source.type = QStringLiteral("image");
         project->addDataSource(source);
-        const QJsonObject projectBefore = project->toJson();
 
         RecordingFolderMainWindow window;
         window.show();
-        QCoreApplication::processEvents();
+        QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
+        const QJsonObject projectBefore = project->toJson();
         controller.setPermissionLevel(AgentController::PermissionLevel::Advisor);
         QSignalSpy toolSpy(controller.actor(), &AgentActor::toolExecuted);
         QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);

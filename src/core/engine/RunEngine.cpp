@@ -1,5 +1,6 @@
 #include "RunEngine.h"
 
+#include "FlowGraphAnalyzer.h"
 #include "base/ModuleBase.h"
 #include "common/CancellationToken.h"
 #include "common/Logger.h"
@@ -15,6 +16,9 @@
 #include <QJsonDocument>
 #include <QMutexLocker>
 #include <QRandomGenerator>
+#include <QSemaphore>
+#include <QSet>
+#include <QSharedPointer>
 #include <QThread>
 #include <QWaitCondition>
 #include <algorithm>
@@ -25,11 +29,50 @@
 namespace DeepLux {
 
 namespace {
+
+/// T2.2：GUI 回投记录。状态机 Pending→Running→Finished，或 Pending→Cancelled。
+/// 回调自持有该记录（QSharedPointer），与发起方的栈帧解耦。
+struct GuiDispatchRecord {
+    enum Phase { Pending = 0, Running = 1, Finished = 2, Cancelled = 3 };
+    std::atomic<int> phase{Pending};
+    ExecutionResult result;
+    PortValueMap outputs;
+    QSemaphore done;
+};
+
+#ifdef DEEPLUX_BUILD_TESTS
+QMutex g_beforeFinalDisplayFrameHookMutex;
+std::function<void()> g_beforeFinalDisplayFrameHook;
+std::atomic<int> g_parallelPoolStartCountForTest{0};
+
+void invokeBeforeFinalDisplayFrameHookForTest() {
+    std::function<void()> hook;
+    {
+        QMutexLocker locker(&g_beforeFinalDisplayFrameHookMutex);
+        hook = g_beforeFinalDisplayFrameHook;
+    }
+    if (hook) {
+        hook();
+    }
+}
+#endif
+
 QString runtimeModuleName(ModuleBase* module) {
     if (!module) {
         return QString();
     }
     return module->instanceName().isEmpty() ? module->name() : module->instanceName();
+}
+
+void logWorkerExecutionThread(const QString& moduleName) {
+#ifndef NDEBUG
+    const quintptr threadId = reinterpret_cast<quintptr>(QThread::currentThreadId());
+    Logger::instance().debug(
+        QStringLiteral("worker_execution module=%1 thread_id=0x%2").arg(moduleName, QString::number(threadId, 16)),
+        QStringLiteral("Run"));
+#else
+    Q_UNUSED(moduleName);
+#endif
 }
 
 QString runtimePluginId(ModuleBase* module) {
@@ -83,6 +126,16 @@ QByteArray projectDigest(const Project* project) {
                    : QByteArray();
 }
 } // namespace
+
+#ifdef DEEPLUX_BUILD_TESTS
+void resetParallelPoolStartCountForTest() {
+    g_parallelPoolStartCountForTest.store(0, std::memory_order_release);
+}
+
+int parallelPoolStartCountForTest() {
+    return g_parallelPoolStartCountForTest.load(std::memory_order_acquire);
+}
+#endif
 
 RunEngine& RunEngine::instance() {
     static RunEngine instance;
@@ -181,8 +234,21 @@ RunEngine::RunEngine() : QObject(nullptr), m_cancellationToken(new CancellationT
 
 RunEngine::~RunEngine() {
     stop();
-    m_runPool.waitForDone();
-    m_parallelPool.waitForDone();
+    // T2.1：有界诊断 + 继续等待。禁止 terminate/detach：池线程可能仍在访问模块与引擎。
+    constexpr int kShutdownDiagnosticMs = 10000;
+    if (!m_runPool.waitForDone(kShutdownDiagnosticMs)) {
+        Logger::instance().warning(QString("Run pool did not finish within %1 ms during shutdown; continuing to wait")
+                                       .arg(kShutdownDiagnosticMs),
+                                   "Run");
+        m_runPool.waitForDone(-1);
+    }
+    if (!m_parallelPool.waitForDone(kShutdownDiagnosticMs)) {
+        Logger::instance().warning(
+            QString("Parallel pool did not finish within %1 ms during shutdown; continuing to wait")
+                .arg(kShutdownDiagnosticMs),
+            "Run");
+        m_parallelPool.waitForDone(-1);
+    }
     releaseVariableExecutionLease();
     clearModuleTree();
     clearModules();
@@ -302,25 +368,35 @@ ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortV
     int finished = 0;
 
     QStringList validNames;
-    for (const QString& name : names)
-        if (getModule(name))
-            validNames.append(name);
-
-    // 后台执行（设计 §6.3）：并行池只允许 worker 亲和模块。GUI 线程可能正同步等待线程池，
-    // 池线程统一 BlockingQueuedConnection 回 GUI 会互等死锁；因此进入池前过滤，存在 gui
-    // 亲和时直接返回结构化错误，由调用方（如 Parallel 插件）回退串行。
-    for (const QString& name : validNames) {
-        if (executionAffinityFor(name, getModule(name)) != ExecutionAffinity::Worker) {
+    QSet<ModuleBase*> selectedModules;
+    for (const QString& name : names) {
+        ModuleBase* module = getModule(name);
+        if (!module)
+            continue;
+        if (selectedModules.contains(module)) {
             releaseLease();
-            return ExecutionResult::fail(ExecError::Processing, tr("gui_affinity_not_parallelizable: %1").arg(name),
-                                         QStringLiteral("gui_affinity_not_parallelizable"));
+            const QString diagnostic = QStringLiteral("duplicate_module_in_batch module=%1").arg(name);
+            return ExecutionResult::fail(ExecError::DuplicateModuleInBatch,
+                                         tr("并行批次包含重复模块实例：%1").arg(name), diagnostic);
         }
+        selectedModules.insert(module);
+        validNames.append(name);
     }
 
+    QStringList parallelNames;
+    QStringList serialNames;
     for (const QString& name : validNames) {
+        (isParallelEligible(getModule(name)) ? parallelNames : serialNames).append(name);
+    }
+
+    // 不合资格模块留在线性回退路径，避免 GUI 亲和/阻塞/非线程安全模块进入池。
+    for (const QString& name : parallelNames) {
         ModuleBase* mod = getModule(name);
         // 同一实例同刻仅一次：每个任务持有独立输入/输出副本
         // 每任务独立输入/输出副本（in/out 均为局部值）；sharedInput 只读。
+#ifdef DEEPLUX_BUILD_TESTS
+        g_parallelPoolStartCountForTest.fetch_add(1, std::memory_order_relaxed);
+#endif
         m_parallelPool.start([this, mod, name, parallelRunId, parallelToken, &sharedInput, &running, &maxConcurrent,
                               &errMutex, &haveError, &firstError, &doneMutex, &doneCond, &finished]() {
             const int cur = ++running;
@@ -334,6 +410,7 @@ ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortV
             ctx.runId = parallelRunId;
             ctx.frameId = m_frameId.load(std::memory_order_relaxed);
             ctx.cancellationToken = parallelToken;
+            logWorkerExecutionThread(name);
             const ExecutionResult r = mod->execute(in, out, ctx);
             --running;
 
@@ -355,15 +432,126 @@ ExecutionResult RunEngine::executeParallel(const QStringList& names, const PortV
 
     {
         QMutexLocker locker(&doneMutex);
-        while (finished < validNames.size())
+        while (finished < parallelNames.size())
             doneCond.wait(&doneMutex);
     }
 
     m_lastParallelMaxConcurrency.store(maxConcurrent.load(), std::memory_order_release);
-    releaseLease();
 
-    if (haveError)
+    if (haveError) {
+        releaseLease();
         return firstError;
+    }
+
+    QCoreApplication* app = QCoreApplication::instance();
+    auto executeSerial = [&](ModuleBase* module, const QString& name) {
+        PortValueMap inputs = sharedInput;
+        PortValueMap outputs;
+        ExecutionContext context;
+        context.runId = parallelRunId;
+        context.frameId = m_frameId.fetch_add(1, std::memory_order_relaxed);
+        context.timestampMs = QDateTime::currentMSecsSinceEpoch();
+        context.cancellationToken = parallelToken;
+        const ExecutionAffinity affinity = executionAffinityFor(name, module);
+        auto executeInline = [&]() {
+            if (affinity == ExecutionAffinity::Worker && app && QThread::currentThread() != app->thread())
+                logWorkerExecutionThread(name);
+            return module->execute(inputs, outputs, context);
+        };
+        if (affinity == ExecutionAffinity::Worker || !app || QThread::currentThread() == app->thread())
+            return executeInline();
+
+        auto record = QSharedPointer<GuiDispatchRecord>::create();
+#ifdef DEEPLUX_BUILD_TESTS
+        const int timeoutMs = m_guiDispatchTimeoutMs.load(std::memory_order_acquire);
+#else
+        constexpr int timeoutMs = 5000;
+#endif
+        const quint64 generation = m_dispatchGeneration.load(std::memory_order_acquire);
+        auto callback = [this, record, module, inputs, ctx = context, generation]() mutable {
+            if (m_dispatchGeneration.load(std::memory_order_acquire) != generation) {
+                record->phase.store(GuiDispatchRecord::Cancelled, std::memory_order_release);
+#ifdef DEEPLUX_BUILD_TESTS
+                m_guiDispatchLateDrops.fetch_add(1, std::memory_order_relaxed);
+#endif
+                record->done.release();
+                return;
+            }
+            int expected = GuiDispatchRecord::Pending;
+            if (!record->phase.compare_exchange_strong(expected, GuiDispatchRecord::Running)) {
+#ifdef DEEPLUX_BUILD_TESTS
+                m_guiDispatchLateDrops.fetch_add(1, std::memory_order_relaxed);
+#endif
+                record->done.release();
+                return;
+            }
+            record->result = module->execute(inputs, record->outputs, ctx);
+            record->phase.store(GuiDispatchRecord::Finished, std::memory_order_release);
+            record->done.release();
+        };
+        if (!QMetaObject::invokeMethod(app, callback, Qt::QueuedConnection)) {
+            const QString message = tr("GUI-thread module dispatch failed: %1").arg(name);
+            Logger::instance().warning(message, "Run");
+#ifdef DEEPLUX_BUILD_TESTS
+            QMutexLocker locker(&m_guiDispatchMutex);
+            m_lastGuiDispatchErrorCode = QStringLiteral("affinity_dispatch_failed");
+#endif
+            return ExecutionResult::fail(ExecError::Processing, message, QStringLiteral("affinity_dispatch_failed"));
+        }
+        if (record->done.tryAcquire(1, timeoutMs)) {
+            if (record->phase.load(std::memory_order_acquire) == GuiDispatchRecord::Finished)
+                return record->result;
+#ifdef DEEPLUX_BUILD_TESTS
+            QMutexLocker locker(&m_guiDispatchMutex);
+            m_lastGuiDispatchErrorCode = QStringLiteral("affinity_dispatch_cancelled");
+#endif
+            return ExecutionResult::fail(ExecError::Processing,
+                                         tr("GUI-thread module dispatch cancelled: %1").arg(name),
+                                         QStringLiteral("affinity_dispatch_cancelled"));
+        }
+
+#ifdef DEEPLUX_BUILD_TESTS
+        m_guiDispatchTimeoutHits.fetch_add(1, std::memory_order_relaxed);
+#endif
+        int expected = GuiDispatchRecord::Pending;
+        const bool cancelled = record->phase.compare_exchange_strong(expected, GuiDispatchRecord::Cancelled);
+        if (!cancelled && record->phase.load(std::memory_order_acquire) == GuiDispatchRecord::Running) {
+#ifdef DEEPLUX_BUILD_TESTS
+            m_guiDispatchRunningWaitHits.fetch_add(1, std::memory_order_relaxed);
+#endif
+            record->done.acquire();
+        }
+        const QString message = tr("GUI-thread module dispatch timed out: %1").arg(name);
+        Logger::instance().warning(
+            QString("GUI-thread module dispatch timed out after %1 ms: %2").arg(timeoutMs).arg(name), "Run");
+#ifdef DEEPLUX_BUILD_TESTS
+        QMutexLocker locker(&m_guiDispatchMutex);
+        m_lastGuiDispatchErrorCode = QStringLiteral("affinity_dispatch_timeout");
+#endif
+        return ExecutionResult::fail(ExecError::Processing, message, QStringLiteral("affinity_dispatch_timeout"));
+    };
+
+    for (const QString& name : serialNames) {
+        if (parallelToken && parallelToken->isCancelledFast()) {
+            releaseLease();
+            return ExecutionResult::fail(ExecError::Cancelled, tr("Parallel batch cancelled before serial fallback"),
+                                         QStringLiteral("parallel_fallback_cancelled"));
+        }
+        ModuleBase* module = getModule(name);
+        if (!module) {
+            releaseLease();
+            return ExecutionResult::fail(ExecError::Processing, tr("Parallel module is unavailable: %1").arg(name));
+        }
+        const ExecutionResult result = executeSerial(module, name);
+        if (!result.success) {
+            if (parallelToken)
+                parallelToken->cancel();
+            releaseLease();
+            return result;
+        }
+    }
+
+    releaseLease();
     return ExecutionResult::ok();
 }
 
@@ -558,6 +746,14 @@ bool RunEngine::stepOnceImpl(const JobToken* token, const QJsonObject& authoriza
                 : (m_lastModuleError.isEmpty() ? tr("Step execution failed: %1").arg(moduleToRun) : m_lastModuleError);
     result.elapsedMs = elapsedMs;
     result.finishedTime = QDateTime::currentDateTime();
+    // 阶6 复核（五轮 P1-3）：若停止发生在单步期间，终态保持 Stopped 并重置单步状态
+    // （下次从流程起点开始）；否则保留跨步位置并置 Idle。
+    // 后台执行（设计 §5.3）：stop 判定与单步态重置统一在 finalizeExecution 同一临界区完成
+    // （t3 审查 O6，resetStepStateOnStop），不再在调用侧预先判定，消除检查后 stop 的窗口。
+    std::optional<DisplayFrame> finalFrame = snapshotFinalDisplayFrame(m_runId);
+    finalizer.finish(ExecutionOutcome::Completed);
+    // 后台执行（设计 §7.1）：单步收尾同样在 runFinished 前发布带快照的最终帧。
+    publishFinalDisplayFrame(std::move(finalFrame));
     if (!success) {
         const RunObservation failedObservation = runObservation(m_runId);
         result.failedModule = failedObservation.result.failedModule;
@@ -568,7 +764,7 @@ bool RunEngine::stepOnceImpl(const JobToken* token, const QJsonObject& authoriza
     }
     finalizer.finish(ExecutionOutcome::Completed);
     recordCompletedObservation(result, state());
-    publishFinalDisplayFrame();
+    publishFinalDisplayFrame(std::move(finalFrame));
     emit runFinished(result);
     emit stateChanged(state());
     releaseVariableExecutionLease();
@@ -853,9 +1049,11 @@ bool RunEngine::tryBeginForRun(RunIntent intent, bool& resuming, QString& resume
         }
         // 设计 §5.3 窗口屏障：钩子在"完成停止/owner/取消标志校验之后、状态提交之前"执行。
         // 钩子内 stop() 经递归锁重入并置 job 级取消标志；随后的同锁复核拒绝本次启动。
+#ifdef DEEPLUX_BUILD_TESTS
         if (m_testBeforeJobStartHook) {
             m_testBeforeJobStartHook();
         }
+#endif
         if (!validateJobStartLocked(*jobToken, rejectReason)) {
             return false;
         }
@@ -1078,8 +1276,15 @@ void RunEngine::ExecutionFinalizer::finish(ExecutionOutcome outcome) {
 }
 
 void RunEngine::finalizeExecution(ExecutionOutcome outcome, bool clearControlGraph, bool resetStepStateOnStop) {
-    if (m_testFinalizeHook)
+    // 后台执行（设计 §5.3）：收尾前先跑测试钩子（用于把 stop 落在收尾窗口内的确定性用例），
+    // 钩子在锁外执行，stop() 可正常获取生命周期锁。
+#ifdef DEEPLUX_BUILD_TESTS
+    if (m_testFinalizeHook) {
         m_testFinalizeHook();
+    }
+#endif
+    // 阶6 七轮（P0-1）：清理+最终状态提交+执行权释放同一临界区，避免"先释放执行权
+    // 再设 Idle"窗口被新一轮运行插入后覆盖；stop 判定与终态提交同锁，保证 stop 优先。
     QMutexLocker locker(&m_lifecycleMutex);
     if (m_finalizedGeneration == m_lifecycleGeneration)
         return;
@@ -1120,19 +1325,34 @@ void RunEngine::finalizeExecution(ExecutionOutcome outcome, bool clearControlGra
     }
 }
 
-void RunEngine::finalizeRunTail(const RunResult& result) {
-    ExecutionFinalizer finalizer(this, ExecutionOutcome::Completed);
+void RunEngine::finalizeRunTail(ExecutionFinalizer& finalizer, const RunResult& result) {
+    const std::optional<DisplayFrame> finalFrame = snapshotFinalDisplayFrame(result.runId);
     finalizer.finish(ExecutionOutcome::Completed);
     recordCompletedObservation(result, state());
     // 原生 Cycle 在两轮之间仍持有全局变量执行租约；下一次 CycleTick 复用该租约。
-    // 失败或已离开循环状态时才释放，避免循环只跑首轮后后续 tick 被拒绝。
-    if (!(result.success && runMode() == RunMode::RunCycle && state() == RunState::Running))
+    // 非循环运行必须先释放租约，才能在最终帧发布窗口接受下一轮；旧帧随后由 runId 校验丢弃。
+    const bool retainCycleLease = result.success && runMode() == RunMode::RunCycle && state() == RunState::Running;
+    if (!retainCycleLease)
         releaseVariableExecutionLease();
+    publishFinalDisplayFrame(finalFrame);
 }
 
+#ifdef DEEPLUX_BUILD_TESTS
 void RunEngine::setFinalizeHookForTest(std::function<void()> hook) {
     m_testFinalizeHook = std::move(hook);
 }
+
+#ifdef DEEPLUX_BUILD_TESTS
+void RunEngine::setBeforeFinalDisplayFrameHookForTest(std::function<void()> hook) {
+    QMutexLocker locker(&g_beforeFinalDisplayFrameHookMutex);
+    g_beforeFinalDisplayFrameHook = std::move(hook);
+}
+
+void RunEngine::clearBeforeFinalDisplayFrameHookForTest() {
+    QMutexLocker locker(&g_beforeFinalDisplayFrameHookMutex);
+    g_beforeFinalDisplayFrameHook = nullptr;
+}
+#endif
 
 void RunEngine::clearFinalizeHookForTest() {
     m_testFinalizeHook = nullptr;
@@ -1145,6 +1365,7 @@ void RunEngine::setExecutionFaultInjectionForTest(std::function<void()> hook) {
 void RunEngine::clearExecutionFaultInjectionForTest() {
     m_testFaultInjection = nullptr;
 }
+#endif
 
 bool RunEngine::tryAcquireLease() {
     // 公开并行原语 executeParallel 的排他租约：与执行/维护互斥，且**循环运行/
@@ -1326,6 +1547,8 @@ void RunEngine::stop() {
         m_cycleAgentFolderDeleteAuthorization = {};
         finishPausedRun = state() == RunState::Paused && !m_executing.load(std::memory_order_acquire);
         ++m_lifecycleGeneration; // 阶6 十一轮：停止是一次生命周期转换
+        // T2.2：停止使所有尚未开始的 GUI 回投作废（迟到回调只丢弃，不执行模块）。
+        m_dispatchGeneration.fetch_add(1, std::memory_order_acq_rel);
         m_state.store(static_cast<int>(RunState::Stopped), std::memory_order_release);
         m_runMode.store(static_cast<int>(RunMode::None), std::memory_order_release);
         m_pausedAgentFolderDeleteConfirmationRequired = false;
@@ -1689,6 +1912,7 @@ bool RunEngine::pauseForJob(const JobToken& token) {
     return true;
 }
 
+#ifdef DEEPLUX_BUILD_TESTS
 bool RunEngine::isExternalJobActiveForTest() const {
     return m_externalJobActive.load(std::memory_order_acquire);
 }
@@ -1700,6 +1924,28 @@ void RunEngine::setBeforeJobStartHookForTest(std::function<void()> hook) {
 void RunEngine::clearBeforeJobStartHookForTest() {
     m_testBeforeJobStartHook = nullptr;
 }
+
+void RunEngine::setGuiDispatchTimeoutForTest(int msecs) {
+    m_guiDispatchTimeoutMs.store(qMax(0, msecs), std::memory_order_release);
+}
+
+QString RunEngine::lastGuiDispatchErrorCodeForTest() const {
+    QMutexLocker locker(&m_guiDispatchMutex);
+    return m_lastGuiDispatchErrorCode;
+}
+
+int RunEngine::guiDispatchLateCallbackDropCountForTest() const {
+    return m_guiDispatchLateDrops.load(std::memory_order_acquire);
+}
+
+int RunEngine::guiDispatchTimeoutHitCountForTest() const {
+    return m_guiDispatchTimeoutHits.load(std::memory_order_acquire);
+}
+
+int RunEngine::guiDispatchRunningWaitEnteredCountForTest() const {
+    return m_guiDispatchRunningWaitHits.load(std::memory_order_acquire);
+}
+#endif
 
 void RunEngine::addModuleLocked(ModuleBase* module) {
     QWriteLocker locker(&m_moduleLock);
@@ -1903,7 +2149,19 @@ void RunEngine::clearModulesLocked() {
     }
     clearOutputs();
     resetStepState();
+#ifdef DEEPLUX_BUILD_TESTS
+    if (m_testBeforeCompletedSnapshotClearHook)
+        m_testBeforeCompletedSnapshotClearHook();
+#endif
     QMutexLocker observationLocker(&m_runObservationMutex);
+    {
+        QMutexLocker valueLocker(&m_outputMutex);
+        QMutexLocker imageLocker(&m_lastOutputMutex);
+        m_lastFinishedValues.clear();
+        m_lastFinishedImages.clear();
+        m_lastFinishedPortOutputs.clear();
+    }
+    m_runPortOutputs.clear();
     m_loadedProject.clear();
     m_loadedProjectFingerprint.clear();
 }
@@ -1952,6 +2210,7 @@ void RunEngine::forgetExecutionAffinity(const QString& moduleName) {
     m_executionAffinity.remove(moduleName);
 }
 
+#ifdef DEEPLUX_BUILD_TESTS
 void RunEngine::setModuleExecutionAffinityForTest(const QString& moduleName, ExecutionAffinity affinity) {
     QMutexLocker locker(&m_affinityMutex);
     m_executionAffinity.insert(moduleName, affinity);
@@ -1961,6 +2220,7 @@ bool RunEngine::isParallelEligibleForTest(const QString& moduleName) const {
     ModuleBase* module = getModule(moduleName);
     return module && isParallelEligible(module);
 }
+#endif
 
 bool RunEngine::isParallelEligible(ModuleBase* module) const {
     if (!module) {
@@ -2508,8 +2768,13 @@ void RunEngine::reportExecutionFault(ExecutionFinalizer& finalizer, const QStrin
 
 void RunEngine::executeAcquiredRunImpl(bool resuming, const QString& resumeModule, const ImageData& resumeData,
                                        RunMode mode, ExecutionFinalizer& finalizer) {
-    if (m_testFaultInjection)
+    // 后台执行（设计 §5.3）：测试构建可注入执行段故障（容器/回调/内存级异常由外层捕获，
+    // 插件自身异常仍由 ModuleBase::execute 捕获）；生产构建该钩子恒为空。
+#ifdef DEEPLUX_BUILD_TESTS
+    if (m_testFaultInjection) {
         m_testFaultInjection();
+    }
+#endif
 
     const QString acceptedRunId = m_runId;
     QString cycleSessionId;
@@ -2702,10 +2967,11 @@ void RunEngine::executeAcquiredRunImpl(bool resuming, const QString& resumeModul
     result.finishedTime = QDateTime::currentDateTime();
 
     // 阶6 七轮（P0-1）：清理+最终状态+释放执行权同一临界区。
-    finalizeRunTail(result);
+    // 后台执行（设计 §5.3）：Completed 终态按 RunMode 决定，收尾窗口内并发 stop 优先。
+    // 后台执行（设计 §7.1）：finalizeRunTail 在提交终态前快照并在 runFinished 前发布。
+    finalizeRunTail(finalizer, result);
     const bool stoppedCycleAfterFailure =
         mode == RunMode::RunCycle && !result.success && stopCycleAfterRuntimeFailure(cycleSessionId);
-    publishFinalDisplayFrame();
     emit runFinished(result);
     emit stateChanged(state());
     if (stoppedCycleAfterFailure) {
@@ -2956,6 +3222,9 @@ void RunEngine::executeBatchParallel(const QStringList& batch, ImageData& pipeli
             continue;
         }
 
+#ifdef DEEPLUX_BUILD_TESTS
+        g_parallelPoolStartCountForTest.fetch_add(1, std::memory_order_relaxed);
+#endif
         m_parallelPool.start([this, mod, module, batchRunId, batchToken, pipelineData, &results, &resultMutex, &cond,
                               &finished, &running, &maxConcurrent]() {
             ParallelResult result;
@@ -2984,6 +3253,7 @@ void RunEngine::executeBatchParallel(const QStringList& batch, ImageData& pipeli
                 context.timestampMs = QDateTime::currentMSecsSinceEpoch();
                 context.runMode = module->flowControlType();
                 context.cancellationToken = batchToken;
+                logWorkerExecutionThread(mod);
                 const ExecutionResult execution = module->execute(portInputs, portOutputs, context);
 
                 result.success = execution.success;
@@ -3428,7 +3698,14 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     const PortValueMap portInputs = collectModuleInputs(moduleName, pipelineData);
     PortValueMap portOutputs;
     ExecutionContext execCtx;
-    execCtx.runId = m_runId;
+    // T2.9（2026-11-10 评审裁定，预防性加固）：与 executeBatchParallel 同口径——成员
+    // 字符串在**当前调用线程**快照成局部值后再使用，不在执行体内反复读 m_runId。
+    // 静态排查结论是当前无真实竞态（m_runId 唯一写入点 tryBeginForRun，本函数只在串行
+    // 执行路径上跑，池线程路径用 batchRunId 快照），此处不改行为，只把「池线程不得读
+    // 可能并发变化的成员字符串」这条边界从一条路径推广到全部路径，避免后续重构把
+    // 读取重新带回池线程。
+    const QString execRunId = m_runId;
+    execCtx.runId = execRunId;
     execCtx.frameId = m_frameId.fetch_add(1, std::memory_order_relaxed);
     execCtx.timestampMs = QDateTime::currentMSecsSinceEpoch();
     execCtx.runMode = module->flowControlType();
@@ -3438,16 +3715,98 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
     // 已在 GUI 线程时直接执行可避免自等待死锁（CLI/测试同步路径）。
     ExecutionResult execResult;
     const ExecutionAffinity affinity = executionAffinityFor(moduleName, module);
-    auto executeInline = [&]() { execResult = module->execute(portInputs, portOutputs, execCtx); };
     QCoreApplication* app = QCoreApplication::instance();
+    auto executeInline = [&]() {
+        if (affinity == ExecutionAffinity::Worker && app && QThread::currentThread() != app->thread())
+            logWorkerExecutionThread(moduleName);
+        execResult = module->execute(portInputs, portOutputs, execCtx);
+    };
     if (affinity == ExecutionAffinity::Worker || !app || QThread::currentThread() == app->thread()) {
         executeInline();
-    } else if (!QMetaObject::invokeMethod(app, executeInline, Qt::BlockingQueuedConnection)) {
-        // 无事件循环/正在退出时不得静默跳过：模块按失败处理并记录（设计 §6.2）。
-        const QString dispatchError = tr("GUI-thread module dispatch failed: %1").arg(moduleName);
-        Logger::instance().warning(dispatchError, "Run");
-        execResult =
-            ExecutionResult::fail(ExecError::Processing, dispatchError, QStringLiteral("affinity_dispatch_failed"));
+    } else {
+        // T2.2：GUI 回投改为自持有上下文 + 显式状态机。超时只取消尚未开始的回调；
+        // 已进入 Running 的回调必须等其真正完成，期间模块与 job 租约保持有效。
+        auto record = QSharedPointer<GuiDispatchRecord>::create();
+#ifdef DEEPLUX_BUILD_TESTS
+        const int timeoutMs = m_guiDispatchTimeoutMs.load(std::memory_order_acquire);
+#else
+        constexpr int timeoutMs = 5000;
+#endif
+        const quint64 generation = m_dispatchGeneration.load(std::memory_order_acquire);
+        auto callback = [this, record, module, inputs = portInputs, ctx = execCtx, generation]() mutable {
+            if (m_dispatchGeneration.load(std::memory_order_acquire) != generation) {
+                record->phase.store(GuiDispatchRecord::Cancelled, std::memory_order_release);
+#ifdef DEEPLUX_BUILD_TESTS
+                m_guiDispatchLateDrops.fetch_add(1, std::memory_order_relaxed);
+#endif
+                record->done.release();
+                return;
+            }
+            int expected = GuiDispatchRecord::Pending;
+            if (!record->phase.compare_exchange_strong(expected, GuiDispatchRecord::Running)) {
+#ifdef DEEPLUX_BUILD_TESTS
+                m_guiDispatchLateDrops.fetch_add(1, std::memory_order_relaxed);
+#endif
+                record->done.release();
+                return;
+            }
+            record->result = module->execute(inputs, record->outputs, ctx);
+            record->phase.store(GuiDispatchRecord::Finished, std::memory_order_release);
+            record->done.release();
+        };
+        if (!QMetaObject::invokeMethod(app, callback, Qt::QueuedConnection)) {
+            // 无事件循环/正在退出时不得静默跳过：模块按失败处理并记录（设计 §6.2）。
+            const QString dispatchError = tr("GUI-thread module dispatch failed: %1").arg(moduleName);
+            Logger::instance().warning(dispatchError, "Run");
+#ifdef DEEPLUX_BUILD_TESTS
+            {
+                QMutexLocker locker(&m_guiDispatchMutex);
+                m_lastGuiDispatchErrorCode = QStringLiteral("affinity_dispatch_failed");
+            }
+#endif
+            execResult =
+                ExecutionResult::fail(ExecError::Processing, dispatchError, QStringLiteral("affinity_dispatch_failed"));
+        } else if (record->done.tryAcquire(1, timeoutMs)) {
+            if (record->phase.load(std::memory_order_acquire) == GuiDispatchRecord::Finished) {
+                execResult = record->result;
+                portOutputs = record->outputs;
+            } else {
+                // 世代已变化：回调被整体作废，不采用其输出。
+#ifdef DEEPLUX_BUILD_TESTS
+                {
+                    QMutexLocker locker(&m_guiDispatchMutex);
+                    m_lastGuiDispatchErrorCode = QStringLiteral("affinity_dispatch_cancelled");
+                }
+#endif
+                execResult = ExecutionResult::fail(ExecError::Processing,
+                                                   tr("GUI-thread module dispatch cancelled: %1").arg(moduleName),
+                                                   QStringLiteral("affinity_dispatch_cancelled"));
+            }
+        } else {
+#ifdef DEEPLUX_BUILD_TESTS
+            m_guiDispatchTimeoutHits.fetch_add(1, std::memory_order_relaxed);
+#endif
+            int expected = GuiDispatchRecord::Pending;
+            const bool cancelled = record->phase.compare_exchange_strong(expected, GuiDispatchRecord::Cancelled);
+            if (!cancelled && record->phase.load(std::memory_order_acquire) == GuiDispatchRecord::Running) {
+                // 回调已开始：不得销毁上下文或复用模块，等它真正结束。
+#ifdef DEEPLUX_BUILD_TESTS
+                m_guiDispatchRunningWaitHits.fetch_add(1, std::memory_order_relaxed);
+#endif
+                record->done.acquire();
+            }
+            Logger::instance().warning(
+                QString("GUI-thread module dispatch timed out after %1 ms: %2").arg(timeoutMs).arg(moduleName), "Run");
+#ifdef DEEPLUX_BUILD_TESTS
+            {
+                QMutexLocker locker(&m_guiDispatchMutex);
+                m_lastGuiDispatchErrorCode = QStringLiteral("affinity_dispatch_timeout");
+            }
+#endif
+            execResult = ExecutionResult::fail(ExecError::Processing,
+                                               tr("GUI-thread module dispatch timed out: %1").arg(moduleName),
+                                               QStringLiteral("affinity_dispatch_timeout"));
+        }
     }
     bool success = execResult.success;
     if (success) {
@@ -3505,7 +3864,7 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
             m_moduleOutputs[moduleName] = output;
         }
         // 后台执行（设计 §7.1）：模块成功且输出含 image 端口时，在执行线程内发布深拷贝帧。
-        publishDisplayFrame(moduleName, output, static_cast<quint64>(execCtx.frameId));
+        publishDisplayFrame(moduleName, output, static_cast<quint64>(execCtx.frameId), execRunId);
     } else {
         {
             QMutexLocker locker(&moduleErrorMutex);
@@ -3796,10 +4155,12 @@ QMap<QString, RunEngine::ModuleRuntimeInfo> RunEngine::moduleRuntimeSnapshot() c
     return m_moduleRuntimeInfo;
 }
 
+#ifdef DEEPLUX_BUILD_TESTS
 void RunEngine::setNodePortOutputsForTest(const QString& moduleName, const PortValueMap& outputs) {
     QMutexLocker locker(&m_lifecycleMutex);
     m_nodeOutputs[moduleName] = outputs;
 }
+#endif
 
 PortValueMap RunEngine::nodePortOutputs(const QString& moduleName) const {
     if (isBusy()) {
@@ -3860,7 +4221,8 @@ QMap<QString, QVariantMap> RunEngine::displayModuleDataSnapshot() const {
     return snapshot;
 }
 
-void RunEngine::publishDisplayFrame(const QString& moduleId, const ImageData& image, quint64 frameId) {
+void RunEngine::publishDisplayFrame(const QString& moduleId, const ImageData& image, quint64 frameId,
+                                    const QString& runId) {
     if (!m_displayCaptureEnabled.load(std::memory_order_acquire)) {
         return;
     }
@@ -3873,7 +4235,7 @@ void RunEngine::publishDisplayFrame(const QString& moduleId, const ImageData& im
 
     DisplayFrame frame;
     frame.jobId = m_displayJobId.load(std::memory_order_acquire);
-    frame.runId = m_runId;
+    frame.runId = runId; // T2.9：用调用线程快照，不再读 m_runId
     frame.frameId = frameId;
     frame.moduleId = moduleId;
     frame.viewportId = QStringLiteral("main"); // 本轮仅覆盖主视口（viewportId 作为键保留）
@@ -3886,13 +4248,14 @@ void RunEngine::publishDisplayFrame(const QString& moduleId, const ImageData& im
     emit displayFrameReady(frame.viewportId, frame.jobId, frame.runId);
 }
 
-void RunEngine::publishFinalDisplayFrame() {
+std::optional<DisplayFrame> RunEngine::snapshotFinalDisplayFrame(const QString& runId) const {
     if (!m_displayCaptureEnabled.load(std::memory_order_acquire)) {
-        return;
+        return std::nullopt;
     }
+
     DisplayFrame frame;
     frame.jobId = m_displayJobId.load(std::memory_order_acquire);
-    frame.runId = m_runId;
+    frame.runId = runId;
     frame.viewportId = QStringLiteral("main");
     frame.moduleDataSnapshot = displayModuleDataSnapshot();
     {
@@ -3906,10 +4269,27 @@ void RunEngine::publishFinalDisplayFrame() {
             frame.image = it.value().image;
             frame.coordinateProvenance = it.value().coordinateProvenance;
         }
-        m_latestDisplayFrames.insert(frame.viewportId, frame);
+    }
+    return frame;
+}
+
+void RunEngine::publishFinalDisplayFrame(std::optional<DisplayFrame> frame) {
+#ifdef DEEPLUX_BUILD_TESTS
+    invokeBeforeFinalDisplayFrameHookForTest();
+#endif
+    if (!frame || !m_displayCaptureEnabled.load(std::memory_order_acquire)) {
+        return;
+    }
+    {
+        QMutexLocker lifecycleLocker(&m_lifecycleMutex);
+        if (m_runId != frame->runId || m_displayJobId.load(std::memory_order_acquire) != frame->jobId) {
+            return;
+        }
+        QMutexLocker frameLocker(&m_displayFrameMutex);
+        m_latestDisplayFrames.insert(frame->viewportId, *frame);
     }
     // 即使本轮没有 2D 图像，也发布带身份的快照帧：UI 据此只更新/清除叠加，不改变画面。
-    emit displayFrameReady(frame.viewportId, frame.jobId, frame.runId);
+    emit displayFrameReady(frame->viewportId, frame->jobId, frame->runId);
 }
 
 QString RunEngine::getNextModule(const QString& currentModule, bool lastResult) {
@@ -4065,65 +4445,52 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
     }
 
     QStringList moduleIds;
-    QSet<QString> moduleIdSet;
+    QList<FlowGraphModule> catalogModules;
+    QMap<QString, ModuleBase*> modulesById;
     for (ModuleBase* module : m_modules) {
-        QString id = runtimeModuleName(module);
+        const QString id = runtimeModuleName(module);
         moduleIds.append(id);
-        moduleIdSet.insert(id);
+        modulesById.insert(id, module);
+        FlowGraphModule graphModule;
+        graphModule.instanceId = id;
+        graphModule.flowType = module->flowControlType();
+        graphModule.inputPorts = module->inputPorts();
+        graphModule.outputPorts = module->outputPorts();
+        catalogModules.append(graphModule);
+    }
+    const FlowGraphCatalog catalog{catalogModules};
+
+    QString normalizeError;
+    m_connections = FlowGraphAnalyzer::normalizeConnections(catalog, project->connections(), &normalizeError);
+    if (!normalizeError.isEmpty()) {
+        error = normalizeError;
+        return false;
     }
 
-    QMap<QString, ModuleBase*> modulesById;
-    QMap<QString, int> indegree;
-    for (const QString& id : moduleIds) {
-        indegree[id] = 0;
-        modulesById.insert(id, m_moduleMap.value(id));
-    }
-    QMap<QString, QStringList> adjacency;
     QMap<QString, int> inputCounts;
     QSet<QString> uniqueEdges;
 
-    for (ModuleConnection& conn : m_connections) {
-        if (!moduleIdSet.contains(conn.fromModuleId)) {
-            error = tr("Connection references missing source module: %1").arg(conn.fromModuleId);
-            return false;
-        }
-        if (!moduleIdSet.contains(conn.toModuleId)) {
-            error = tr("Connection references missing target module: %1").arg(conn.toModuleId);
-            return false;
-        }
-        if (conn.edgeType == QLatin1String("pending")) {
-            error = tr("Connection %1 -> %2 requires manual port mapping").arg(conn.fromModuleId, conn.toModuleId);
-            return false;
-        }
-
-        // 阶段 C: 显式控制边契约——推断边类型并校验端口兼容
-        if (conn.fromPort.isEmpty())
-            conn.fromPort = QStringLiteral("image");
-        if (conn.toPort.isEmpty())
-            conn.toPort = QStringLiteral("image");
-
+    for (const ModuleConnection& conn : m_connections) {
         ModuleBase* source = modulesById.value(conn.fromModuleId);
         ModuleBase* target = modulesById.value(conn.toModuleId);
-        const QList<PortSpec> sourcePorts = source ? source->outputPorts() : QList<PortSpec>{};
-        const QList<PortSpec> targetPorts = target ? target->inputPorts() : QList<PortSpec>{};
-        const PortSpec* output = findPort(sourcePorts, conn.fromPort);
-        const PortSpec* input = findPort(targetPorts, conn.toPort);
         if (!source || !target) {
             error = tr("Connection references an unavailable runtime module");
             return false;
         }
+
+        const QList<PortSpec> sourcePorts = source->outputPorts();
+        const QList<PortSpec> targetPorts = target->inputPorts();
+        const PortSpec* output = findPort(sourcePorts, conn.fromPort);
+        const PortSpec* input = findPort(targetPorts, conn.toPort);
         // 隐式控制端口：next（所有节点的隐式控制输出）和 control（隐式控制输入）
         const bool fromIsImplicitControl = (conn.fromPort == QLatin1String("next"));
         const bool toIsImplicitControl = (conn.toPort == QLatin1String("control"));
-        const bool fromIsControl = fromIsImplicitControl || (output && output->control);
-        const bool toIsControl = toIsImplicitControl || (input && input->control);
+        const bool fromIsControl = FlowGraphAnalyzer::isControlPort(sourcePorts, true, conn.fromPort);
+        const bool toIsControl = FlowGraphAnalyzer::isControlPort(targetPorts, false, conn.toPort);
+        const QString edgeType =
+            conn.edgeType.isEmpty() ? inferEdgeType(conn, sourcePorts, targetPorts) : conn.edgeType;
 
-        // 推断边类型
-        if (conn.edgeType.isEmpty()) {
-            conn.edgeType = inferEdgeType(conn, sourcePorts, targetPorts);
-        }
-
-        if (conn.edgeType == QLatin1String("data")) {
+        if (edgeType == QLatin1String("data")) {
             // 数据边：两端必须是非控制端口
             if (fromIsControl) {
                 error = tr("Data edge %1.%2 targets a control port").arg(conn.fromModuleId, conn.fromPort);
@@ -4133,7 +4500,7 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
                 error = tr("Data edge targets control port %1.%2").arg(conn.toModuleId, conn.toPort);
                 return false;
             }
-        } else if (conn.edgeType == QLatin1String("control")) {
+        } else {
             // 控制边：源必须是控制输出，目标必须是控制输入
             if (!fromIsControl) {
                 error = tr("Control edge source %1.%2 is not a control port").arg(conn.fromModuleId, conn.fromPort);
@@ -4143,10 +4510,6 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
                 error = tr("Control edge target %1.%2 is not a control port").arg(conn.toModuleId, conn.toPort);
                 return false;
             }
-        } else {
-            error = tr("Unknown edge type '%1' on connection %3.%4 -> %5.%6")
-                        .arg(conn.edgeType, conn.fromModuleId, conn.fromPort, conn.toModuleId, conn.toPort);
-            return false;
         }
 
         // 端口存在性校验（隐式端口跳过）
@@ -4159,8 +4522,7 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
             return false;
         }
         // 数据边类型兼容（控制边不做数据类型校验）
-        if (conn.edgeType == QLatin1String("data") && output && input &&
-            !portTypesCompatible(output->type, input->type)) {
+        if (edgeType == QLatin1String("data") && output && input && !portTypesCompatible(output->type, input->type)) {
             error = tr("Connection %1.%2 (%3) is incompatible with %4.%5 (%6)")
                         .arg(conn.fromModuleId, conn.fromPort, dataTypeName(output->type), conn.toModuleId, conn.toPort,
                              dataTypeName(input->type));
@@ -4175,9 +4537,7 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
         }
         uniqueEdges.insert(edgeKey);
 
-        if (conn.edgeType == QLatin1String("control")) {
-            // 控制边不参与数据 DAG 拓扑排序，只记录
-            m_controlEdges.append(conn);
+        if (edgeType == QLatin1String("control")) {
             continue;
         }
 
@@ -4188,150 +4548,48 @@ bool RunEngine::buildExecutionOrder(const Project* project, QString& error) {
                 tr("Input port %1.%2 does not accept multiple upstream connections").arg(conn.toModuleId, conn.toPort);
             return false;
         }
-        adjacency[conn.fromModuleId].append(conn.toModuleId);
-        ++indegree[conn.toModuleId];
     }
 
-    QStringList ready;
-    for (const QString& id : moduleIds) {
-        if (indegree.value(id) == 0) {
-            ready.append(id);
-        }
-    }
-
-    while (!ready.isEmpty()) {
-        const QString current = ready.takeFirst();
-        m_executionOrder.append(current);
-        for (const QString& downstream : adjacency.value(current)) {
-            if (--indegree[downstream] == 0)
-                ready.append(downstream);
-        }
-    }
-
-    if (m_executionOrder.size() != moduleIds.size()) {
-        m_executionOrder.clear();
-        error = tr("Data-flow graph contains a cycle");
+    const FlowOrderPlan plan = FlowGraphAnalyzer::analyze(catalog, m_connections, moduleIds);
+    if (!plan.valid) {
+        error = plan.error;
         return false;
     }
-
-    struct CombinedEdge {
-        QString target;
-        bool control = false;
-    };
-    QMap<QString, QList<CombinedEdge>> combinedAdj;
-    for (const ModuleConnection& connection : m_connections) {
-        combinedAdj[connection.fromModuleId].append(
-            {connection.toModuleId, connection.edgeType == QLatin1String("control")});
-    }
-
-    const auto reachable = [&combinedAdj](QStringList pending, const QString& excludedLoopTarget) {
-        QSet<QString> reached;
-        while (!pending.isEmpty()) {
-            const QString current = pending.takeFirst();
-            if (reached.contains(current))
-                continue;
-            reached.insert(current);
-            for (const CombinedEdge& edge : combinedAdj.value(current)) {
-                if (edge.control && edge.target == excludedLoopTarget)
-                    continue;
-                pending.append(edge.target);
-            }
-        }
-        return reached;
-    };
-
-    QMap<QString, ControlFlowType> flowTypes;
-    for (ModuleBase* module : m_modules)
-        flowTypes.insert(runtimeModuleName(module), module->flowControlType());
-
-    // 回边必须回到 Loop/While，且源节点只能从该循环的 body 分支到达。
-    for (const ModuleConnection& candidate : m_controlEdges) {
-        const ControlFlowType targetType = flowTypes.value(candidate.toModuleId, ControlFlowType::Sequential);
-        if (candidate.fromModuleId == candidate.toModuleId ||
-            (targetType != ControlFlowType::Loop && targetType != ControlFlowType::While)) {
-            continue;
-        }
-
-        QStringList bodyStarts;
-        QStringList doneStarts;
-        for (const ModuleConnection& edge : m_controlEdges) {
-            if (edge.fromModuleId != candidate.toModuleId)
-                continue;
-            if (edge.fromPort == QLatin1String("body"))
-                bodyStarts.append(edge.toModuleId);
-            else if (edge.fromPort == QLatin1String("done"))
-                doneStarts.append(edge.toModuleId);
-        }
-        if (reachable(bodyStarts, candidate.toModuleId).contains(candidate.fromModuleId) &&
-            !reachable(doneStarts, candidate.toModuleId).contains(candidate.fromModuleId)) {
-            m_loopBackEdges.insert(connectionKey(candidate));
-        }
-    }
-
-    QMap<QString, QStringList> reducedAdj;
-    QMap<QString, QStringList> reducedReverse;
-    QMap<QString, int> combinedIndegree;
-    for (const QString& moduleId : moduleIds)
-        combinedIndegree.insert(moduleId, 0);
-    for (const ModuleConnection& connection : m_connections) {
-        if (m_loopBackEdges.contains(connectionKey(connection)))
-            continue;
-        reducedAdj[connection.fromModuleId].append(connection.toModuleId);
-        reducedReverse[connection.toModuleId].append(connection.fromModuleId);
-        ++combinedIndegree[connection.toModuleId];
-    }
-
-    ready.clear();
-    for (const QString& moduleId : moduleIds) {
-        if (combinedIndegree.value(moduleId) == 0)
-            ready.append(moduleId);
-    }
-    int visitedCount = 0;
-    while (!ready.isEmpty()) {
-        const QString current = ready.takeFirst();
-        ++visitedCount;
-        for (const QString& downstream : reducedAdj.value(current)) {
-            if (--combinedIndegree[downstream] == 0)
-                ready.append(downstream);
-        }
-    }
-    if (visitedCount != moduleIds.size()) {
-        error = tr("Control or combined graph contains an unstructured cycle");
-        return false;
-    }
-
-    const auto reachableIn = [](const QMap<QString, QStringList>& graph, QStringList pending) {
-        QSet<QString> reached;
-        while (!pending.isEmpty()) {
-            const QString current = pending.takeFirst();
-            if (reached.contains(current))
-                continue;
-            reached.insert(current);
-            pending.append(graph.value(current));
-        }
-        return reached;
-    };
-    for (const ModuleConnection& backEdge : m_controlEdges) {
-        if (!m_loopBackEdges.contains(connectionKey(backEdge)))
-            continue;
-        QStringList bodyStarts;
-        for (const ModuleConnection& edge : m_controlEdges) {
-            if (edge.fromModuleId == backEdge.toModuleId && edge.fromPort == QLatin1String("body"))
-                bodyStarts.append(edge.toModuleId);
-        }
-        const QSet<QString> bodyReach = reachableIn(reducedAdj, bodyStarts);
-        const QSet<QString> reachesBackSource = reachableIn(reducedReverse, {backEdge.fromModuleId});
-        m_reentrantModules.insert(backEdge.toModuleId);
-        for (const QString& moduleId : bodyReach) {
-            if (reachesBackSource.contains(moduleId)) {
-                m_reentrantModules.insert(moduleId);
-                m_loopRegions[backEdge.toModuleId].insert(moduleId);
-            }
-        }
-    }
-
+    m_executionOrder = plan.dataOrder;
+    m_controlEdges = plan.controlEdges;
+    m_loopBackEdges = plan.loopBackEdges;
+    m_reentrantModules = plan.reentrantModules;
+    m_loopRegions = plan.loopRegions;
     return true;
 }
+
+#ifdef DEEPLUX_BUILD_TESTS
+QStringList RunEngine::executionOrderForTest() const {
+    return m_executionOrder;
+}
+
+QList<ModuleConnection> RunEngine::controlEdgesForTest() const {
+    return m_controlEdges;
+}
+
+QVariantMap RunEngine::loopMetadataForTest() const {
+    QStringList backEdges = m_loopBackEdges.values();
+    backEdges.sort();
+    QStringList reentrant = m_reentrantModules.values();
+    reentrant.sort();
+    QVariantMap regions;
+    for (auto it = m_loopRegions.constBegin(); it != m_loopRegions.constEnd(); ++it) {
+        QStringList members = it.value().values();
+        members.sort();
+        regions.insert(it.key(), members);
+    }
+    QVariantMap metadata;
+    metadata.insert(QStringLiteral("loopBackEdges"), backEdges);
+    metadata.insert(QStringLiteral("reentrantModules"), reentrant);
+    metadata.insert(QStringLiteral("loopRegions"), regions);
+    return metadata;
+}
+#endif
 
 QString RunEngine::findSiblingByFlowType(const QString& currentModule, ControlFlowType targetType) {
     QStringList order = m_executionOrder;

@@ -10,6 +10,7 @@
 #include <QStringListModel>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <memory>
 
 namespace DeepLux {
 
@@ -81,7 +82,7 @@ private:
     void sendKeyToPty(QKeyEvent* event);
     void sendTextToPty(const QString& text);
 
-    TerminalScreen* m_screen = nullptr;
+    std::unique_ptr<TerminalScreen> m_screen;
     TerminalRenderer* m_renderer = nullptr;
     AnsiParser* m_parser = nullptr;
     QScrollBar* m_scrollBar = nullptr;
