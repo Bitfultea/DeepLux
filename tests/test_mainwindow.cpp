@@ -264,6 +264,21 @@ protected:
     }
 };
 
+class BlockingNPointCalibrationPlugin : public NPointCalibrationPlugin {
+public:
+    QSemaphore* entered = nullptr;
+    QSemaphore* release = nullptr;
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        if (entered && release) {
+            entered->release();
+            release->acquire();
+        }
+        return NPointCalibrationPlugin::process(input, output);
+    }
+};
+
 class TestGrabImageParamModule : public ModuleBase {
 public:
     explicit TestGrabImageParamModule(const QString& instanceId) {
@@ -14989,11 +15004,6 @@ void TestMainWindow::testG4AdvancedConfigRejectsCrossSourceConflictAtomically() 
 }
 
 void TestMainWindow::testG4AdvancedConfigDefersCalibrationPointClearUntilAccepted() {
-    QTemporaryDir appDir;
-    QVERIFY(appDir.isValid());
-    qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
-    QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("NPointCalibration")));
-
     MainWindow window;
     window.show();
     Project* project = ProjectManager::instance().newProject();
@@ -15022,25 +15032,20 @@ void TestMainWindow::testG4AdvancedConfigDefersCalibrationPointClearUntilAccepte
     auto* advancedAction = inspector->findChild<QAction*>(QStringLiteral("InspectorAdvancedAction"));
     QVERIFY(advancedAction);
 
-    // Synchronize once to obtain the same GUI-owned module that advanced configuration will later mutate.
-    QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
-    QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 3000);
-    auto* runtimeModule = dynamic_cast<NPointCalibrationPlugin*>(RunEngine::instance().getModule(calibration.id));
-    QVERIFY(runtimeModule);
-    runtimeModule->m_calibResult.isValid = true; // Sentinel for the deferred clearPointsPublic side effect.
-    RunEngine::instance().clearModules();
-
     QSemaphore entered;
     QSemaphore release;
     RunEngine& engine = RunEngine::instance();
     QVERIFY(engine.loadProject(project, [&](const ModuleInstance& loading) {
-        auto* probe = new MainWindowOutputProbeModule(loading.id);
-        probe->duringProcess = [&]() {
-            entered.release();
-            release.acquire();
-        };
-        return probe;
+        auto* module = new BlockingNPointCalibrationPlugin();
+        module->entered = &entered;
+        module->release = &release;
+        module->setInstanceName(loading.id);
+        return module;
     }));
+    auto* runtimeModule = dynamic_cast<NPointCalibrationPlugin*>(engine.getModule(calibration.id));
+    QVERIFY(runtimeModule);
+    window.registerFlowModule(calibration.id, runtimeModule);
+    runtimeModule->m_calibResult.isValid = true; // Sentinel for the deferred clearPointsPublic side effect.
     RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(calibration.id, ExecutionAffinity::Worker);
     struct ReleaseOnExit {
         QSemaphore& semaphore;
@@ -15081,7 +15086,7 @@ void TestMainWindow::testG4AdvancedConfigDefersCalibrationPointClearUntilAccepte
         QCOMPARE(undoStack->count(), undoCountBefore);
         release.release();
         QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 3000);
-        engine.clearModules();
+        runtimeModule->m_calibResult.isValid = true;
         ok->click();
     });
     advancedAction->trigger();
