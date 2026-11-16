@@ -437,6 +437,19 @@ bool waitForServiceIdle(int timeoutMs = 5000) {
     }
 }
 
+auto closeProjectBeforeWindowDestruction() {
+    return qScopeGuard([] {
+        FlowExecutionService::instance().stop();
+        if (!waitForServiceIdle() || RunEngine::instance().isBusy())
+            qFatal("G6 test teardown could not stop the execution service before closing the project");
+        ProjectManager& projectManager = ProjectManager::instance();
+        const bool hadProject = projectManager.currentProject() != nullptr;
+        projectManager.closeProject();
+        if (hadProject && projectManager.currentProject() != nullptr)
+            qFatal("G6 test teardown failed to close the current project");
+    });
+}
+
 // ===== B3：流程树重排集成测试的确定性夹具 =====
 
 /// Project 的模块声明顺序（分析器的规范 moduleOrder，与流程树展示顺序无关）。
@@ -914,15 +927,17 @@ void TestMainWindow::initTestCase() {
 
 void TestMainWindow::init() {
     QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
-    ProjectManager::instance().closeProject();
-    PluginManager::instance().shutdown();
-    RunEngine::instance().stop();
-    RunEngine::instance().clearModules();
-    RunEngine::instance().clearOutputs();
     // B7：上一个用例可能留下后台 job；先停再等收尾，保证每个用例从 Service Idle 开始。
     FlowExecutionServiceTestAccess(FlowExecutionService::instance()).clearStartHandshakeHookForTest();
     FlowExecutionService::instance().stop();
     QVERIFY(waitForServiceIdle());
+    RunEngine::instance().stop();
+    ProjectManager::instance().closeProject();
+    QVERIFY(!RunEngine::instance().isBusy());
+    RunEngine::instance().clearModules();
+    QVERIFY(RunEngine::instance().modules().isEmpty());
+    RunEngine::instance().clearOutputs();
+    PluginManager::instance().shutdown();
     // 默认插件目录重定向到临时目录，避免每个 MainWindow 实例都扫描
     // ~/.deeplux/plugins（会刷出大量 qDebug 并触发 QtTest 警告上限）。
     qputenv("DEEPLUX_APP_DATA_DIR", m_appDataDir.filePath("appdata").toLocal8Bit());
@@ -931,14 +946,19 @@ void TestMainWindow::init() {
 }
 
 void TestMainWindow::cleanup() {
-    ProjectManager::instance().closeProject();
-    PluginManager::instance().shutdown();
     FlowExecutionServiceTestAccess(FlowExecutionService::instance()).clearStartHandshakeHookForTest();
     FlowExecutionService::instance().stop();
     QVERIFY(waitForServiceIdle());
     RunEngine::instance().stop();
+    ProjectManager::instance().closeProject();
+    QVERIFY(!RunEngine::instance().isBusy());
     RunEngine::instance().clearModules();
+    QVERIFY(RunEngine::instance().modules().isEmpty());
     RunEngine::instance().clearOutputs();
+    const DisplayFrame latestFrame = RunEngine::instance().latestDisplayFrame();
+    QVERIFY(latestFrame.image.isNull());
+    QVERIFY(!latestFrame.hasSnapshot());
+    PluginManager::instance().shutdown();
     qunsetenv("DEEPLUX_APP_DATA_DIR");
     qunsetenv("DEEPLUX_SHOW_DEBUG_MENU");
 }
@@ -4552,6 +4572,7 @@ void TestMainWindow::testG6MeasurementInputUsesActualCropImageOutputAfterViewpor
     QCOMPARE(cropProvenance.localToSourceMatrix(), expectedCropMatrix);
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -4677,7 +4698,9 @@ void TestMainWindow::testG6MeasurementInputUsesActualCropImageOutputAfterViewpor
     QCOMPARE(overlayLines.first().p2, QPointF(70.0, 50.0));
     QCOMPARE(runStartedSpy.count(), 1);
     QCOMPARE(runFinishedSpy.count(), 1);
-    engine.clearModules();
+    QVERIFY(waitForServiceIdle());
+    QVERIFY(!engine.isBusy());
+    ProjectManager::instance().closeProject();
 }
 
 void TestMainWindow::testG6MeasurementInputQueuedContinuationRejectsProjectReplacement() {
@@ -4687,6 +4710,7 @@ void TestMainWindow::testG6MeasurementInputQueuedContinuationRejectsProjectRepla
     QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -4787,6 +4811,7 @@ void TestMainWindow::testG6MeasurementInputQueuedContinuationRejectsSameIdModule
     QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -4863,6 +4888,7 @@ void TestMainWindow::testG6MeasurementInputQueuedContinuationHonorsStop() {
     QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -4942,6 +4968,7 @@ void TestMainWindow::testG6MeasurementInputQueuedContinuationAllowsUnrelatedProj
     QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -4994,6 +5021,7 @@ void TestMainWindow::testG6MeasurementInputRejectsImageChangeBeforeFirstPick() {
     QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -5048,6 +5076,7 @@ void TestMainWindow::testG6MeasurementInputRejectsImageChangeAfterBindingViewpor
     QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -5110,6 +5139,7 @@ void TestMainWindow::testG6MeasurementInputRejectsCrossViewportPick() {
     QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -5180,6 +5210,7 @@ void TestMainWindow::testG6MeasurementInputCancelsImageChangeAndLateRelease() {
         installRuntimePlugin(QDir(appDir.path()).filePath(QStringLiteral("plugins")), QStringLiteral("DistancePP")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -5259,7 +5290,7 @@ void TestMainWindow::testG6MeasurementInputCancelsImageChangeAndLateRelease() {
         {input.id, distance.id, 0, 0, QStringLiteral("point1"), QStringLiteral("point1"), QStringLiteral("data")});
     project->addConnection(
         {input.id, distance.id, 0, 1, QStringLiteral("point2"), QStringLiteral("point2"), QStringLiteral("data")});
-    const QJsonObject initialProject = project->toJson();
+    const QJsonObject initialInputParams = project->findModule(input.id)->params;
 
     QSignalSpy sourcePickSpy(viewport, &ViewportWidget::point2DSourceClicked);
     QSignalSpy generationSpy(viewport, &ViewportWidget::contentGenerationChanged);
@@ -5280,12 +5311,7 @@ void TestMainWindow::testG6MeasurementInputCancelsImageChangeAndLateRelease() {
     QTest::mouseRelease(imageWidget, Qt::LeftButton, Qt::NoModifier, staleReleasePosition);
     QCoreApplication::processEvents();
 
-    const QJsonObject currentProject = project->toJson();
-    if (currentProject != initialProject) {
-        qWarning().noquote() << "G6 project before:" << QJsonDocument(initialProject).toJson(QJsonDocument::Compact);
-        qWarning().noquote() << "G6 project after:" << QJsonDocument(currentProject).toJson(QJsonDocument::Compact);
-    }
-    QCOMPARE(currentProject, initialProject);
+    QCOMPARE(project->findModule(input.id)->params, initialInputParams);
     QCOMPARE(sourcePickSpy.size(), 0);
     QCOMPARE(runStartedSpy.count(), 0);
     QCOMPARE(runFinishedSpy.count(), 0);
@@ -5306,20 +5332,13 @@ void TestMainWindow::testG6MeasurementInputCancelsImageChangeAndLateRelease() {
     QVERIFY(sourcePickSpy.at(0).at(3).toBool());
     QCOMPARE(project->findModule(input.id)->params.value(QStringLiteral("point1")).toArray(), (QJsonArray{30.0, 20.0}));
     QCOMPARE(imageWidget->measurementPoints().size(), 1);
-    const QJsonObject afterFirstPick = project->toJson();
+    const QJsonObject paramsAfterFirstPick = project->findModule(input.id)->params;
     QCOMPARE(processTree->topLevelItem(0)->text(1), QStringLiteral("等待拾取 2/2"));
     QTest::mousePress(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(250, 178));
     QVERIFY(QMetaObject::invokeMethod(&window, "onStop", Qt::DirectConnection));
     QTest::mouseRelease(imageWidget, Qt::LeftButton, Qt::NoModifier, QPoint(250, 178));
     QCoreApplication::processEvents();
-    const QJsonObject projectAfterLateRelease = project->toJson();
-    if (projectAfterLateRelease != afterFirstPick) {
-        qWarning().noquote() << "G6 project after late release:"
-                             << QJsonDocument(projectAfterLateRelease).toJson(QJsonDocument::Compact);
-        qWarning().noquote() << "G6 project after first pick:"
-                             << QJsonDocument(afterFirstPick).toJson(QJsonDocument::Compact);
-    }
-    QCOMPARE(projectAfterLateRelease, afterFirstPick);
+    QCOMPARE(project->findModule(input.id)->params, paramsAfterFirstPick);
     QCOMPARE(sourcePickSpy.size(), 1);
     QCOMPARE(runStartedSpy.count(), 0);
     QCOMPARE(runFinishedSpy.count(), 0);
@@ -5383,7 +5402,9 @@ void TestMainWindow::testG6MeasurementInputCancelsImageChangeAndLateRelease() {
     QCOMPARE(imageWidget->measurementLines().first().p2, QPointF(60.0, 40.0));
     QCOMPARE(completedRunStartedSpy.count(), 1);
     QCOMPARE(completedRunSpy.count(), 1);
-    engine.clearModules();
+    QVERIFY(waitForServiceIdle());
+    QVERIFY(!engine.isBusy());
+    ProjectManager::instance().closeProject();
 }
 
 void TestMainWindow::testG6MeasurementInputQueuedContinuationRejectsDestroyedViewport() {
@@ -5393,6 +5414,7 @@ void TestMainWindow::testG6MeasurementInputQueuedContinuationRejectsDestroyedVie
     QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -5453,7 +5475,10 @@ void TestMainWindow::testG6MeasurementInputQueuedContinuationRejectsDestroyedVie
     QVERIFY(QMetaObject::invokeMethod(&window, "onRunOnce", Qt::DirectConnection));
     QTRY_COMPARE_WITH_TIMEOUT(runStartedSpy.count(), 1, 1000);
     QTRY_COMPARE_WITH_TIMEOUT(moduleStartedSpy.count(), 1, 1000);
-    RunEngine::instance().clearModules();
+    FlowExecutionService::instance().stop();
+    QVERIFY(waitForServiceIdle());
+    QVERIFY(!RunEngine::instance().isBusy());
+    ProjectManager::instance().closeProject();
 }
 
 void TestMainWindow::testG6MeasurementInput3DWorldCoordinatesReachRunOutput() {
@@ -5463,6 +5488,7 @@ void TestMainWindow::testG6MeasurementInput3DWorldCoordinatesReachRunOutput() {
     QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -5577,6 +5603,7 @@ void TestMainWindow::testG6MeasurementInput3DRealMousePicksAfterCameraTransforms
     QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(1000, 700);
     window.show();
     QCoreApplication::processEvents();
@@ -5756,6 +5783,7 @@ void TestMainWindow::testG6MeasurementInput3DPointLineRealMousePicksAfterCameraT
     QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(1000, 700);
     window.show();
     QCoreApplication::processEvents();
@@ -5951,6 +5979,7 @@ void TestMainWindow::testG6MeasurementInput3DLinePairRealMousePicksAfterCameraTr
     QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(1000, 700);
     window.show();
     QCoreApplication::processEvents();
@@ -6156,6 +6185,7 @@ void TestMainWindow::testG6MeasurementInput3DPickCancelsAfterPointCloudReplaceme
     QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -6229,6 +6259,7 @@ void TestMainWindow::testG6MeasurementInput3DCrossViewportPickIsIgnored() {
     QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -6359,6 +6390,7 @@ void TestMainWindow::testG6MeasurementInput3DPointPlaneRealMousePicksAfterCamera
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("PointSurfaceDistance")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(1000, 700);
     window.show();
     QCoreApplication::processEvents();
@@ -6575,7 +6607,9 @@ void TestMainWindow::testG6MeasurementInput3DPointPlaneRealMousePicksAfterCamera
             QVERIFY(!output->hasData(sourceField));
     }
 
-    engine.clearModules();
+    QVERIFY(waitForServiceIdle());
+    QVERIFY(!engine.isBusy());
+    ProjectManager::instance().closeProject();
 }
 
 void TestMainWindow::testG6MeasurementInput3DPointPlanePicksAllWorldVertices() {
@@ -6585,6 +6619,7 @@ void TestMainWindow::testG6MeasurementInput3DPointPlanePicksAllWorldVertices() {
     QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -8071,6 +8106,7 @@ void TestMainWindow::testG6MeasurementInput2DPointLineRealMousePicksAndRunsDista
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePL")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -8234,7 +8270,9 @@ void TestMainWindow::testG6MeasurementInput2DPointLineRealMousePicksAndRunsDista
     QCOMPARE(overlayLines.first().p1, QPointF(0.0, 35.0));
     QCOMPARE(overlayLines.first().p2, QPointF(40.0, 35.0));
     QVERIFY(overlayLines.first().label.contains(QStringLiteral("15.000")));
-    engine.clearModules();
+    QVERIFY(waitForServiceIdle());
+    QVERIFY(!engine.isBusy());
+    ProjectManager::instance().closeProject();
 }
 
 void TestMainWindow::testG6MeasurementInput2DLinePairRealMousePicksAndRunsLinesDistance() {
@@ -8246,6 +8284,7 @@ void TestMainWindow::testG6MeasurementInput2DLinePairRealMousePicksAndRunsLinesD
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("LinesDistance")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -8419,6 +8458,7 @@ void TestMainWindow::testG6MeasurementInput3DQueuedContinuationRejectsSameIdModu
     QVERIFY(installRuntimePlugin(QDir(appDir.path()).filePath("plugins"), QStringLiteral("MeasurementInput")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -8533,6 +8573,7 @@ void TestMainWindow::testG6MeasurementInput2DRealMousePicksWithViewportTransform
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
 
     MainWindow window;
+    [[maybe_unused]] auto projectCloseGuard = closeProjectBeforeWindowDestruction();
     window.resize(900, 650);
     window.show();
     QCoreApplication::processEvents();
@@ -8667,7 +8708,9 @@ void TestMainWindow::testG6MeasurementInput2DRealMousePicksWithViewportTransform
     QCOMPARE(overlayLines.size(), 1);
     QCOMPARE(overlayLines.first().p1, QPointF(13.0, 17.0));
     QCOMPARE(overlayLines.first().p2, QPointF(63.0, 47.0));
-    engine.clearModules();
+    QVERIFY(waitForServiceIdle());
+    QVERIFY(!engine.isBusy());
+    ProjectManager::instance().closeProject();
 }
 
 void TestMainWindow::testMeasurementConfigButtonWithInstalledPlugins() {

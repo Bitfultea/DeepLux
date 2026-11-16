@@ -2117,6 +2117,7 @@ void RunEngine::removeModule(const QString& moduleId) {
 void RunEngine::clearModulesLocked() {
     QMutexLocker lifecycleLocker(&m_lifecycleMutex);
     QWriteLocker locker(&m_moduleLock);
+    clearLatestDisplayFrames();
     for (ModuleBase* module : m_ownedModules) {
         if (!PluginManager::instance().destroyModule(module))
             delete module;
