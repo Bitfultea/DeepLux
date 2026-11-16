@@ -23,23 +23,23 @@ UserManager::UserManager() {
 UserManager::~UserManager() {}
 
 bool UserManager::login(const QString& userName, const QString& password) {
-    Q_UNUSED(password)
-
     // 简化逻辑：根据用户名确定用户类型
+    UserType userType = UserType::Guest;
     if (userName.toLower() == "developer" || userName.toLower() == "dev") {
-        m_currentUser.userName = userName;
-        m_currentUser.type = UserType::Developer;
+        userType = UserType::Developer;
     } else if (userName.toLower() == "admin" || userName.toLower() == "administrator") {
-        m_currentUser.userName = userName;
-        m_currentUser.type = UserType::Administrator;
+        userType = UserType::Administrator;
     } else if (userName.toLower() == "operator" || userName.toLower() == "op") {
-        m_currentUser.userName = userName;
-        m_currentUser.type = UserType::Operator;
-    } else {
-        m_currentUser.userName = userName;
-        m_currentUser.type = UserType::Guest;
+        userType = UserType::Operator;
     }
 
+    return login(userName, password, userType);
+}
+
+bool UserManager::login(const QString& userName, const QString& password, UserType userType) {
+    Q_UNUSED(password)
+    m_currentUser.userName = userName;
+    m_currentUser.type = userType;
     m_currentUser.isLoggedIn = true;
     m_currentUser.loginTime = QDateTime::currentDateTime();
     updatePermissions();

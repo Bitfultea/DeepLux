@@ -14,6 +14,8 @@
 #include <QToolButton>
 #include <QWidget>
 
+class QGridLayout;
+
 namespace DeepLux {
 
 /**
@@ -138,6 +140,9 @@ public:
     void setBreakpointState(bool breakpoint);
     void setNoteState(const QString& note);
 
+protected:
+    void resizeEvent(QResizeEvent* event) override;
+
 signals:
     void paramsChanged(const QString& instanceId, const QString& key, const QVariant& value);
     void resetDefaultsRequested(const QString& instanceId);
@@ -168,6 +173,7 @@ private:
     void setupBottomBar();
     void setupEmptyState();
     void updateCollapsedState();
+    void updateBottomBarLayout();
     void refreshResults(const ImageData& output);
 
     // 标题栏控件
@@ -194,6 +200,7 @@ private:
 
     // 底部按钮栏
     QWidget* m_bottomBar = nullptr;
+    QGridLayout* m_bottomLayout = nullptr;
     QPushButton* m_rerunBtn = nullptr;
     QToolButton* m_moreBtn = nullptr;
     class QAction* m_advancedAction = nullptr;
@@ -201,6 +208,7 @@ private:
     QToolButton* m_breakpointBtn = nullptr;
     QLineEdit* m_noteEdit = nullptr;
     bool m_runtimeStateUpdating = false;
+    bool m_compactBottomBar = false;
 
     // 空状态
     QWidget* m_emptyState = nullptr;

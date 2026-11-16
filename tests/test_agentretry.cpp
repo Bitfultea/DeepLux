@@ -281,6 +281,7 @@ private slots:
         QCOMPARE(info.category, LLMErrorCategory::Network);
         QVERIFY(info.retryable);
         QCOMPARE(info.httpStatus, 0);
+        QVERIFY(info.message.contains(QStringLiteral("Connection refused")));
 
         // Malformed（HTTP 200 但解析失败）
         info = OpenAILLMClient::classifyError(0, QNetworkReply::NoError, QStringLiteral("illegal value"),

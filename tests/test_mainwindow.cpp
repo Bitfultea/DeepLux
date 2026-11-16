@@ -152,6 +152,8 @@ public:
     void setMaxTokens(int) override {}
     void setToolsEnabled(bool) override {}
     void sendRequest(const AgentConversation& context, const QList<ToolDefinition>&) override {
+        ++requestCount;
+        lastCtx = context;
         m_requestId = context.requestId;
     }
 
@@ -162,6 +164,9 @@ public:
         emit responseReceived(correlated);
         QCoreApplication::processEvents();
     }
+
+    int requestCount = 0;
+    AgentConversation lastCtx;
 
 private:
     QString m_requestId;
@@ -13481,8 +13486,9 @@ void TestMainWindow::testLoggedOutUserGetsLoginHandoffWithoutAgentLogin() {
         UserInfo previous;
         ~UserStateRestore() {
             if (previous.isLoggedIn) {
-                if (!users.isLoggedIn() || users.currentUser().userName != previous.userName)
-                    users.login(previous.userName, QString());
+                if (!users.isLoggedIn() || users.currentUser().userName != previous.userName ||
+                    users.currentUser().type != previous.type)
+                    users.login(previous.userName, QString(), previous.type);
             } else if (users.isLoggedIn()) {
                 users.logout();
             }
@@ -13498,7 +13504,11 @@ void TestMainWindow::testLoggedOutUserGetsLoginHandoffWithoutAgentLogin() {
     MainWindow window;
     window.show();
     QCoreApplication::processEvents();
-    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+    controller.clearConversation();
+    ProjectManager::instance().closeProject();
+    MainWindowReplyClient replyClient;
+    controller.setLLMClient(&replyClient);
     if (users.isLoggedIn())
         users.logout();
     QCoreApplication::processEvents();
@@ -13520,20 +13530,33 @@ void TestMainWindow::testLoggedOutUserGetsLoginHandoffWithoutAgentLogin() {
     QVERIFY(QFileInfo(beforePath).size() > 0);
 
     QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
-    const QJsonObject result = controller.handleToolCall(QStringLiteral("open_user_login_dialog"), {});
-    QCOMPARE(result.size(), 3);
-    QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("opened"));
-    QCOMPARE(result.value(QStringLiteral("dialogAction")).toString(), QStringLiteral("opened"));
-    QCOMPARE(result.value(QStringLiteral("userActionRequired")).toBool(), true);
-    QVERIFY(!result.contains(QStringLiteral("userLoggedIn")));
-    QVERIFY(!result.contains(QStringLiteral("username")));
-    QVERIFY(!result.contains(QStringLiteral("password")));
-    QCOMPARE(auditSpy.count(), 1);
-    const AgentActionLogEntry audit = qvariant_cast<AgentActionLogEntry>(auditSpy.first().at(0));
-    QCOMPARE(audit.action, QStringLiteral("open_user_login_dialog"));
-    const QByteArray auditBytes = (audit.actor + audit.action + audit.params + audit.result).toUtf8().toLower();
-    QVERIFY(!auditBytes.contains("username"));
-    QVERIFY(!auditBytes.contains("password"));
+    controller.sendUserMessage(QStringLiteral("请创建工程"));
+    AgentResponse deniedCall;
+    deniedCall.success = true;
+    deniedCall.toolCalls = QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("denied-create")},
+                                                  {QStringLiteral("type"), QStringLiteral("function")},
+                                                  {QStringLiteral("name"), QStringLiteral("create_project")},
+                                                  {QStringLiteral("arguments"),
+                                                   QJsonObject{{QStringLiteral("name"), QStringLiteral("AfterLogin")}}}}};
+    replyClient.reply(deniedCall);
+    QCOMPARE(replyClient.requestCount, 2);
+    AgentResponse openLogin;
+    openLogin.success = true;
+    openLogin.toolCalls = QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("login-handoff")},
+                                                 {QStringLiteral("type"), QStringLiteral("function")},
+                                                 {QStringLiteral("name"), QStringLiteral("open_user_login_dialog")},
+                                                 {QStringLiteral("arguments"), QJsonObject{}}}};
+    replyClient.reply(openLogin);
+    QCOMPARE(replyClient.requestCount, 3);
+    AgentResponse loginPrompt;
+    loginPrompt.success = true;
+    loginPrompt.content = QStringLiteral("请先登录，我会继续处理请求。");
+    replyClient.reply(loginPrompt);
+    QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    QCOMPARE(auditSpy.count(), 2);
+    QCOMPARE(qvariant_cast<AgentActionLogEntry>(auditSpy.first().at(0)).result, QStringLiteral("denied"));
+    QCOMPARE(qvariant_cast<AgentActionLogEntry>(auditSpy.last().at(0)).action,
+             QStringLiteral("open_user_login_dialog"));
 
     LoginDialog* dialog = window.findChild<LoginDialog*>(QStringLiteral("UserLoginDialog"));
     QVERIFY(dialog && dialog->isVisible());
@@ -13545,9 +13568,25 @@ void TestMainWindow::testLoggedOutUserGetsLoginHandoffWithoutAgentLogin() {
     credentialFields.at(0)->clear();
     QVERIFY(credentialFields.at(0)->text().isEmpty());
     credentialFields.at(1)->setFocus(Qt::OtherFocusReason);
-    if (auto* userType = dialog->findChild<QComboBox*>())
-        userType->hidePopup();
+    auto* userType = dialog->findChild<QComboBox*>();
+    QVERIFY(userType);
+    userType->setCurrentIndex(userType->findData(static_cast<int>(UserType::Developer)));
+    userType->hidePopup();
     QCoreApplication::processEvents();
+    auto* feedback = dialog->findChild<QLabel*>(QStringLiteral("LoginFeedbackLabel"));
+    QVERIFY(feedback);
+    QVERIFY(dialog->width() >= 440);
+    QPushButton* loginButton = nullptr;
+    for (QPushButton* button : dialog->findChildren<QPushButton*>()) {
+        if (button->text() == QStringLiteral("Login")) {
+            loginButton = button;
+            break;
+        }
+    }
+    QVERIFY(loginButton);
+    loginButton->click();
+    QVERIFY(dialog->isVisible());
+    QVERIFY(!feedback->text().isEmpty());
     QCOMPARE(loginRequestSpy.count(), 0);
     QVERIFY(!users.isLoggedIn());
     QCOMPARE(users.currentUser().type, UserType::Guest);
@@ -13557,7 +13596,39 @@ void TestMainWindow::testLoggedOutUserGetsLoginHandoffWithoutAgentLogin() {
     const QString afterPath = QDir(captureDir).filePath(QStringLiteral("login-handoff-after.png"));
     QVERIFY(dialog->grab().save(afterPath));
     QVERIFY(QFileInfo(afterPath).size() > 0);
-    dialog->close();
+    credentialFields.at(0)->setText(QStringLiteral("Operator"));
+    loginButton->click();
+    QVERIFY(users.isLoggedIn());
+    QCOMPARE(users.currentUser().type, UserType::Developer);
+    QTRY_COMPARE(replyClient.requestCount, 4);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("正在继续")));
+    bool foundContinuation = false;
+    for (const AgentMessage& message : replyClient.lastCtx.messages) {
+        if (message.role == QLatin1String("user") && message.content.contains(QStringLiteral("用户已完成登录")))
+            foundContinuation = true;
+    }
+    QVERIFY(foundContinuation);
+    bool foundOriginalDenial = false;
+    for (const AgentMessage& message : replyClient.lastCtx.messages) {
+        if (message.role == QLatin1String("tool") && message.toolCallId == QLatin1String("denied-create"))
+            foundOriginalDenial = message.content.contains(QStringLiteral("PERMISSION_DENIED"));
+    }
+    QVERIFY(foundOriginalDenial);
+    AgentResponse retryCreate;
+    retryCreate.success = true;
+    retryCreate.toolCalls = QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("retry-create")},
+                                                  {QStringLiteral("type"), QStringLiteral("function")},
+                                                  {QStringLiteral("name"), QStringLiteral("create_project")},
+                                                  {QStringLiteral("arguments"),
+                                                   QJsonObject{{QStringLiteral("name"), QStringLiteral("AfterLogin")}}}}};
+    replyClient.reply(retryCreate);
+    QCOMPARE(replyClient.requestCount, 5);
+    QVERIFY(ProjectManager::instance().currentProject());
+    QCOMPARE(ProjectManager::instance().currentProject()->name(), QStringLiteral("AfterLogin"));
+    AgentResponse completed;
+    completed.success = true;
+    completed.content = QStringLiteral("继续处理完成。");
+    replyClient.reply(completed);
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 }
 

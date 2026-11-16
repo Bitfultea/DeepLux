@@ -3438,8 +3438,11 @@ private slots:
         ModuleInstance changedTarget = *originalTarget;
         changedTarget.moduleId = QStringLiteral("MeasurementInput");
         project->updateModule(target.id, changedTarget);
-        QCOMPARE(actor.executeTool("validate_flow", {}).value(QStringLiteral("errorCode")).toString(),
-                 QStringLiteral("ENGINE_OUT_OF_SYNC"));
+        const QJsonObject staleResult = actor.executeTool("validate_flow", {});
+        QCOMPARE(staleResult.value(QStringLiteral("errorCode")).toString(), QStringLiteral("ENGINE_OUT_OF_SYNC"));
+        QCOMPARE(
+            staleResult.value(QStringLiteral("details")).toObject().value(QStringLiteral("recommendedTool")).toString(),
+            QStringLiteral("validate_workflow"));
         project->updateModule(target.id, *originalTarget);
 
         ModuleInstance unsynced;

@@ -1,5 +1,6 @@
 #include <QAction>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTableWidget>
@@ -8,6 +9,7 @@
 #include <core/base/ModuleBase.h>
 #include <core/manager/PluginManager.h>
 #include <core/model/ImageData.h>
+#include <ui/ThemeManager.h>
 #include <ui/widgets/ModuleInspectorPanel.h>
 
 using namespace DeepLux;
@@ -60,6 +62,7 @@ private slots:
     void testThemeSwitchDoesNotCrash();
     void testCloseSignalEmitted();
     void testPrimaryAndOverflowActions();
+    void testRerunButtonFitsScaledText();
 };
 
 void TestModuleInspectorPanel::init() {}
@@ -298,6 +301,42 @@ void TestModuleInspectorPanel::testPrimaryAndOverflowActions() {
     resetAction->trigger();
     QCOMPARE(advancedSpy.count(), 1);
     QCOMPARE(resetSpy.count(), 1);
+}
+
+void TestModuleInspectorPanel::testRerunButtonFitsScaledText() {
+    ModuleInspectorPanel panel;
+    panel.setStyleSheet(ThemeManager::styleSheet(false));
+    panel.setLayoutMode(ModuleInspectorPanel::LayoutMode::Floating);
+    panel.resize(285, 500);
+    InspectorTestModule module;
+    panel.setModule(&module, QStringLiteral("scaled-text"), PluginInfo{});
+    panel.show();
+
+    auto* rerunButton = panel.findChild<QPushButton*>("InspectorRerunBtn");
+    QVERIFY(rerunButton != nullptr);
+    QFont scaledFont = rerunButton->font();
+    scaledFont.setPixelSize(24);
+    rerunButton->setFont(scaledFont);
+    QCoreApplication::processEvents();
+
+    QVERIFY(rerunButton->width() >= rerunButton->fontMetrics().horizontalAdvance(rerunButton->text()) + 24);
+    const QWidget* bottomBar = panel.findChild<QWidget*>("InspectorBottomBar");
+    QVERIFY(bottomBar != nullptr);
+    for (QWidget* child : bottomBar->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
+        if (child->isVisible())
+            QVERIFY(child->geometry().right() <= bottomBar->contentsRect().right());
+    }
+
+    panel.resize(500, 500);
+    QCoreApplication::processEvents();
+    auto* noteEdit = panel.findChild<QLineEdit*>("InspectorNoteEdit");
+    QVERIFY(noteEdit != nullptr);
+    QVERIFY(rerunButton->geometry().top() < noteEdit->geometry().bottom());
+    QVERIFY(noteEdit->geometry().top() < rerunButton->geometry().bottom());
+
+    panel.resize(285, 500);
+    QCoreApplication::processEvents();
+    QVERIFY(noteEdit->geometry().top() >= rerunButton->geometry().bottom());
 }
 
 QTEST_MAIN(TestModuleInspectorPanel)

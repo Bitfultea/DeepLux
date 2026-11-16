@@ -5351,7 +5351,16 @@ QJsonObject MainWindow::executeAgentDataSourceViewAction(const QString& toolName
             dialog->setAttribute(Qt::WA_DeleteOnClose);
             dialog->setWindowModality(Qt::NonModal);
             m_agentLoginDialog = dialog;
-            connect(dialog, &QDialog::finished, this, [this, dialog](int) {
+        }
+        if (!dialog->property("AgentLoginResumeConnected").toBool()) {
+            dialog->setProperty("AgentLoginResumeConnected", true);
+            connect(dialog, &QDialog::finished, this, [this, dialog](int result) {
+                if (result == QDialog::Accepted) {
+                    statusBar()->showMessage(tr("登录成功：%1，Agent 正在继续此前请求")
+                                                 .arg(UserManager::instance().currentUser().userName),
+                                             5000);
+                    AgentController::instance().resumeAfterLogin();
+                }
                 if (m_agentLoginDialog == dialog)
                     m_agentLoginDialog.clear();
             });
@@ -8883,7 +8892,9 @@ void MainWindow::onUserLogin() {
     // 使用已实现的 LoginDialog
     LoginDialog dialog(this);
     dialog.setWindowTitle(tr("用户登录"));
-    dialog.exec();
+    if (dialog.exec() == QDialog::Accepted) {
+        statusBar()->showMessage(tr("登录成功：%1").arg(UserManager::instance().currentUser().userName), 4000);
+    }
     Logger::instance().info(tr("用户登录"), "System");
 }
 

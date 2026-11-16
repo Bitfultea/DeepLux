@@ -2,6 +2,7 @@
 
 #include <QComboBox>
 #include <QDialog>
+#include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 
@@ -34,6 +35,7 @@ private:
     QLineEdit* m_userNameEdit = nullptr;
     QLineEdit* m_passWordEdit = nullptr;
     QComboBox* m_userTypeCombo = nullptr;
+    QLabel* m_feedbackLabel = nullptr;
     QPushButton* m_loginBtn = nullptr;
     QPushButton* m_cancelBtn = nullptr;
 
