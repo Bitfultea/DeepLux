@@ -15281,6 +15281,7 @@ void TestMainWindow::testG4PendingToolboxCallbacksRejectStaleDrops() {
     auto* undoStack = window.findChild<QUndoStack*>();
     QVERIFY(controller);
     QVERIFY(undoStack);
+    QTRY_VERIFY(project->layoutInitialized());
     QTreeWidget* tree = controller->tree();
     QVERIFY(tree);
     const QJsonObject projectBefore = project->toJson();
@@ -15316,15 +15317,15 @@ void TestMainWindow::testG4PendingToolboxCallbacksRejectStaleDrops() {
     QCOMPARE(PluginDragPayload::pluginName(pluginMime), QStringLiteral("GrabImage"));
     QSemaphore entered;
     QSemaphore release;
-    MainWindowOutputProbeModule probe(QStringLiteral("pending_drop_callback_probe"));
-    probe.duringProcess = [&]() {
+    auto* probe = new MainWindowOutputProbeModule(QStringLiteral("pending_drop_callback_probe"));
+    probe->duringProcess = [&]() {
         entered.release();
         release.acquire();
     };
-    QVERIFY(probe.initialize());
+    QVERIFY(probe->initialize());
     RunEngine& engine = RunEngine::instance();
-    engine.addModule(&probe);
-    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(probe.instanceName(), ExecutionAffinity::Worker);
+    engine.addModule(probe);
+    RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(probe->instanceName(), ExecutionAffinity::Worker);
     struct ReleaseOnExit {
         QSemaphore& semaphore;
         ~ReleaseOnExit() {
@@ -15360,7 +15361,6 @@ void TestMainWindow::testG4PendingToolboxCallbacksRejectStaleDrops() {
     release.release();
     QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 3000);
     engine.clearModules();
-    probe.shutdown();
 
     // If the tree discarded the placeholder first, a delayed callback only cleans controller bookkeeping.
     const QString removedId = QStringLiteral("pending_removed_callback");
