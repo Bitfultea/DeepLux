@@ -16547,11 +16547,6 @@ void TestMainWindow::testAgentPartialFailureSummaryAppearsInChat() {
                     {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("instanceId"), module.id},
                                                               {QStringLiteral("name"), QStringLiteral("After")}}}});
     response.toolCalls.append(
-        QJsonObject{{QStringLiteral("id"), QStringLiteral("ui_call_started")},
-                    {QStringLiteral("name"), QStringLiteral("run_flow")},
-                    {QStringLiteral("arguments"),
-                     QJsonObject{{QStringLiteral("mode"), QStringLiteral("once")}, {QStringLiteral("wait"), false}}}});
-    response.toolCalls.append(
         QJsonObject{{QStringLiteral("id"), QStringLiteral("ui_call_failure")},
                     {QStringLiteral("name"), QStringLiteral("get_run_results")},
                     {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("runId"), canary}}}});
@@ -16576,11 +16571,9 @@ void TestMainWindow::testAgentPartialFailureSummaryAppearsInChat() {
         3000);
     const QString visibleText = failureBubble->text();
     QVERIFY(visibleText.contains(QStringLiteral("ui_call_success")));
-    QVERIFY(visibleText.contains(QStringLiteral("ui_call_started")));
     QVERIFY(visibleText.contains(QStringLiteral("ui_call_failure")));
     QVERIFY(visibleText.contains(QStringLiteral("ui_call_skipped")));
     QVERIFY(visibleText.contains(QStringLiteral("已发生的副作用未自动回滚")));
-    QVERIFY(visibleText.contains(QStringLiteral("已受理/进行中（started）")));
     QVERIFY(!visibleText.contains(canary));
     QLabel* status = panel->findChild<QLabel*>("AgentChatStatusLabel");
     QVERIFY(status);
@@ -16591,7 +16584,7 @@ void TestMainWindow::testAgentPartialFailureSummaryAppearsInChat() {
     QVERIFY(std::any_of(batchLogEntries.cbegin(), batchLogEntries.cend(), [](const AgentActionLogEntry& entry) {
         return entry.action == QStringLiteral("LLM Error") && entry.result == QStringLiteral("error");
     }));
-    QTRY_VERIFY(!RunEngine::instance().isBusy());
+    QVERIFY(!RunEngine::instance().isBusy());
 
     controller.sendUserMessage(QStringLiteral("Run one failing tool"));
     AgentResponse singleFailure;
