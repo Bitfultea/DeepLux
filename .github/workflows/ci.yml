@@ -188,6 +188,8 @@ jobs:
       - name: Verify isolated plugin sync
         run: python scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
       - name: Test
+        id: run-windows-ctest
+        continue-on-error: true
         env:
           QT_QPA_PLATFORM: offscreen
         run: ctest --test-dir build -C Release --output-on-failure
@@ -195,13 +197,29 @@ jobs:
         if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
         run: python scripts/check_ctest_skips.py build/Testing/Temporary/LastTest.log
       - name: Rerun failed tests with verbose output
-        if: failure()
+        if: always() && steps.run-windows-ctest.outcome == 'failure'
         continue-on-error: true
         shell: pwsh
         run: |
           Copy-Item build/Testing/Temporary/LastTest.log build/windows-ctest-initial.log
           ctest --test-dir build -C Release --rerun-failed -V 2>&1 | Tee-Object build/windows-ctest-rerun.log
           "ctest_exit=$LASTEXITCODE" | Out-File -Append build/windows-ctest-rerun.log
+          $sections = [regex]::Split((Get-Content build/windows-ctest-initial.log -Raw), '(?m)(?=^Test #\d+:)')
+          foreach ($section in $sections) {
+            if ($section -match 'Test Failed\.') { Write-Output $section }
+          }
+      - name: Summarize Windows CTest result
+        if: always()
+        env:
+          TEST_OUTCOME: ${{ steps.run-windows-ctest.outcome }}
+        run: |
+          @"
+          ### Windows CTest diagnostic job (non-blocking)
+
+          A successful job does not imply the Windows CTest suite passed; inspect the recorded test outcome and uploaded logs.
+
+          CTest outcome: $env:TEST_OUTCOME
+          "@ | Out-File -Append $env:GITHUB_STEP_SUMMARY
       - name: Upload Windows CTest diagnostics
         if: always()
         continue-on-error: true
