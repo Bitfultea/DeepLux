@@ -74,8 +74,9 @@ public:
     ~MainWindow() override;
 
 #ifdef DEEPLUX_BUILD_TESTS
-    // 测试辅助：直接注册运行时模块到 m_flowModules
+    // 测试注册的模块默认由 MainWindow 持有；外部持有的模块必须使用 borrowed 变体。
     Q_INVOKABLE void registerFlowModule(const QString& instanceId, IModule* module);
+    void registerBorrowedFlowModule(const QString& instanceId, IModule* module);
 
     // 测试辅助：Agent 聊天面板（批3 复核四轮 P2-5 草稿恢复回归）
     AgentChatPanel* agentChatPanel() const;
@@ -323,6 +324,7 @@ protected:
     QMap<QString, IModule*> m_flowModules;
 #ifdef DEEPLUX_BUILD_TESTS
     QSet<IModule*> m_borrowedFlowModulesForTest;
+    QHash<IModule*, QPointer<QObject>> m_flowModuleGuardsForTest;
 #endif
     QMap<QString, int> m_measurementPickCursor;
     QMap<QString, int> m_measurementPickCount;

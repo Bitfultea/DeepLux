@@ -16,11 +16,7 @@ PointCloudRendererOpenGL::PointCloudRendererOpenGL()
 
 PointCloudRendererOpenGL::~PointCloudRendererOpenGL() {
     cleanupBuffers();
-    if (QOpenGLContext::currentContext()) {
-        m_program.reset();
-    } else {
-        m_program.release();
-    }
+    m_program.reset();
 }
 
 void PointCloudRendererOpenGL::initializeGL() {

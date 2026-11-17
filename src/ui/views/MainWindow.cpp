@@ -1150,7 +1150,9 @@ MainWindow::~MainWindow() {
         RunEngine::instance().clearModules();
 #ifdef DEEPLUX_BUILD_TESTS
         for (auto it = m_flowModules.begin(); it != m_flowModules.end();) {
-            if (m_borrowedFlowModulesForTest.contains(it.value()))
+            const auto guard = m_flowModuleGuardsForTest.constFind(it.value());
+            if (m_borrowedFlowModulesForTest.contains(it.value()) ||
+                (guard != m_flowModuleGuardsForTest.cend() && guard.value().isNull()))
                 it = m_flowModules.erase(it);
             else
                 ++it;
@@ -7807,6 +7809,13 @@ void MainWindow::registerFlowModule(const QString& instanceId, IModule* module) 
         }
     }
     m_flowModules.insert(instanceId, module);
+    m_borrowedFlowModulesForTest.remove(module);
+    if (QObject* object = dynamic_cast<QObject*>(module))
+        m_flowModuleGuardsForTest.insert(module, object);
+}
+
+void MainWindow::registerBorrowedFlowModule(const QString& instanceId, IModule* module) {
+    registerFlowModule(instanceId, module);
     m_borrowedFlowModulesForTest.insert(module);
 }
 #endif

@@ -3775,13 +3775,19 @@ private slots:
         QString firstTickSessionId;
         QString firstTickSwapError;
         QObject firstTickSignalContext;
-        const QMetaObject::Connection firstTickSwapConnection = QObject::connect(
+        const QMetaObject::Connection firstTickSessionConnection = QObject::connect(
             actor, &AgentActor::toolExecuted, &firstTickSignalContext,
             [&](const QString& toolName, const QJsonObject& result) {
-                if (toolName != QLatin1String("run_flow") ||
-                    result.value(QStringLiteral("status")).toString() != QLatin1String("started"))
+                if (toolName == QLatin1String("run_flow") &&
+                    result.value(QStringLiteral("status")).toString() == QLatin1String("started"))
+                    firstTickSessionId = result.value(QStringLiteral("sessionId")).toString();
+            },
+            Qt::DirectConnection);
+        const QMetaObject::Connection firstTickSwapConnection = QObject::connect(
+            &engine, &RunEngine::moduleStarted, &firstTickSignalContext,
+            [&](const QString& moduleId) {
+                if (moduleId != firstTickId)
                     return;
-                firstTickSessionId = result.value(QStringLiteral("sessionId")).toString();
                 const QByteArray replacementName = QFile::encodeName(replacementAlias);
                 const QByteArray currentName = QFile::encodeName(alias);
                 if (std::rename(replacementName.constData(), currentName.constData()) != 0)
@@ -3797,6 +3803,7 @@ private slots:
         QVERIFY(controller.confirmPendingTools(firstTickConfirmation));
         QTRY_COMPARE_WITH_TIMEOUT(firstTickCycleStopped.count(), 1, 10000);
         QObject::disconnect(firstTickSwapConnection);
+        QObject::disconnect(firstTickSessionConnection);
         QVERIFY(!firstTickSessionId.isEmpty());
         QVERIFY2(firstTickSwapError.isEmpty(), qPrintable(firstTickSwapError));
         QCOMPARE(QFileInfo(alias).symLinkTarget(), QFileInfo(rootB).canonicalFilePath());

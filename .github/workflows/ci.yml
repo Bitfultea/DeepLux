@@ -194,13 +194,24 @@ jobs:
       - name: Check skipped tests
         if: always() && hashFiles('build/Testing/Temporary/LastTest.log') != ''
         run: python scripts/check_ctest_skips.py build/Testing/Temporary/LastTest.log
+      - name: Rerun failed tests with verbose output
+        if: failure()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Copy-Item build/Testing/Temporary/LastTest.log build/windows-ctest-initial.log
+          ctest --test-dir build -C Release --rerun-failed -V 2>&1 | Tee-Object build/windows-ctest-rerun.log
+          "ctest_exit=$LASTEXITCODE" | Out-File -Append build/windows-ctest-rerun.log
       - name: Upload Windows CTest diagnostics
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: windows-ctest-diagnostics
-          path: build/Testing/Temporary/LastTest.log
+          path: |
+            build/Testing/Temporary/LastTest.log
+            build/windows-ctest-initial.log
+            build/windows-ctest-rerun.log
           if-no-files-found: warn
 
   linux-asan-ubsan:

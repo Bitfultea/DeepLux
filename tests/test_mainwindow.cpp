@@ -14655,8 +14655,8 @@ void TestMainWindow::testAgentSelectFlowModuleSynchronizesGuiAndRespectsPinnedIn
         instance.name = id;
         project->addModule(instance);
     }
-    window.registerFlowModule(QStringLiteral("agent_select_first"), &firstModule);
-    window.registerFlowModule(QStringLiteral("agent_select_second"), &secondModule);
+    window.registerBorrowedFlowModule(QStringLiteral("agent_select_first"), &firstModule);
+    window.registerBorrowedFlowModule(QStringLiteral("agent_select_second"), &secondModule);
     QCoreApplication::processEvents();
 
     QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
@@ -14753,7 +14753,7 @@ void TestMainWindow::testG4NewImageImportIsRejectedWhileBusyThenCommitsAfterStop
                               {QStringLiteral("gain"), 1.0},
                               {QStringLiteral("grabTimeout"), 5000.0}};
     project->addModule(grab);
-    window.registerFlowModule(grab.id, &runtimeGrab);
+    window.registerBorrowedFlowModule(grab.id, &runtimeGrab);
     DataSource existingSource;
     existingSource.id = QStringLiteral("existing_image_source");
     existingSource.name = QStringLiteral("existing image");
@@ -15044,7 +15044,7 @@ void TestMainWindow::testG4AdvancedConfigDefersCalibrationPointClearUntilAccepte
     }));
     auto* runtimeModule = dynamic_cast<NPointCalibrationPlugin*>(engine.getModule(calibration.id));
     QVERIFY(runtimeModule);
-    window.registerFlowModule(calibration.id, runtimeModule);
+    window.registerBorrowedFlowModule(calibration.id, runtimeModule);
     runtimeModule->m_calibResult.isValid = true; // Sentinel for the deferred clearPointsPublic side effect.
     RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(calibration.id, ExecutionAffinity::Worker);
     struct ReleaseOnExit {
@@ -15173,8 +15173,8 @@ void TestMainWindow::testG4BusyTreeDropRejectsAndPlaceholderCleanupIsViewOnly() 
     MainWindowOutputProbeModule secondRuntime(QStringLiteral("tree_second"));
     QVERIFY(firstRuntime.initialize());
     QVERIFY(secondRuntime.initialize());
-    window.registerFlowModule(QStringLiteral("tree_first"), &firstRuntime);
-    window.registerFlowModule(QStringLiteral("tree_second"), &secondRuntime);
+    window.registerBorrowedFlowModule(QStringLiteral("tree_first"), &firstRuntime);
+    window.registerBorrowedFlowModule(QStringLiteral("tree_second"), &secondRuntime);
     QCoreApplication::processEvents();
     QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
     auto* controller = window.findChild<ProcessTreeController*>();
@@ -16721,7 +16721,7 @@ void TestMainWindow::testProcessTreeDoubleClickOpensInspectorParams() {
     instance.moduleId = QStringLiteral("OutputProbe");
     instance.name = QStringLiteral("Double Click Probe");
     project->addModule(instance);
-    window.registerFlowModule(instanceId, &module);
+    window.registerBorrowedFlowModule(instanceId, &module);
     QCoreApplication::processEvents();
 
     auto* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
@@ -18013,8 +18013,8 @@ void TestMainWindow::testPinnedInspectorKeepsTreeAndCanvasSelectionSynchronized(
         instance.name = id;
         project->addModule(instance);
     }
-    window.registerFlowModule(QStringLiteral("pinned_1"), &firstModule);
-    window.registerFlowModule(QStringLiteral("pinned_2"), &secondModule);
+    window.registerBorrowedFlowModule(QStringLiteral("pinned_1"), &firstModule);
+    window.registerBorrowedFlowModule(QStringLiteral("pinned_2"), &secondModule);
     QCoreApplication::processEvents();
 
     QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
@@ -18064,8 +18064,8 @@ void TestMainWindow::testProcessTreeClickOverridesPinnedInspector() {
         instance.name = id;
         project->addModule(instance);
     }
-    window.registerFlowModule(QStringLiteral("tree_pinned_1"), &firstModule);
-    window.registerFlowModule(QStringLiteral("tree_pinned_2"), &secondModule);
+    window.registerBorrowedFlowModule(QStringLiteral("tree_pinned_1"), &firstModule);
+    window.registerBorrowedFlowModule(QStringLiteral("tree_pinned_2"), &secondModule);
     QCoreApplication::processEvents();
 
     QTreeWidget* processTree = window.findChild<QTreeWidget*>(QStringLiteral("ProcessTree"));
@@ -19988,7 +19988,7 @@ void TestMainWindow::testCropImageAdvancedConfigDialogGuardsInvalidEdit() {
 
     CropImagePlugin cropModule;
     QVERIFY(cropModule.initialize());
-    window.registerFlowModule(instance.id, &cropModule);
+    window.registerBorrowedFlowModule(instance.id, &cropModule);
 
     QString dialogResult;
     QTimer::singleShot(0, &window, [&]() {
