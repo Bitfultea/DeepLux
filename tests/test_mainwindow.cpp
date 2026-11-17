@@ -15398,6 +15398,8 @@ void TestMainWindow::testG4PendingToolboxCallbacksRejectStaleDrops() {
     release.release();
     QTRY_VERIFY_WITH_TIMEOUT(engine.runObservation(runId).finished, 3000);
     engine.clearModules();
+    probe->shutdown();
+    delete probe;
 
     // If the tree discarded the placeholder first, a delayed callback only cleans controller bookkeeping.
     const QString removedId = QStringLiteral("pending_removed_callback");
