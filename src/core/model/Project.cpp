@@ -800,6 +800,21 @@ QJsonObject Project::toJson() const {
     return json;
 }
 
+QByteArray Project::executionFingerprint() const {
+    QJsonObject configuration = toJson();
+    configuration.remove(QStringLiteral("layoutInitialized"));
+    QJsonArray modules = configuration.value(QStringLiteral("modules")).toArray();
+    for (int i = 0; i < modules.size(); ++i) {
+        QJsonObject module = modules.at(i).toObject();
+        module.remove(QStringLiteral("posX"));
+        module.remove(QStringLiteral("posY"));
+        modules.replace(i, module);
+    }
+    configuration.insert(QStringLiteral("modules"), modules);
+    return QCryptographicHash::hash(QJsonDocument(configuration).toJson(QJsonDocument::Compact),
+                                    QCryptographicHash::Sha1);
+}
+
 bool Project::fromJson(const QJsonObject& json) {
     QSet<QString> affectedModuleIds;
     for (const ModuleInstance& module : m_modules)

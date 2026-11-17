@@ -591,9 +591,7 @@ QJsonArray portSpecsToJson(const QList<PortSpec>& ports) {
 }
 
 QByteArray projectFingerprint(const Project* project) {
-    return project ? QCryptographicHash::hash(QJsonDocument(project->toJson()).toJson(QJsonDocument::Compact),
-                                              QCryptographicHash::Sha1)
-                   : QByteArray();
+    return project ? project->executionFingerprint() : QByteArray();
 }
 
 bool isAgentVariableType(VarDataType type) {

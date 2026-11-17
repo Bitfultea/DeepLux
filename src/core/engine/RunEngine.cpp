@@ -13,6 +13,7 @@
 #include <QCryptographicHash>
 #include <QDebug>
 #include <QElapsedTimer>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QMutexLocker>
 #include <QRandomGenerator>
@@ -121,9 +122,7 @@ QString connectionKey(const ModuleConnection& connection) {
 }
 
 QByteArray projectDigest(const Project* project) {
-    return project ? QCryptographicHash::hash(QJsonDocument(project->toJson()).toJson(QJsonDocument::Compact),
-                                              QCryptographicHash::Sha1)
-                   : QByteArray();
+    return project ? project->executionFingerprint() : QByteArray();
 }
 } // namespace
 

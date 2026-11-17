@@ -16003,6 +16003,9 @@ void TestMainWindow::testBreakpointPauseAndContinueFromRunButton() {
 void TestMainWindow::testG4AgentBreakpointRunAlternatesGuiAndAgentResumeSameRunId() {
     MainWindow window;
     window.show();
+    FlowLayoutCoordinator* layoutCoordinator = window.findChild<FlowLayoutCoordinator*>();
+    QVERIFY(layoutCoordinator);
+    layoutCoordinator->suppressAutoLayout(true);
     AgentActor* actor = AgentController::instance().actor();
     QVERIFY(actor);
     RunEngine& engine = RunEngine::instance();
@@ -16037,6 +16040,8 @@ void TestMainWindow::testG4AgentBreakpointRunAlternatesGuiAndAgentResumeSameRunI
              QStringLiteral("updated"));
     QVERIFY(project->moduleById(firstId)->breakpoint);
     QVERIFY(project->moduleById(secondId)->breakpoint);
+    const QJsonObject projectJsonAtRunStart = project->toJson();
+    QCOMPARE(projectJsonAtRunStart.value(QStringLiteral("layoutInitialized")).toBool(), false);
 
     QToolButton* runButton = window.findChild<QToolButton*>(QStringLiteral("FlowRunButton"));
     QAction* runAction = window.findChild<QAction*>(QStringLiteral("RunOnceAction"));
@@ -16071,12 +16076,25 @@ void TestMainWindow::testG4AgentBreakpointRunAlternatesGuiAndAgentResumeSameRunI
     QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 1).toString(), firstId);
     QCOMPARE(processTree->topLevelItem(0)->data(0, Qt::UserRole + 5).toString(), QStringLiteral("paused"));
 
+    layoutCoordinator->suppressAutoLayout(false);
+    layoutCoordinator->requestLayout();
+    QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
+    QCOMPARE(engine.resumeSnapshot().projectFingerprint, project->executionFingerprint());
+    QVERIFY(project->moduleById(secondId)->posY != projectJsonAtRunStart.value(QStringLiteral("modules"))
+                                                       .toArray()
+                                                       .at(1)
+                                                       .toObject()
+                                                       .value(QStringLiteral("posY"))
+                                                       .toInt());
+
     QTest::mouseClick(runButton, Qt::LeftButton);
     QTRY_COMPARE_WITH_TIMEOUT(breakpointSpy.count(), 2, 5000);
     QTRY_COMPARE_WITH_TIMEOUT(runButton->text(), QStringLiteral("继续"), 1000);
     QCOMPARE(breakpointSpy.at(1).at(0).toString(), secondId);
     QTRY_COMPARE_WITH_TIMEOUT(engine.state(), RunState::Paused, 1000);
     QVERIFY(engine.isPausedAtBreakpoint());
+    QTRY_COMPARE_WITH_TIMEOUT(FlowExecutionService::instance().state(), FlowExecutionService::State::Paused, 5000);
+    QVERIFY(project->layoutInitialized());
     QCOMPARE(engine.lastRunId(), runId);
     QCOMPARE(startedSpy.count(), 1);
     QCOMPARE(startedSpy.first().at(0).toString(), firstId);
@@ -16096,7 +16114,8 @@ void TestMainWindow::testG4AgentBreakpointRunAlternatesGuiAndAgentResumeSameRunI
     QCOMPARE(processTree->topLevelItem(1)->data(0, Qt::UserRole + 5).toString(), QStringLiteral("paused"));
 
     const QJsonObject resumed = actor->executeTool("resume_flow", {});
-    QCOMPARE(resumed.value("status").toString(), QStringLiteral("resumed"));
+    QVERIFY2(resumed.value("status").toString() == QLatin1String("resumed"),
+             qPrintable(QString::fromUtf8(QJsonDocument(resumed).toJson(QJsonDocument::Compact))));
     QTRY_COMPARE_WITH_TIMEOUT(finishedRunSpy.count(), 1, 5000);
     const RunResult result = finishedRunSpy.first().at(0).value<RunResult>();
     QVERIFY(result.success);

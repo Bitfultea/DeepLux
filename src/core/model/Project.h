@@ -3,6 +3,7 @@
 #include "../platform/Platform.h"
 #include "DataSource.h"
 
+#include <QByteArray>
 #include <QDateTime>
 #include <QHash>
 #include <QJsonObject>
@@ -275,6 +276,8 @@ public:
 
     // 序列化
     QJsonObject toJson() const;
+    // Execution identity excludes canvas-only coordinates and layout state.
+    QByteArray executionFingerprint() const;
     bool fromJson(const QJsonObject& json);
 
     // 文件操作
