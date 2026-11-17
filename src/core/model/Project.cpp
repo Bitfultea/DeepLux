@@ -802,6 +802,7 @@ QJsonObject Project::toJson() const {
 
 QByteArray Project::executionFingerprint() const {
     QJsonObject configuration = toJson();
+    configuration.remove(QStringLiteral("modified"));
     configuration.remove(QStringLiteral("layoutInitialized"));
     QJsonArray modules = configuration.value(QStringLiteral("modules")).toArray();
     for (int i = 0; i < modules.size(); ++i) {

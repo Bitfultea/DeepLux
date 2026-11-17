@@ -1074,7 +1074,7 @@ QJsonObject cameraExecutionSnapshot(const QString& toolName, const Project* proj
         return result;
 
     bool loadedPlanMatches =
-        execution.project == project && execution.projectFingerprint.toHex() == projectFingerprint(project);
+        execution.project == project && execution.projectFingerprint == project->executionFingerprint();
     if (!loadedPlanMatches && toolName == QLatin1String("resume_flow") && execution.project == project) {
         loadedPlanMatches = RunEngine::instance().isPaused();
     }
