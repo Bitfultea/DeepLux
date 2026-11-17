@@ -17,8 +17,16 @@
 #include <memory>
 #include <thread>
 #include <utility>
+#include <vector>
 
 using namespace DeepLux;
+
+struct ClearEngineModulesOnExit {
+    RunEngine& engine;
+    ~ClearEngineModulesOnExit() {
+        engine.clearModules();
+    }
+};
 
 // Test module implementation
 class TestExecutionModule : public ModuleBase {
@@ -1881,19 +1889,23 @@ void TestRunEngine::testParallelExecutesConcurrently() {
     engine.clearModules();
     engine.setParallelThreadCount(4);
 
+    std::vector<std::unique_ptr<ParallelSleepModule>> modules;
+    ClearEngineModulesOnExit clearOnExit{engine};
+
     std::atomic<int> running{0};
     std::atomic<int> maxConc{0};
     const int N = 4;
     QStringList names;
     for (int i = 0; i < N; ++i) {
         QString name = QString("par%1").arg(i);
-        auto* mod = new ParallelSleepModule(name, &running, &maxConc, 60);
+        auto mod = std::make_unique<ParallelSleepModule>(name, &running, &maxConc, 60);
         mod->initialize();
-        engine.addModule(mod);
+        engine.addModule(mod.get());
         // 后台执行（设计 §6.3）：并行池只接受 worker 亲和模块；探针模块未注册插件，
         // 默认 gui，因此测试侧显式标记 worker（不放宽产品代码）。
         RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
         names << name;
+        modules.push_back(std::move(mod));
     }
 
     PortValueMap input;
@@ -2202,16 +2214,20 @@ void TestRunEngine::testExecuteParallelPrimitiveStableRunId() {
     engine.clearModules();
     engine.setParallelThreadCount(4);
 
+    std::vector<std::unique_ptr<RunIdRecordingModule>> modules;
+    ClearEngineModulesOnExit clearOnExit{engine};
+
     QMutex mutex;
     QStringList sink;
     QStringList names;
     for (int i = 0; i < 4; ++i) {
         const QString name = QString("prim%1").arg(i);
-        auto* mod = new RunIdRecordingModule(name, &mutex, &sink);
+        auto mod = std::make_unique<RunIdRecordingModule>(name, &mutex, &sink);
         mod->initialize();
-        engine.addModule(mod);
+        engine.addModule(mod.get());
         RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
         names << name;
+        modules.push_back(std::move(mod));
     }
 
     PortValueMap input;
@@ -2237,11 +2253,12 @@ void TestRunEngine::testExecuteParallelPrimitiveStableRunId() {
     QStringList names2;
     for (int i = 0; i < 4; ++i) {
         const QString name = QString("prim2_%1").arg(i);
-        auto* mod = new RunIdRecordingModule(name, &mutex2, &sink2);
+        auto mod = std::make_unique<RunIdRecordingModule>(name, &mutex2, &sink2);
         mod->initialize();
-        engine.addModule(mod);
+        engine.addModule(mod.get());
         RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
         names2 << name;
+        modules.push_back(std::move(mod));
     }
     QVERIFY(engine.executeParallel(names2, input).success);
     {
@@ -3226,12 +3243,14 @@ void TestRunEngine::testValidateFlowReportsMissingRequiredInput() {
     RunEngine& engine = RunEngine::instance();
     engine.clearModules();
 
-    auto* source = new TypedPortModule("src", DataType::Point2D, true);
-    auto* consumer = new TypedPortModule("consumer", DataType::Point2D, false);
+    auto source = std::make_unique<TypedPortModule>("src", DataType::Point2D, true);
+    auto consumer = std::make_unique<TypedPortModule>("consumer", DataType::Point2D, false);
+    ClearEngineModulesOnExit clearOnExit{engine};
+
     source->initialize();
     consumer->initialize();
-    engine.addModule(source);
-    engine.addModule(consumer);
+    engine.addModule(source.get());
+    engine.addModule(consumer.get());
 
     // 无连接：consumer 必需输入 value 无上游 → 预检报错
     Project empty;
@@ -6823,14 +6842,15 @@ void TestRunEngine::testSnapshotConcurrentWithRun() {
     engine.stop();
     engine.clearModules();
 
-    auto* source = new TypedPortModule(QStringLiteral("SnapSource"), DataType::Point2D, true);
+    auto source = std::make_unique<TypedPortModule>(QStringLiteral("SnapSource"), DataType::Point2D, true);
     QVERIFY(source->initialize());
-    engine.addModule(source);
+    engine.addModule(source.get());
     std::atomic<int> running{0};
     std::atomic<int> maxConc{0};
-    auto* slow = new ParallelSleepModule(QStringLiteral("SnapSlow"), &running, &maxConc, 80);
+    auto slow = std::make_unique<ParallelSleepModule>(QStringLiteral("SnapSlow"), &running, &maxConc, 80);
     QVERIFY(slow->initialize());
-    engine.addModule(slow);
+    engine.addModule(slow.get());
+    ClearEngineModulesOnExit clearOnExit{engine};
     // 后台执行（设计 §6.2）：runOnceAsync 在运行池线程执行，探针标记 worker 保持内联语义。
     RunEngineTestAccess(engine).setModuleExecutionAffinityForTest(QStringLiteral("SnapSource"),
                                                                   ExecutionAffinity::Worker);
