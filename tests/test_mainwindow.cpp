@@ -465,6 +465,14 @@ auto closeProjectBeforeWindowDestruction() {
     });
 }
 
+auto waitForExecutionBeforeWindowDestruction() {
+    return qScopeGuard([] {
+        FlowExecutionService::instance().stop();
+        if (!waitForServiceIdle() || RunEngine::instance().isBusy())
+            qFatal("MainWindow test teardown could not stop execution before window destruction");
+    });
+}
+
 // ===== B3：流程树重排集成测试的确定性夹具 =====
 
 /// Project 的模块声明顺序（分析器的规范 moduleOrder，与流程树展示顺序无关）。
@@ -13756,6 +13764,7 @@ void TestMainWindow::testOperatorCloseUnsavedProjectOffersOnlyCancelOrDiscard() 
     Project* project = manager.newProject();
     QVERIFY(project);
     project->setName(QStringLiteral("saved-before-operator-close"));
+    QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
     QVERIFY(manager.saveProject(path));
     QFile savedFile(path);
     QVERIFY(savedFile.open(QIODevice::ReadOnly));
@@ -14737,6 +14746,7 @@ void TestMainWindow::testG4NewImageImportIsRejectedWhileBusyThenCommitsAfterStop
 
     TestGrabImageParamModule runtimeGrab(QStringLiteral("import_grab"));
     TestableMainWindow window;
+    [[maybe_unused]] auto executionTeardown = waitForExecutionBeforeWindowDestruction();
     window.show();
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project);
@@ -15005,6 +15015,7 @@ void TestMainWindow::testG4AdvancedConfigRejectsCrossSourceConflictAtomically() 
 
 void TestMainWindow::testG4AdvancedConfigDefersCalibrationPointClearUntilAccepted() {
     MainWindow window;
+    [[maybe_unused]] auto executionTeardown = waitForExecutionBeforeWindowDestruction();
     window.show();
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project);
@@ -15274,6 +15285,7 @@ void TestMainWindow::testG4BusyTreeDropRejectsAndPlaceholderCleanupIsViewOnly() 
 
 void TestMainWindow::testG4PendingToolboxCallbacksRejectStaleDrops() {
     TestableMainWindow window;
+    [[maybe_unused]] auto executionTeardown = waitForExecutionBeforeWindowDestruction();
     window.show();
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project);
@@ -18146,6 +18158,7 @@ void TestMainWindow::testG4AgentCanPauseGuiCycleBetweenIterations() {
     QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
     RunEngine& engine = RunEngine::instance();
     MainWindow window;
+    [[maybe_unused]] auto executionTeardown = waitForExecutionBeforeWindowDestruction();
     window.show();
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project);
@@ -18377,6 +18390,7 @@ void TestMainWindow::testG4AgentCanPauseGuiCycleBetweenIterations() {
 void TestMainWindow::testG4AgentCanStopPausedGuiCycle() {
     RunEngine& engine = RunEngine::instance();
     MainWindow window;
+    [[maybe_unused]] auto executionTeardown = waitForExecutionBeforeWindowDestruction();
     window.show();
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project);
@@ -18492,6 +18506,7 @@ void TestMainWindow::testG4FailedGuiCycleIterationStopsSession() {
 void TestMainWindow::testG4GuiCycleMeasurementPickKeepsSharedSession() {
     RunEngine& engine = RunEngine::instance();
     MainWindow window;
+    [[maybe_unused]] auto executionTeardown = waitForExecutionBeforeWindowDestruction();
     window.show();
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project);
@@ -18564,6 +18579,7 @@ void TestMainWindow::testG4GuiCycleMeasurementPickKeepsSharedSession() {
 void TestMainWindow::testG4AgentStopClearsDeferredMeasurementPick() {
     RunEngine& engine = RunEngine::instance();
     MainWindow window;
+    [[maybe_unused]] auto executionTeardown = waitForExecutionBeforeWindowDestruction();
     window.show();
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project);
@@ -19976,6 +19992,7 @@ void TestMainWindow::testOldAdvancedConfigDialogStillUsable() {
 // 合法恢复后"确定"提交成功，参数经 undo 命令写入运行模块
 void TestMainWindow::testCropImageAdvancedConfigDialogGuardsInvalidEdit() {
     MainWindow window;
+    [[maybe_unused]] auto executionTeardown = waitForExecutionBeforeWindowDestruction();
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project != nullptr);
 
@@ -20469,6 +20486,7 @@ void TestMainWindow::testSameLayerIndependentNodesReorder() {
 
 void TestMainWindow::testControlBranchReorderRejectedWithoutMutation() {
     MainWindow window;
+    [[maybe_unused]] auto executionTeardown = waitForExecutionBeforeWindowDestruction();
     B3Fixture fixture;
     QVERIFY(setupB3Fixture(window, QStringList({QStringLiteral("IF"), QStringLiteral("T"), QStringLiteral("F")}),
                            &fixture));
@@ -20674,6 +20692,7 @@ void TestMainWindow::testAgentOriginInvalidatesGuiReorderUndo() {
 
 void TestMainWindow::testControlFlowBranchLabelsProjectedToCanvas() {
     MainWindow window;
+    [[maybe_unused]] auto executionTeardown = waitForExecutionBeforeWindowDestruction();
     B3Fixture fixture;
     QVERIFY(setupB3Fixture(window, QStringList({QStringLiteral("IF"), QStringLiteral("T"), QStringLiteral("F")}),
                            &fixture));
