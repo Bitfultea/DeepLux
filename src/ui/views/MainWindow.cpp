@@ -7797,18 +7797,16 @@ void MainWindow::markModuleDirty(const QString& instanceId) {
 
 #ifdef DEEPLUX_BUILD_TESTS
 void MainWindow::registerFlowModule(const QString& instanceId, IModule* module) {
-    if (IModule* replaced = m_flowModules.value(instanceId, nullptr); replaced && replaced != module) {
-        const bool borrowed = m_borrowedFlowModulesForTest.remove(replaced) > 0;
-        const auto guard = m_flowModuleGuardsForTest.find(replaced);
+    IModule* replaced = nullptr;
+    if (IModule* previous = m_flowModules.value(instanceId, nullptr); previous && previous != module) {
+        const bool borrowed = m_borrowedFlowModulesForTest.remove(previous) > 0;
+        const auto guard = m_flowModuleGuardsForTest.find(previous);
         const bool alreadyDestroyed = guard != m_flowModuleGuardsForTest.end() && guard.value().isNull();
-        const bool stillInEngine = RunEngine::instance().modules().contains(qobject_cast<ModuleBase*>(replaced));
-        m_flowModuleGuardsForTest.remove(replaced);
+        const bool stillInEngine = RunEngine::instance().modules().contains(qobject_cast<ModuleBase*>(previous));
+        m_flowModuleGuardsForTest.remove(previous);
         m_flowModules.remove(instanceId);
-        if (!borrowed && !alreadyDestroyed && !stillInEngine) {
-            replaced->shutdown();
-            if (!PluginManager::instance().destroyModule(replaced))
-                delete replaced;
-        }
+        if (!borrowed && !alreadyDestroyed && !stillInEngine)
+            replaced = previous;
     }
     // Test/support integrations may register an already-created ModuleBase directly rather than through
     // PluginManager::createModule. Preserve the project-declared type identity in that case.
@@ -7825,6 +7823,13 @@ void MainWindow::registerFlowModule(const QString& instanceId, IModule* module) 
     m_borrowedFlowModulesForTest.remove(module);
     if (QObject* object = dynamic_cast<QObject*>(module))
         m_flowModuleGuardsForTest.insert(module, object);
+    if (m_selectedModuleId == instanceId)
+        selectModule(instanceId, false, true);
+    if (replaced) {
+        replaced->shutdown();
+        if (!PluginManager::instance().destroyModule(replaced))
+            delete replaced;
+    }
 }
 
 void MainWindow::registerBorrowedFlowModule(const QString& instanceId, IModule* module) {

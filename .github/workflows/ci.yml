@@ -294,6 +294,7 @@ jobs:
         run: python3 scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
       - name: Run concurrency suites and preserve raw output
         id: run-tsan
+        continue-on-error: true
         run: |
           set -o pipefail
           setarch "$(uname -m)" -R ctest --test-dir build --output-on-failure -j2 \

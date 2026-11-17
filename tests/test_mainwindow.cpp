@@ -14875,13 +14875,20 @@ void TestMainWindow::testReplacingBorrowedFlowModuleReleasesOwnedModule() {
     QVERIFY(borrowed.initialize());
     {
         TestableMainWindow window;
+        ProjectManager::instance().newProject();
         auto* owned = new MainWindowOutputProbeModule(QStringLiteral("replace_module"));
         QPointer<QObject> ownedGuard(owned);
         QVERIFY(owned->initialize());
         window.registerFlowModule(QStringLiteral("replace_module"), owned);
+        window.selectModuleForCapture(QStringLiteral("replace_module"));
+        auto* inspector = window.findChild<ModuleInspectorPanel*>();
+        QVERIFY(inspector);
+        QTimer::singleShot(0, inspector, [inspector]() { inspector->refreshFromModule(); });
         window.registerBorrowedFlowModule(QStringLiteral("replace_module"), &borrowed);
+        QCoreApplication::processEvents();
 
         QVERIFY(ownedGuard.isNull());
+        QCOMPARE(inspector->currentInstanceId(), QStringLiteral("replace_module"));
     }
     QVERIFY(borrowedGuard);
 }
