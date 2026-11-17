@@ -18731,11 +18731,13 @@ void TestMainWindow::testG4AgentAndGuiSingleStepSharePosition() {
     QCoreApplication::processEvents();
 
     QStringList executed;
-    const QMetaObject::Connection finishedConn = QObject::connect(
-        &RunEngine::instance(), &RunEngine::moduleFinished, this, [&executed](const QString& id, bool success, int) {
-            if (success)
-                executed.append(id);
-        });
+    QObject executionObserver;
+    const QMetaObject::Connection finishedConn =
+        QObject::connect(&RunEngine::instance(), &RunEngine::moduleFinished, &executionObserver,
+                         [&executed](const QString& id, bool success, int) {
+                             if (success)
+                                 executed.append(id);
+                         });
     struct DisconnectOnExit {
         QMetaObject::Connection connection;
         ~DisconnectOnExit() {
@@ -18746,19 +18748,23 @@ void TestMainWindow::testG4AgentAndGuiSingleStepSharePosition() {
     QJsonObject result = actor->executeTool("step_once", {});
     QVERIFY2(!result.contains("error"), qPrintable(result.value("error").toString()));
     QTRY_COMPARE_WITH_TIMEOUT(jobFinishedSpy.count(), 1, 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(executed.size(), 1, 1000);
     QCOMPARE(executed, QStringList{QStringLiteral("mixed_a")});
 
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
     QTRY_COMPARE_WITH_TIMEOUT(jobFinishedSpy.count(), 2, 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(executed.size(), 2, 1000);
     QCOMPARE(executed, (QStringList{QStringLiteral("mixed_a"), QStringLiteral("mixed_b")}));
 
     QCOMPARE(actor->executeTool("reset_step", {}).value("status").toString(), QStringLiteral("reset"));
     QVERIFY(QMetaObject::invokeMethod(&window, "onStepRun", Qt::DirectConnection));
     QTRY_COMPARE_WITH_TIMEOUT(jobFinishedSpy.count(), 3, 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(executed.size(), 3, 1000);
     QCOMPARE(executed.last(), QStringLiteral("mixed_a"));
     result = actor->executeTool("step_once", {});
     QVERIFY2(!result.contains("error"), qPrintable(result.value("error").toString()));
     QTRY_COMPARE_WITH_TIMEOUT(jobFinishedSpy.count(), 4, 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(executed.size(), 4, 1000);
     QCOMPARE(executed.last(), QStringLiteral("mixed_b"));
     QObject::disconnect(finishedConn);
 }
