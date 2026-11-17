@@ -1406,6 +1406,7 @@ private slots:
         QVERIFY(tempDir.isValid());
         const QString sideEffectPath = tempDir.filePath(QStringLiteral("side-effect.txt"));
         auto* module = new StepFailureAfterFileModule(sideEffectPath);
+        module->setParent(this);
         QVERIFY(module->initialize());
         RunEngine::instance().addModule(module);
         actor.noteRunEngineSynchronized(project);
@@ -1534,6 +1535,7 @@ private slots:
         QVERIFY(tempDir.isValid());
         const QString sideEffectPath = tempDir.filePath(QStringLiteral("batch-side-effect.txt"));
         auto* module = new StepFailureAfterFileModule(sideEffectPath);
+        module->setParent(this);
         QVERIFY(module->initialize());
         RunEngine::instance().addModule(module);
         AgentActor actor;

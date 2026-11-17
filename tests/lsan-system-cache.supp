@@ -6,6 +6,7 @@ leak:QWindowSystemInterface::handleScreenAdded
 leak:QPluginLoader::QPluginLoader
 leak:QPluginLoader::setFileName
 leak:QLibrary::QLibrary
+leak:libqxcb-glx-integration.so
 leak:FcPatternObjectCount
 leak:FcValueDestroy
 leak:FcValueSave
