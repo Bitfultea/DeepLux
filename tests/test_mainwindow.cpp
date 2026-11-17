@@ -704,6 +704,7 @@ private slots:
     void testG4GuiInspectorEditsRejectedWhileEngineBusy();
     void testG4InspectorEditsRejectedDuringMaintenanceLease();
     void testG4NewImageImportIsRejectedWhileBusyThenCommitsAfterStop();
+    void testReplacingBorrowedFlowModuleReleasesOwnedModule();
     void testAgentDataSourceRemovalRefreshesGuiAndRejectsBusyMutation();
     void testAgentDataSourceDisplayAndVisibilityTools();
     void testImportImageMenuActionAddsAndDisplaysDataSource();
@@ -14866,6 +14867,23 @@ void TestMainWindow::testG4NewImageImportIsRejectedWhileBusyThenCommitsAfterStop
     QCOMPARE(expiredUndoSpy.last().at(0).value<AgentActionLogEntry>().result, QStringLiteral("expired"));
     QCOMPARE(project->moduleById(grab.id)->params.value(QStringLiteral("filePath")).toString(), imagePath);
     QVERIFY(!project->isModified());
+}
+
+void TestMainWindow::testReplacingBorrowedFlowModuleReleasesOwnedModule() {
+    MainWindowOutputProbeModule borrowed(QStringLiteral("replace_module"));
+    QPointer<QObject> borrowedGuard(&borrowed);
+    QVERIFY(borrowed.initialize());
+    {
+        TestableMainWindow window;
+        auto* owned = new MainWindowOutputProbeModule(QStringLiteral("replace_module"));
+        QPointer<QObject> ownedGuard(owned);
+        QVERIFY(owned->initialize());
+        window.registerFlowModule(QStringLiteral("replace_module"), owned);
+        window.registerBorrowedFlowModule(QStringLiteral("replace_module"), &borrowed);
+
+        QVERIFY(ownedGuard.isNull());
+    }
+    QVERIFY(borrowedGuard);
 }
 
 void TestMainWindow::testG4AdvancedConfigKeepsDraftWhenEngineBecomesBusy() {

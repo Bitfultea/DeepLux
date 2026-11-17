@@ -7797,6 +7797,19 @@ void MainWindow::markModuleDirty(const QString& instanceId) {
 
 #ifdef DEEPLUX_BUILD_TESTS
 void MainWindow::registerFlowModule(const QString& instanceId, IModule* module) {
+    if (IModule* replaced = m_flowModules.value(instanceId, nullptr); replaced && replaced != module) {
+        const bool borrowed = m_borrowedFlowModulesForTest.remove(replaced) > 0;
+        const auto guard = m_flowModuleGuardsForTest.find(replaced);
+        const bool alreadyDestroyed = guard != m_flowModuleGuardsForTest.end() && guard.value().isNull();
+        const bool stillInEngine = RunEngine::instance().modules().contains(qobject_cast<ModuleBase*>(replaced));
+        m_flowModuleGuardsForTest.remove(replaced);
+        m_flowModules.remove(instanceId);
+        if (!borrowed && !alreadyDestroyed && !stillInEngine) {
+            replaced->shutdown();
+            if (!PluginManager::instance().destroyModule(replaced))
+                delete replaced;
+        }
+    }
     // Test/support integrations may register an already-created ModuleBase directly rather than through
     // PluginManager::createModule. Preserve the project-declared type identity in that case.
     if (ModuleBase* moduleBase = qobject_cast<ModuleBase*>(module)) {
