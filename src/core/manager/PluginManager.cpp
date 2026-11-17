@@ -251,7 +251,7 @@ bool parsePortArray(const QJsonArray& arr, QList<PortSpec>& out, QString& error,
         }
         QJsonObject o = v.toObject();
         PortSpec spec;
-        spec.id = o["id"].toString();
+        spec.id = o.value("id").toString();
         spec.displayName = o.value("displayName").toString(o.value("name").toString());
         const QString typeName = o.value("type").toString(QStringLiteral("Any"));
 
