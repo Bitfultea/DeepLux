@@ -321,6 +321,9 @@ protected:
 
     // 流程中的插件实例
     QMap<QString, IModule*> m_flowModules;
+#ifdef DEEPLUX_BUILD_TESTS
+    QSet<IModule*> m_borrowedFlowModulesForTest;
+#endif
     QMap<QString, int> m_measurementPickCursor;
     QMap<QString, int> m_measurementPickCount;
     QString m_activeMeasurementInputId;

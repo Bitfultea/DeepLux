@@ -1146,6 +1146,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
 
 MainWindow::~MainWindow() {
     AgentController::instance().unregisterDataSourceViewHandler(this);
+    if (!FlowExecutionService::instance().isActive() && !RunEngine::instance().isBusy()) {
+        RunEngine::instance().clearModules();
+#ifdef DEEPLUX_BUILD_TESTS
+        for (auto it = m_flowModules.begin(); it != m_flowModules.end();) {
+            if (m_borrowedFlowModulesForTest.contains(it.value()))
+                it = m_flowModules.erase(it);
+            else
+                ++it;
+        }
+#endif
+        if (m_processTreeController)
+            m_processTreeController->clear();
+    }
     if (m_samAnnotatorDialog) {
         delete m_samAnnotatorDialog.data();
         m_samAnnotatorDialog.clear();
@@ -7794,6 +7807,7 @@ void MainWindow::registerFlowModule(const QString& instanceId, IModule* module) 
         }
     }
     m_flowModules.insert(instanceId, module);
+    m_borrowedFlowModulesForTest.insert(module);
 }
 #endif
 
