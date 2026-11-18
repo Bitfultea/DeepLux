@@ -3,7 +3,7 @@
 # tests/helpers/SamTestServer.h（header-only，仅 Qt Network 依赖）。
 # 不注册进 CTest（性能工具需真机/真模型语境，由复核流程手动执行）。
 
-add_executable(sam_bench main.cpp)
+add_executable(sam_bench EXCLUDE_FROM_ALL main.cpp)
 
 target_link_libraries(sam_bench PRIVATE deeplux_core)
 

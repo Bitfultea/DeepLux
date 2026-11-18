@@ -78,6 +78,7 @@ private slots:
         window.show();
         Project* project = ProjectManager::instance().newProject();
         QVERIFY(project);
+        QTRY_VERIFY_WITH_TIMEOUT(project->layoutInitialized(), 1000);
         auto addSource = [project](const QString& id, const QString& name, const QString& path, const QString& type) {
             DataSource source;
             source.id = id;

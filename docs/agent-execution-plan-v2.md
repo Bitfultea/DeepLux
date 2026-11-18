@@ -1,6 +1,6 @@
 # DeepLux Agent 第二迭代执行计划（v2：对话质量 + 审计 + MCP + 遗留收口）
 
-- 状态：**已交付**（2026-10-28；t21 复验全绿、t22 审核 pass、t16 集成完成；待队长统一提交推送）
+- 历史状态：**已交付**（2026-10-28；t21 复验全绿、t22 审核 pass、t16 集成完成）。本文记录该轮交付，不代表当前分支/发布状态；见 [当前项目状态](STATUS.md)。
 - 基线：`af56b5b`（第一迭代已推送 `origin/Windows_work`，2026-10-27）
 - 规划依据：[agent-improvement-roadmap.md](agent-improvement-roadmap.md) §11.6 / §11.7；[agent-iteration1-design.md](agent-iteration1-design.md)
 - 交付记录：见 [agent-improvement-roadmap.md](agent-improvement-roadmap.md) §12（交付项、偏差、构建测试原始输出、MCP 使用方式、审计格式、第三迭代入口）

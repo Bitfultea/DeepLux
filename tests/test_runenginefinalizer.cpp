@@ -1,3 +1,4 @@
+#include <core/engine/EngineTestSupport.h>
 #define DEEPLUX_BUILD_TESTS 1
 #include "core/base/ModuleBase.h"
 #include "core/engine/RunEngine.h"
@@ -95,8 +96,8 @@ private slots:
     void init() {
         RunEngine::instance().stop();
         // 清除故障注入/收尾钩子，避免失败用例把指向栈对象的回调留给后续用例。
-        RunEngine::instance().clearFinalizeHookForTest();
-        RunEngine::instance().clearExecutionFaultInjectionForTest();
+        RunEngineTestAccess(RunEngine::instance()).clearFinalizeHookForTest();
+        RunEngineTestAccess(RunEngine::instance()).clearExecutionFaultInjectionForTest();
         RunEngine::instance().clearModules();
     }
 
@@ -127,9 +128,9 @@ private slots:
         QVERIFY(probe.initialize());
         RunEngine::instance().addModule(&probe);
         // 探针未注册插件（默认 gui），此处走后台线程执行，标记 worker 以保持内联语义。
-        RunEngine::instance().setModuleExecutionAffinityForTest(QStringLiteral("BlockingProbe"),
-                                                                ExecutionAffinity::Worker);
-        RunEngine::instance().setFinalizeHookForTest([]() { RunEngine::instance().stop(); });
+        RunEngineTestAccess(RunEngine::instance())
+            .setModuleExecutionAffinityForTest(QStringLiteral("BlockingProbe"), ExecutionAffinity::Worker);
+        RunEngineTestAccess(RunEngine::instance()).setFinalizeHookForTest([]() { RunEngine::instance().stop(); });
 
         std::thread runner([]() { RunEngine::instance().runOnce(); });
         QVERIFY(probe.entered.tryAcquire(1, 2000));
@@ -138,7 +139,7 @@ private slots:
 
         QTRY_VERIFY_WITH_TIMEOUT(!RunEngine::instance().isBusy(), 2000);
         QCOMPARE(RunEngine::instance().state(), RunState::Stopped);
-        RunEngine::instance().clearFinalizeHookForTest();
+        RunEngineTestAccess(RunEngine::instance()).clearFinalizeHookForTest();
     }
 
     // 设计 §5.3 关键语义 6：Paused 必须显式提交——只释放本段执行权、不发 runFinished、
@@ -189,12 +190,13 @@ private slots:
         QVERIFY(probe.initialize());
         engine.addModule(&probe);
 
-        engine.setExecutionFaultInjectionForTest([]() { throw std::runtime_error("injected engine fault"); });
+        RunEngineTestAccess(engine).setExecutionFaultInjectionForTest(
+            []() { throw std::runtime_error("injected engine fault"); });
         engine.runOnce();
         QVERIFY2(!engine.isBusy(), "exception must release the execution lease");
         QCOMPARE(engine.state(), RunState::Idle);
         QCOMPARE(probe.calls.load(), 0); // 注入点在模块执行前
-        engine.clearExecutionFaultInjectionForTest();
+        RunEngineTestAccess(engine).clearExecutionFaultInjectionForTest();
 
         QSignalSpy finishedSpy(&engine, &RunEngine::runFinished);
         engine.runOnce();

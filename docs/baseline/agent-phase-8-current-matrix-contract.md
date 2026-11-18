@@ -1,5 +1,7 @@
 # G8 current acceptance matrix contract
 
+> 历史矩阵契约；当前矩阵/发布状态见 [`docs/STATUS.md`](../STATUS.md)。
+
 ## Goal
 
 Replace the candidate-only presentation with one deterministic, reviewable

@@ -1,0 +1,6 @@
+{
+  "patterns": [
+    "SUMMARY: ThreadSanitizer: data race .*/libQt[56]Core\\.so(?:\\.[0-9]+)*.*"
+  ],
+  "meaning": "Direct QtCore shared-library locations only. This is not proof of an uninstrumented-library false positive; inspect both conflicting stacks and the reported memory location."
+}

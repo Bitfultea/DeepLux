@@ -13,7 +13,7 @@ namespace DeepLux {
 // 角度/wraps_zero/射线数/偏差）与逐采样偏差统计。
 class DEEPLUX_PLUGIN_API EdgeDefectDetectionPlugin : public ModuleBase {
     Q_OBJECT
-    Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
+    Q_PLUGIN_METADATA(IID DEEPLUX_MODULE_INTERFACE_IID FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
 
 public:

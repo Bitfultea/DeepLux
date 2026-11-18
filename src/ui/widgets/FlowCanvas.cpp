@@ -12,9 +12,12 @@
 #include <QGraphicsSceneHoverEvent>
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsTextItem>
+#include <QHash>
+#include <QMetaMethod>
 #include <QMimeData>
 #include <QPainter>
 #include <QPolygonF>
+#include <QSet>
 #include <QToolTip>
 #include <cmath>
 #include <limits>
@@ -46,6 +49,17 @@ QPainterPath connectionPath(const QPointF& start, const QPointF& end) {
     return path;
 }
 
+bool horizontallyOverlaps(const FlowNodeItem* first, const FlowNodeItem* second) {
+    if (!first || !second)
+        return false;
+    // 用已保存的手工 X 与节点真实宽度判断同 rank 是否水平重叠。
+    const qreal firstX = first->pos().x();
+    const qreal secondX = second->pos().x();
+    const qreal firstWidth = first->sceneBoundingRect().width();
+    const qreal secondWidth = second->sceneBoundingRect().width();
+    return firstX < secondX + secondWidth && secondX < firstX + firstWidth;
+}
+
 void drawConnectionArrow(QPainter* painter, const QPainterPath& path, const QColor& color) {
     if (!painter || path.isEmpty()) {
         return;
@@ -60,6 +74,18 @@ void drawConnectionArrow(QPainter* painter, const QPainterPath& path, const QCol
     painter->setPen(Qt::NoPen);
     painter->setBrush(color);
     painter->drawPolygon(arrow);
+}
+
+/// B5.1：用规范键判断一条画布连线是否属于当前计划的循环回边。
+bool isLoopBackConnection(const QSet<QString>& loopBackKeys, const FlowConnectionItem* item) {
+    if (!item || loopBackKeys.isEmpty())
+        return false;
+    ModuleConnection connection;
+    connection.fromModuleId = item->fromNodeId();
+    connection.toModuleId = item->toNodeId();
+    connection.fromPort = item->fromPortId();
+    connection.toPort = item->toPortId();
+    return loopBackKeys.contains(FlowCanvas::connectionKey(connection));
 }
 
 } // namespace
@@ -116,9 +142,22 @@ bool FlowCanvas::portsCompatible(const PortSpec& fromPort, const PortSpec& toPor
     return fromPort.type == toPort.type;
 }
 
+QString FlowCanvas::connectionKey(const ModuleConnection& connection) {
+    // 规范键：与 FlowGraphAnalyzer.cpp / RunEngine.cpp 生成 FlowOrderPlan::loopBackEdges
+    // 的规则逐字节一致（字段顺序 from → to → fromPort → toPort）。
+    return connection.fromModuleId + QLatin1Char('\x1f') + connection.toModuleId + QLatin1Char('\x1f') +
+           connection.fromPort + QLatin1Char('\x1f') + connection.toPort;
+}
+
 QString FlowCanvas::connectionKey(const QString& fromId, const QString& fromPort, const QString& toId,
                                   const QString& toPort) {
-    return fromId + QLatin1Char('\x1f') + fromPort + QLatin1Char('\x1f') + toId + QLatin1Char('\x1f') + toPort;
+    // 4 元组形式只做转发，保证画布去重与回边判定共用唯一一条拼接规则。
+    ModuleConnection connection;
+    connection.fromModuleId = fromId;
+    connection.toModuleId = toId;
+    connection.fromPort = fromPort;
+    connection.toPort = toPort;
+    return connectionKey(connection);
 }
 
 QString FlowCanvas::addNode(const QString& moduleId, const QString& name, const QPointF& pos,
@@ -229,6 +268,8 @@ void FlowCanvas::addConnection(const QString& fromNodeId, const QString& fromPor
     FlowConnectionItem* conn = new FlowConnectionItem(fromItem, fromPortId, toItem, toPortId, edgeType);
     m_scene->addItem(conn);
     m_connections.append(conn);
+    // B5.1：计划应用后新增的连线也要继承同一份回边视觉，避免 loadFromProject 重建后丢失标记。
+    conn->setLoopBackEdge(isLoopBackConnection(m_loopBackEdgeKeys, conn));
 
     if (!m_loadingProject && !m_syncingFromProject) {
         Project* project = ProjectManager::instance().currentProject();
@@ -269,8 +310,16 @@ void FlowCanvas::removeConnection(const QString& fromNodeId, const QString& from
     }
 }
 
+void FlowCanvas::setProject(Project* project) {
+    m_project = project;
+}
+
 void FlowCanvas::loadFromProject(Project* project) {
+    m_project = project;
     m_loadingProject = true;
+    // B5.1：重建画布前先丢弃上一份计划的回边键，避免旧键误标到新工程的连线上；
+    // 计划会在下一次 applyExecutionLayout / applyControlFlowVisuals 时重新投射。
+    m_loopBackEdgeKeys.clear();
     clearConnections();
     clearNodes();
 
@@ -288,6 +337,132 @@ void FlowCanvas::loadFromProject(Project* project) {
     }
 
     m_loadingProject = false;
+}
+
+void FlowCanvas::applyControlFlowVisuals(const FlowOrderPlan& plan) {
+    // 计划无效时清空视觉状态，绝不保留上一份计划的分支/回边标记。
+    m_loopBackEdgeKeys = plan.valid ? plan.loopBackEdges : QSet<QString>();
+
+    QHash<QString, QString> branchLabels;
+    if (plan.valid) {
+        for (const FlowOrderNode& node : plan.nodes)
+            branchLabels.insert(node.instanceId, node.branchLabel);
+    }
+
+    for (auto it = m_nodes.cbegin(); it != m_nodes.cend(); ++it) {
+        if (FlowNodeItem* item = it.value())
+            item->setBranchLabel(branchLabels.value(it.key()));
+    }
+    for (FlowConnectionItem* connection : m_connections) {
+        if (connection)
+            connection->setLoopBackEdge(isLoopBackConnection(m_loopBackEdgeKeys, connection));
+    }
+    if (m_scene)
+        m_scene->update();
+}
+
+void FlowCanvas::applyExecutionLayout(const FlowOrderPlan& plan, LayoutMode mode) {
+    if (!plan.valid)
+        return;
+
+    // B5.1：先投射控制流视觉，branchLabel 会扩大徽标节点的 boundingRect，
+    // 之后的按行高度计算必须读到扩大后的矩形，否则徽标会压到上一行。
+    applyControlFlowVisuals(plan);
+
+    // 行高必须跟随真实节点高度（端口越多节点越高），固定 rank 间距会让相邻 rank 重叠。
+    constexpr qreal kRowGap = 48.0;
+    constexpr qreal kLaneSpacing = 280.0;
+    constexpr qreal kLaneGap = 44.0;
+
+    Project* project = attachedProject();
+
+    // 先按 rank 收集节点并计算每行最大包围盒高度；QMap 保证 rank 升序。
+    QMap<int, QList<FlowNodeItem*>> rows;
+    qreal maxItemWidth = 0.0;
+    for (const FlowOrderNode& node : plan.nodes) {
+        FlowNodeItem* item = m_nodes.value(node.instanceId, nullptr);
+        if (!item)
+            continue;
+        rows[node.rank].append(item);
+        maxItemWidth = qMax(maxItemWidth, item->boundingRect().width());
+    }
+
+    QMap<int, qreal> rowTop;
+    qreal nextRowY = 0.0;
+    for (auto it = rows.cbegin(); it != rows.cend(); ++it) {
+        qreal rowHeight = 0.0;
+        for (FlowNodeItem* item : it.value())
+            rowHeight = qMax(rowHeight, item->boundingRect().height());
+        rowTop.insert(it.key(), nextRowY);
+        nextRowY += rowHeight + kRowGap;
+    }
+
+    // 同一 rank 的节点按 lane 排列；lane 间距至少覆盖最宽节点的包围盒并留出间隙。
+    const qreal laneSpacing = qMax(kLaneSpacing, maxItemWidth + kLaneGap);
+
+    // Normalize：只校正 Y。同一 rank 内若手工 X 水平重叠，则该行回退到 lane X，
+    // 否则保留手工 X（设计 §6.2）。
+    QSet<int> overlappingRanks;
+    if (mode == LayoutMode::Normalize) {
+        for (auto it = rows.cbegin(); it != rows.cend(); ++it) {
+            const QList<FlowNodeItem*>& items = it.value();
+            bool overlaps = false;
+            for (int i = 0; i < items.size() && !overlaps; ++i) {
+                for (int j = i + 1; j < items.size(); ++j) {
+                    if (horizontallyOverlaps(items.at(i), items.at(j))) {
+                        overlaps = true;
+                        break;
+                    }
+                }
+            }
+            if (overlaps)
+                overlappingRanks.insert(it.key());
+        }
+    }
+
+    setUpdatesEnabled(false);
+    m_applyingLayout = true;
+
+    for (const FlowOrderNode& node : plan.nodes) {
+        FlowNodeItem* item = m_nodes.value(node.instanceId, nullptr);
+        if (!item)
+            continue;
+
+        qreal x = static_cast<qreal>(node.lane) * laneSpacing;
+        if (mode == LayoutMode::Normalize && !overlappingRanks.contains(node.rank)) {
+            const qreal currentX = item->pos().x();
+            if (std::isfinite(currentX))
+                x = currentX;
+        }
+        const qreal y = rowTop.value(node.rank, 0.0);
+        item->setPos(x, y);
+        updateConnectionsForNode(node.instanceId);
+
+        if (project) {
+            project->setModulePosition(node.instanceId, qRound(x), qRound(y));
+        }
+    }
+
+    m_applyingLayout = false;
+    setUpdatesEnabled(true);
+    if (viewport()) {
+        viewport()->update();
+    }
+}
+
+void FlowCanvas::notifyNodePositionChanged(const QString& nodeId, const QPointF& pos) {
+    emit nodePositionChanged(nodeId, pos);
+    if (m_loadingProject || m_syncingFromProject || m_applyingLayout)
+        return;
+
+    Project* project = attachedProject();
+    if (!project || !project->findModule(nodeId))
+        return;
+    project->setModulePosition(nodeId, qRound(pos.x()), qRound(pos.y()));
+}
+
+bool FlowCanvas::hasMoveFinishedHandler() const {
+    return isSignalConnected(QMetaMethod::fromSignal(&FlowCanvas::nodeMoveFinished));
 }
 
 QString FlowCanvas::resolveConnectionEdgeType(const ModuleConnection& connection) const {
@@ -544,9 +719,28 @@ void FlowNodeItem::setExecutionState(const QString& status, const QString& timeT
     update();
 }
 
+void FlowNodeItem::setBranchLabel(const QString& label) {
+    if (m_branchLabel == label)
+        return;
+    // 徽标会改变 boundingRect，必须先通知场景，否则留下未刷新的残影。
+    prepareGeometryChange();
+    m_branchLabel = label;
+    update();
+}
+
 QRectF FlowNodeItem::boundingRect() const {
-    // P1-fix: 覆盖端口标签（上下 ±14）和高亮外环（±3）
-    return QRectF(-8, -16, m_width + 16, m_height + 32);
+    // P1-fix: 覆盖端口标签（上下 ±14）和高亮外环（±3）。
+    // B5.1：有分支徽标时额外向上扩展 18px；无徽标时与旧版本逐像素相同。
+    const qreal extraTop = m_branchLabel.isEmpty() ? 0.0 : 18.0;
+    return QRectF(-8, -16 - extraTop, m_width + 16, m_height + 32 + extraTop);
+}
+
+QPainterPath FlowNodeItem::shape() const {
+    // B5.1：命中区域恒为「节点 + 端口标签」的原始矩形，分支徽标画在其上方，
+    // 不参与鼠标命中、选择与碰撞，保证新增视觉不影响交互。
+    QPainterPath path;
+    path.addRect(QRectF(-8, -16, m_width + 16, m_height + 32));
+    return path;
 }
 
 QPointF FlowNodeItem::inputPortPos(int index) const {
@@ -765,6 +959,34 @@ void FlowNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* opti
         const QString label = pid.length() > 6 ? pid.left(5) + QChar(0x2026) : pid;
         painter->drawText(QRectF(pos.x() - 30, m_height + 2, 60, 12), Qt::AlignCenter, label);
     }
+
+    // B5.1：控制分支徽标（true/false/body/done/branch），绘制在节点上方，
+    // 与 FlowOrderNode::branchLabel 一一对应；纯数据/主链节点不绘制。
+    if (!m_branchLabel.isEmpty()) {
+        QColor badgeColor(QStringLiteral("#7C3AED")); // Parallel / 其它分支
+        if (m_branchLabel == QLatin1String("true"))
+            badgeColor = QColor("#16A34A");
+        else if (m_branchLabel == QLatin1String("false"))
+            badgeColor = QColor("#DC2626");
+        else if (m_branchLabel == QLatin1String("body"))
+            badgeColor = QColor("#2563EB");
+        else if (m_branchLabel == QLatin1String("done"))
+            badgeColor = QColor("#64748B");
+
+        QFont badgeFont = painter->font();
+        badgeFont.setPointSize(7);
+        badgeFont.setBold(true);
+        painter->setFont(badgeFont);
+        const QString badgeText = painter->fontMetrics().elidedText(m_branchLabel, Qt::ElideRight, 96);
+        const qreal badgeWidth =
+            qMin(m_width, static_cast<qreal>(painter->fontMetrics().horizontalAdvance(badgeText)) + 16.0);
+        const QRectF badgeRect((m_width - badgeWidth) / 2.0, -30.0, badgeWidth, 18.0);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(badgeColor);
+        painter->drawRoundedRect(badgeRect, 9.0, 9.0);
+        painter->setPen(QColor("#FFFFFF"));
+        painter->drawText(badgeRect, Qt::AlignCenter, badgeText);
+    }
 }
 
 QVariant FlowNodeItem::itemChange(GraphicsItemChange change, const QVariant& value) {
@@ -827,6 +1049,7 @@ void FlowNodeItem::mousePressEvent(QGraphicsSceneMouseEvent* event) {
             return;
         }
     }
+    m_movedDuringDrag = false;
     if (event->button() == Qt::LeftButton) {
         m_moveGestureCandidate = true;
         m_moveGestureCanceled = RunEngine::instance().isBusy();
@@ -893,6 +1116,9 @@ void FlowNodeItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
         event->accept();
         return;
     }
+    if (event->buttons() & Qt::LeftButton) {
+        m_movedDuringDrag = true;
+    }
     if (m_moveGestureCandidate) {
         if (RunEngine::instance().isBusy()) {
             m_moveGestureCanceled = true;
@@ -950,6 +1176,7 @@ void FlowNodeItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
             }
         }
         m_dragFromPortId.clear();
+        m_movedDuringDrag = false;
         update();
         event->accept();
         return;
@@ -974,8 +1201,12 @@ void FlowNodeItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
         QGraphicsScene* currentScene = scene();
         FlowCanvas* canvas = currentScene ? qobject_cast<FlowCanvas*>(currentScene->parent()) : nullptr;
         if (canvas) {
-            emit canvas->nodeMoveFinished(m_nodeId, m_movePressVisualPos, pos(), m_moveGestureCrossedThreshold,
-                                          m_moveGestureCanceled);
+            if (canvas->hasMoveFinishedHandler()) {
+                emit canvas->nodeMoveFinished(m_nodeId, m_movePressVisualPos, pos(), m_moveGestureCrossedThreshold,
+                                              m_moveGestureCanceled);
+            } else if (m_moveGestureCrossedThreshold && !m_moveGestureCanceled) {
+                canvas->notifyNodePositionChanged(m_nodeId, pos());
+            }
         }
         m_moveGestureCandidate = false;
         m_moveGestureCanceled = false;
@@ -984,6 +1215,14 @@ void FlowNodeItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
         return;
     }
     QGraphicsItem::mouseReleaseEvent(event);
+    if (m_movedDuringDrag) {
+        m_movedDuringDrag = false;
+        QGraphicsScene* currentScene = scene();
+        FlowCanvas* canvas = currentScene ? qobject_cast<FlowCanvas*>(currentScene->parent()) : nullptr;
+        if (canvas) {
+            canvas->notifyNodePositionChanged(m_nodeId, pos());
+        }
+    }
 }
 
 // ========== FlowConnectionItem ==========
@@ -1014,24 +1253,63 @@ bool FlowConnectionItem::isValid() const {
     return m_fromNode && m_toNode && m_fromNode->scene() == scene() && m_toNode->scene() == scene();
 }
 
+void FlowConnectionItem::setLoopBackEdge(bool loopBack) {
+    if (m_loopBackEdge == loopBack)
+        return;
+    // 循环标记会扩大 boundingRect，先通知场景。
+    prepareGeometryChange();
+    m_loopBackEdge = loopBack;
+    update();
+}
+
+Qt::PenStyle FlowConnectionItem::strokeStyle() const {
+    // 数据边实线；控制边与循环回边一律虚线（回边另加颜色与循环标记）。
+    return (isControlEdge() || m_loopBackEdge) ? Qt::DashLine : Qt::SolidLine;
+}
+
+QString FlowConnectionItem::loopBackMarkerText() {
+    return QStringLiteral("LOOP");
+}
+
 QRectF FlowConnectionItem::boundingRect() const {
     if (m_path.isEmpty()) {
         return QRectF();
     }
-    return m_path.boundingRect().adjusted(-10, -10, 10, 10);
+    // B5.1：回边的循环徽标绘制在中点上方，需额外留出上下左右空间。
+    const qreal margin = m_loopBackEdge ? 34.0 : 10.0;
+    return m_path.boundingRect().adjusted(-margin, -margin, margin, margin);
 }
 
 void FlowConnectionItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) {
     Q_UNUSED(option)
     Q_UNUSED(widget)
 
-    const QColor lineColor = connectionColor(scene());
-    // 数据边实线，控制边虚线
-    const Qt::PenStyle penStyle = isControlEdge() ? Qt::DashLine : Qt::SolidLine;
-    painter->setPen(QPen(lineColor, 2, penStyle, Qt::RoundCap, Qt::RoundJoin));
+    const bool isDark = scene() && scene()->backgroundBrush().color().lightness() <= 128;
+    QColor strokeColor = connectionColor(scene());
+    if (m_loopBackEdge)
+        strokeColor = isDark ? QColor("#FBBF24") : QColor("#B45309");
+
+    painter->setPen(QPen(strokeColor, 2, strokeStyle(), Qt::RoundCap, Qt::RoundJoin));
     painter->setBrush(Qt::NoBrush);
     painter->drawPath(m_path);
-    drawConnectionArrow(painter, m_path, lineColor);
+    drawConnectionArrow(painter, m_path, strokeColor);
+
+    // B5.1：循环回边 = 虚线 + 箭头 + 循环标记徽标。
+    if (m_loopBackEdge && !m_path.isEmpty()) {
+        const QPointF midPoint = m_path.pointAtPercent(0.5);
+        QFont badgeFont = painter->font();
+        badgeFont.setPointSize(8);
+        badgeFont.setBold(true);
+        painter->setFont(badgeFont);
+        const QString marker = loopBackMarkerText();
+        const qreal badgeWidth = static_cast<qreal>(painter->fontMetrics().horizontalAdvance(marker)) + 16.0;
+        const QRectF badgeRect(midPoint.x() - badgeWidth / 2.0, midPoint.y() - 24.0, badgeWidth, 18.0);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(strokeColor);
+        painter->drawRoundedRect(badgeRect, 9.0, 9.0);
+        painter->setPen(QColor("#FFFFFF"));
+        painter->drawText(badgeRect, Qt::AlignCenter, marker);
+    }
 }
 
 void FlowConnectionItem::updatePath() {

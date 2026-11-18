@@ -1,4 +1,6 @@
 #include <QApplication>
+#include <QDialogButtonBox>
+#include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -268,7 +270,20 @@ private slots:
 
         respondWhenFileDialogOpens(this, [targetPath](QFileDialog* dialog) {
             dialog->selectFile(targetPath);
-            static_cast<QDialog*>(dialog)->done(QDialog::Accepted);
+            const QStringList selectedFiles = dialog->selectedFiles();
+            if (selectedFiles.size() != 1 || QDir::cleanPath(selectedFiles.first()) != QDir::cleanPath(targetPath)) {
+                QTest::qFail("Snapshot dialog did not select the requested output path", __FILE__, __LINE__);
+                dialog->reject();
+                return;
+            }
+            auto* buttonBox = dialog->findChild<QDialogButtonBox*>();
+            auto* saveButton = buttonBox ? buttonBox->button(QDialogButtonBox::Save) : nullptr;
+            if (!saveButton || !saveButton->isEnabled()) {
+                QTest::qFail("Snapshot dialog has no enabled Save button", __FILE__, __LINE__);
+                dialog->reject();
+                return;
+            }
+            QTest::mouseClick(saveButton, Qt::LeftButton);
         });
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
         QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(targetPath), 5000);
@@ -440,6 +455,11 @@ private slots:
 private:
 };
 
-QTEST_MAIN(TestAgentViewportSnapshotHandoff)
+int main(int argc, char* argv[]) {
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+    QApplication app(argc, argv);
+    TestAgentViewportSnapshotHandoff testObject;
+    return QTest::qExec(&testObject, argc, argv);
+}
 
 #include "test_agent_viewport_snapshot_handoff.moc"

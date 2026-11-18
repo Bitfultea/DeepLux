@@ -1,5 +1,7 @@
 # 阶段 1 验收记录：失败语义、权限一致性与工程保护
 
+> 历史验收快照：本文状态与结果对应其记录日期和基线；当前项目状态见 [docs/STATUS.md](../STATUS.md)。
+
 依据 `docs/agent-capability-improvement-plan.md` §6/§4.2/§14.2 编制。前置:阶段 0 已 PASS(2026-09-29,见 `agent-phase-0-acceptance.md`)。
 **状态:PASS**（独立审核 Agent 于 2026-09-30 对 r6 给出 G1 PASS；结论与边界见 §12。此处仅归档审核结论，非实现 Agent 自行放行）。
 

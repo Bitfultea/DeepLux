@@ -20,6 +20,13 @@ class DEEPLUX_API CancellationToken : public QObject {
 public:
     explicit CancellationToken(QObject* parent = nullptr);
 
+    /// T2.8（2026-11-10 评审裁定）：析构时把本 token 从所有模块的借用表中摘除。
+    ///
+    /// 兜底防线，与 ModuleBase::execute() 的作用域守卫互补：守卫负责「本次执行结束」，
+    /// 析构负责「token 先于模块消失」。两道合起来保证表里永不留下悬垂指针，即使调用方
+    /// 传入的是栈上或短生命周期 token，也不会让后续 isCancellationRequested() 解引用野指针。
+    ~CancellationToken() override;
+
     /// Request cancellation
     Q_INVOKABLE void cancel();
 

@@ -5,6 +5,10 @@
 #include <QTemporaryDir>
 #include <QtTest/QtTest>
 #include <core/common/CLIHandler.h>
+
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+#include <QTextCodec>
+#endif
 #include <core/engine/RunEngine.h>
 #include <core/manager/PluginManager.h>
 #include <core/manager/ProjectManager.h>
@@ -23,6 +27,7 @@ private slots:
     void testRunCommandRejectsMissingProjectFile();
     void testRunCommandReportsEmptyProjectAsExecutionFailure();
     void testRunCommandExecutesProjectWithAvailablePlugin();
+    void testListPluginsLineEmitsUtf8();
 
 private:
     bool installSystemTimePlugin(const QString& pluginRoot) const;
@@ -143,6 +148,35 @@ void TestCLIHandler::testRunCommandExecutesProjectWithAvailablePlugin() {
     QCOMPARE(run->execute({projectPath}, ctx), 0);
     QVERIFY2(!ctx.hasError(), qPrintable(ctx.errorString()));
     QCOMPARE(RunEngine::instance().successRuns(), 1);
+}
+
+void TestCLIHandler::testListPluginsLineEmitsUtf8() {
+    const QString status = QStringLiteral("OK");
+    const QString name = QStringLiteral("变量赋值");
+    const QString version = QStringLiteral("1.0.0");
+    const QString category = QStringLiteral("variable");
+
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    // Simulate a CP936 (GBK) locale on Qt 5 and call the formatter WHILE it is
+    // active, so a toLocal8Bit()/qPrintable() regression actually changes bytes.
+    if (QTextCodec* gbk = QTextCodec::codecForName("GBK")) {
+        QTextCodec* previous = QTextCodec::codecForLocale();
+        QTextCodec::setCodecForLocale(gbk);
+        const QByteArray gbkBytes = name.toLocal8Bit();
+        const QByteArray line = CLIHandler::formatPluginLine(status, name, version, category);
+        QTextCodec::setCodecForLocale(previous);
+
+        QVERIFY2(line.contains(name.toUtf8()), "plugin line must contain UTF-8 bytes");
+        QVERIFY2(!line.contains(gbkBytes), "plugin line must not use the local (GBK) encoding");
+        QVERIFY(QString::fromUtf8(line).contains(name));
+        return;
+    }
+#endif
+
+    // Qt6, or Qt5 built without the GBK codec: still assert the UTF-8 contract.
+    const QByteArray line = CLIHandler::formatPluginLine(status, name, version, category);
+    QVERIFY2(line.contains(name.toUtf8()), "plugin line must contain UTF-8 bytes");
+    QVERIFY(QString::fromUtf8(line).contains(name));
 }
 
 QTEST_MAIN(TestCLIHandler)

@@ -241,6 +241,13 @@ QString SamBackendClient::resolvedScriptPath() const {
     if (!cwdRelative.isEmpty())
         return cwdRelative;
 
+#ifdef DEEPLUX_SAM_SERVER_SOURCE_DIR
+    const QString sourceScript =
+        QDir(QStringLiteral(DEEPLUX_SAM_SERVER_SOURCE_DIR)).absoluteFilePath(QStringLiteral("sam_server.py"));
+    if (QFileInfo::exists(sourceScript))
+        return sourceScript;
+#endif
+
     return QDir(QCoreApplication::applicationDirPath())
         .absoluteFilePath(QStringLiteral("../tools/sam_server/sam_server.py"));
 }

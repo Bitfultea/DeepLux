@@ -81,6 +81,7 @@ AgentAuditLog& AgentAuditLog::instance() {
     return instance;
 }
 
+#ifdef DEEPLUX_BUILD_TESTS
 void AgentAuditLog::setEnabledForTest(bool enabled) {
     m_enabledOverride = enabled ? 1 : 0;
 }
@@ -117,18 +118,23 @@ void AgentAuditLog::resetForTest() {
     m_droppedRecords = 0;
     m_initialized = false;
 }
+#endif
 
 bool AgentAuditLog::enabled() const {
+#ifdef DEEPLUX_BUILD_TESTS
     if (m_enabledOverride >= 0)
         return m_enabledOverride == 1;
+#endif
     if (!ConfigManager::instance().isInitialized())
         return true;
     return ConfigManager::instance().groupBool("agent", "auditEnabled", true);
 }
 
 int AgentAuditLog::maxFileBytes() const {
+#ifdef DEEPLUX_BUILD_TESTS
     if (m_maxFileBytesOverride > 0)
         return m_maxFileBytesOverride; // 测试注入（可低于生产下限）
+#endif
     const int configured = ConfigManager::instance().isInitialized()
                                ? ConfigManager::instance().groupInt("agent", "auditMaxFileBytes", 10485760)
                                : 10485760;
@@ -136,8 +142,10 @@ int AgentAuditLog::maxFileBytes() const {
 }
 
 int AgentAuditLog::retentionDays() const {
+#ifdef DEEPLUX_BUILD_TESTS
     if (m_retentionDaysOverride > 0)
         return m_retentionDaysOverride;
+#endif
     const int configured = ConfigManager::instance().isInitialized()
                                ? ConfigManager::instance().groupInt("agent", "auditRetentionDays", 14)
                                : 14;
@@ -145,11 +153,19 @@ int AgentAuditLog::retentionDays() const {
 }
 
 QString AgentAuditLog::logDir() const {
+#ifdef DEEPLUX_BUILD_TESTS
     return m_logDirOverride.isEmpty() ? PathUtils::logPath() : m_logDirOverride;
+#else
+    return PathUtils::logPath();
+#endif
 }
 
 QDateTime AgentAuditLog::now() const {
+#ifdef DEEPLUX_BUILD_TESTS
     return m_nowOverride.isValid() ? m_nowOverride : QDateTime::currentDateTime();
+#else
+    return QDateTime::currentDateTime();
+#endif
 }
 
 QString AgentAuditLog::filePathFor(const QDate& date, int part) const {

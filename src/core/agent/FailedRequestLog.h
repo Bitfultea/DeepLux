@@ -33,7 +33,8 @@ public:
     void record(const LLMErrorInfo& info, const QByteArray& requestBody, const QString& endpoint, const QString& model,
                 const QList<AgentMessage>& messages);
 
-    // ---- 测试/诊断可见 ----
+#ifdef DEEPLUX_BUILD_TESTS
+    // ---- 测试可见 ----
     DEEPLUX_TEST_VISIBILITY : void setEnabledForTest(bool enabled);
     void clearEnabledOverrideForTest() {
         m_enabledOverride = -1;
@@ -52,6 +53,7 @@ public:
     int droppedRecords() const {
         return m_droppedRecords;
     }
+#endif
 
 private:
     FailedRequestLog() = default;
@@ -78,6 +80,7 @@ private:
     int m_consecutiveFailures = 0;
     int m_droppedRecords = 0;
 
+#ifdef DEEPLUX_BUILD_TESTS
     // 测试注入
     QString m_logDirOverride;
     QDateTime m_nowOverride;
@@ -85,6 +88,7 @@ private:
     int m_maxFileBytesOverride = -1;
     int m_recordMaxBytesOverride = -1;
     int m_retentionDaysOverride = -1;
+#endif
 };
 
 } // namespace DeepLux

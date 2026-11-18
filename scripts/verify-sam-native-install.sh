@@ -13,8 +13,9 @@ libroot="$(realpath -m "${prefix}/${libdir}")"
 core="${libroot}/libdeeplux_core.so.1"
 ui="${libroot}/libdeeplux_ui.so.1"
 app="${prefix}/bin/DeepLux"
+bridge="${prefix}/bin/deeplux-mcp-bridge"
 
-for file in "$core" "$ui" "$app" "${libroot}/libonnxruntime.so"; do
+for file in "$core" "$ui" "$app" "$bridge" "${libroot}/libonnxruntime.so"; do
     if [[ ! -f "$file" ]]; then
         echo "Missing installed file: $file" >&2
         exit 1
@@ -27,7 +28,8 @@ runpath() {
 
 if [[ "$(runpath "$core")" != '$ORIGIN' ||
       "$(runpath "$ui")" != '$ORIGIN' ||
-      "$(runpath "$app")" != "\$ORIGIN/../${libdir}" ]]; then
+      "$(runpath "$app")" != "\$ORIGIN/../${libdir}" ||
+      "$(runpath "$bridge")" != "\$ORIGIN/../${libdir}" ]]; then
     echo "Installed binaries do not use package-relative RUNPATH" >&2
     exit 1
 fi
@@ -51,7 +53,7 @@ if [[ "$resolved" != "${libroot}/libonnxruntime.so."* ]]; then
     exit 1
 fi
 
-for library in "$app" "$core" "$ui" "${libroot}"/libonnxruntime_providers_*.so; do
+for library in "$app" "$bridge" "$core" "$ui" "${libroot}"/libonnxruntime_providers_*.so; do
     if [[ -f "$library" ]]; then
         if ! dependencies="$(env -u LD_LIBRARY_PATH ldd "$library")"; then
             echo "Cannot inspect runtime dependencies: $library" >&2

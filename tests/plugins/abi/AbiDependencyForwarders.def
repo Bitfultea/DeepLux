@@ -1,0 +1,3 @@
+EXPORTS
+    deeplux_plugin_abi_version=AbiDependency.deeplux_plugin_abi_version
+    deeplux_plugin_abi_fingerprint=AbiDependency.deeplux_plugin_abi_fingerprint

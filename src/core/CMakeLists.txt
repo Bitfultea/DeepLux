@@ -29,6 +29,7 @@ set(CORE_SOURCES
     common/CancellationToken.cpp
     common/CLIHandler.cpp
     engine/RunEngine.cpp
+    engine/FlowGraphAnalyzer.cpp
     engine/FlowExecutionService.cpp
     device/CameraManager.cpp
     device/CameraParameterWrite.cpp
@@ -98,6 +99,7 @@ set(CORE_HEADERS
     model/ImageData.h
     model/DataSource.h
     engine/RunEngine.h
+    engine/FlowGraphAnalyzer.h
     engine/FlowExecutionService.h
     engine/ExecutionAffinity.h
     engine/DisplayFrame.h
@@ -147,6 +149,8 @@ set_target_properties(deeplux_agent_resources PROPERTIES POSITION_INDEPENDENT_CO
 add_library(deeplux_core SHARED ${CORE_SOURCES} ${CORE_HEADERS})
 
 target_compile_definitions(deeplux_core PRIVATE DEEPLUX_CORE_EXPORT)
+file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/tools/sam_server" DEEPLUX_SAM_SERVER_SOURCE_DIR)
+target_compile_definitions(deeplux_core PRIVATE DEEPLUX_SAM_SERVER_SOURCE_DIR="${DEEPLUX_SAM_SERVER_SOURCE_DIR}")
 
 # ========== 阶段2：原生 SAM 推理（onnxruntime，可选）==========
 option(DEEPLUX_NATIVE_SAM "Enable native SAM ONNX inference (requires onnxruntime)" ON)
@@ -155,7 +159,10 @@ if(DEEPLUX_NATIVE_SAM)
         set(ONNXRUNTIME_DIR "$ENV{ONNXRUNTIME_DIR}" CACHE PATH "onnxruntime install dir")
     endif()
     if(NOT EXISTS "${ONNXRUNTIME_DIR}/include/onnxruntime_c_api.h")
-        message(FATAL_ERROR "DEEPLUX_NATIVE_SAM=ON 需要 -DONNXRUNTIME_DIR=<SDK 目录>（缺少 include/onnxruntime_c_api.h）")
+        message(FATAL_ERROR
+            "Native SAM is enabled by default and requires the ONNX Runtime SDK.\n"
+            "Set -DONNXRUNTIME_DIR=<SDK directory> (missing include/onnxruntime_c_api.h), or explicitly opt out with "
+            "-DDEEPLUX_NATIVE_SAM=OFF.")
     endif()
     target_sources(deeplux_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inference/SamOnnxInference.cpp
@@ -216,11 +223,6 @@ target_include_directories(deeplux_core
 # Platform define propagated to all downstream targets
 target_compile_definitions(deeplux_core PUBLIC ${DEEPLUX_PLATFORM_DEFINE})
 
-# 测试构建：核心库与测试共享 private→public 的符号修饰（见 Platform.h）
-if(BUILD_TESTS)
-    target_compile_definitions(deeplux_core PUBLIC DEEPLUX_BUILD_TESTS)
-endif()
-
 if(Qt6_FOUND)
     target_link_libraries(deeplux_agent_resources PRIVATE Qt6::Core)
     target_link_libraries(deeplux_core PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::SerialPort Qt6::Concurrent)
@@ -231,6 +233,9 @@ else()
     target_link_libraries(deeplux_core PUBLIC Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Network Qt5::SerialPort Qt5::Concurrent)
 endif()
 target_link_libraries(deeplux_core PRIVATE deeplux_agent_resources)
+if(CMAKE_DL_LIBS)
+    target_link_libraries(deeplux_core PRIVATE ${CMAKE_DL_LIBS})
+endif()
 
 # 阶段 3：OpenCV 为必需依赖（根 CMakeLists 中 find_package 失败即中止），此处恒成立。
 target_compile_definitions(deeplux_core PUBLIC DEEPLUX_HAS_OPENCV)
@@ -254,6 +259,12 @@ set_target_properties(deeplux_core PROPERTIES
     SOVERSION ${PROJECT_VERSION_MAJOR}
     OUTPUT_NAME deeplux_core
 )
+
+if(BUILD_TESTS)
+    add_library(deeplux_core_test_support STATIC engine/EngineTestSupport.cpp)
+    target_include_directories(deeplux_core_test_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(deeplux_core_test_support PUBLIC deeplux_core)
+endif()
 
 install(TARGETS deeplux_core
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

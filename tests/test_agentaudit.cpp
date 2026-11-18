@@ -123,6 +123,7 @@ private:
                 buffer->clear();
             });
             connect(socket, &QTcpSocket::disconnected, socket, &QTcpSocket::deleteLater);
+            connect(socket, &QObject::destroyed, [buffer] { delete buffer; });
         }
     }
 

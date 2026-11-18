@@ -6,17 +6,55 @@
 # 解决因插件库与主程序不同步导致的跨 DLL 虚表不匹配问题。
 #
 # 用法:
-#   ./scripts/sync-plugins.sh [BUILD_DIR]
+#   ./scripts/sync-plugins.sh [--force] [--plugins-home DIR] [BUILD_DIR]
 #
-#   BUILD_DIR  可选，CMake 构建目录（默认: 脚本所在目录的父目录，即项目根目录）
+#   BUILD_DIR       可选，CMake 构建目录（默认: <项目根>/build）
+#   --force         允许删除插件目录中不匹配的旧 .so（默认只保留并告警）
+#   --plugins-home  显式指定插件目录；缺省时优先 DEEPLUX_APP_DATA_DIR/plugins，
+#                   再回退 $HOME/.deeplux/plugins
 # =============================================================================
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-BUILD_DIR="${1:-$PROJECT_DIR}"
-PLUGINS_HOME="${HOME}/.deeplux/plugins"
+
+# 参数解析：--force 允许删除不匹配的旧 .so；--plugins-home 显式指定目标目录。
+FORCE=0
+BUILD_DIR=""
+PLUGINS_HOME_OVERRIDE=""
+PLUGINS_HOME_SET=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --force) FORCE=1; shift ;;
+        --plugins-home)
+            if [ $# -lt 2 ]; then
+                echo "[ERROR] --plugins-home requires a directory" >&2
+                exit 2
+            fi
+            if [ -z "$2" ]; then
+                echo "[ERROR] --plugins-home requires a non-empty directory" >&2
+                exit 2
+            fi
+            PLUGINS_HOME_OVERRIDE="$2"
+            PLUGINS_HOME_SET=1
+            shift 2
+            ;;
+        -*) echo "[ERROR] Unknown option: $1" >&2; exit 2 ;;
+        *) if [ -z "$BUILD_DIR" ]; then BUILD_DIR="$1"; shift; else echo "[ERROR] Unexpected argument: $1" >&2; exit 2; fi ;;
+    esac
+done
+BUILD_DIR="${BUILD_DIR:-$PROJECT_DIR/build}"
+
+# 目标插件目录解析：显式参数 > DEEPLUX_APP_DATA_DIR/plugins > $HOME/.deeplux/plugins。
+# 与应用 PathUtils::pluginPath() 同源，避免隔离环境写入真实用户目录。
+if [ "$PLUGINS_HOME_SET" -eq 1 ]; then
+    PLUGINS_HOME="$PLUGINS_HOME_OVERRIDE"
+elif [ -n "${DEEPLUX_APP_DATA_DIR:-}" ]; then
+    PLUGINS_HOME="${DEEPLUX_APP_DATA_DIR%/}/plugins"
+else
+    PLUGINS_HOME="${HOME}/.deeplux/plugins"
+fi
 
 mkdir -p "$PLUGINS_HOME"
 
@@ -53,7 +91,7 @@ find_so_match() {
 }
 
 # 收集所有候选 .so 文件（普通插件 + 相机插件）
-declare -A SO_MAP
+declare -A SO_MAP=()
 for so in "$BUILD_DIR"/lib/lib*Plugin.so "$BUILD_DIR"/plugins/camera/lib*Plugin.so; do
     [ -f "$so" ] || continue
     # 从文件名提取插件名: libFooPlugin.so -> Foo
@@ -62,9 +100,10 @@ for so in "$BUILD_DIR"/lib/lib*Plugin.so "$BUILD_DIR"/plugins/camera/lib*Plugin.
     SO_MAP["$name"]="$so"
 done
 
-if [ ${#SO_MAP[@]} -eq 0 ]; then
-    echo "[WARN] No plugin .so files found in $BUILD_DIR"
-    exit 0
+if [ "${#SO_MAP[@]}" -eq 0 ]; then
+    echo "[ERROR] No plugin .so files found in $BUILD_DIR (expected lib/*Plugin.so or plugins/camera/lib*Plugin.so)" >&2
+    echo "[ERROR] Pass the correct build directory, e.g. ./scripts/sync-plugins.sh build" >&2
+    exit 1
 fi
 
 echo "[INFO] Found ${#SO_MAP[@]} plugin .so files in build directory"
@@ -126,7 +165,8 @@ for plugin_dir in "$PLUGINS_HOME"/*/; do
 
     dir_name=$(basename "$plugin_dir")
 
-    # 清理该目录下不匹配的 .so 文件（防止旧脚本错误导致的多余 .so 堆积）
+    # 清理该目录下不匹配的 .so 文件（防止旧脚本错误导致的多余 .so 堆积）。
+    # 仅在显式 --force 时删除，避免默认行为误删用户文件。
     short_dir_name="${dir_name%Plugin}"
     for existing_so in "$plugin_dir"/*.so; do
         [ -f "$existing_so" ] || continue
@@ -134,9 +174,13 @@ for plugin_dir in "$PLUGINS_HOME"/*/; do
         existing_name=$(echo "$existing_base" | sed 's/^lib//;s/Plugin\.so$//')
         if [ "$existing_name" != "$meta_name" ] && [ "$existing_name" != "$dir_name" ] &&
             [ "$existing_name" != "$short_dir_name" ]; then
-            rm -f "$existing_so"
-            echo "[CLEAN] $dir_name: removed mismatched $existing_base"
-            ((cleaned++)) || true
+            if [ "$FORCE" -eq 1 ]; then
+                rm -f "$existing_so"
+                echo "[CLEAN] $dir_name: removed mismatched $existing_base"
+                ((cleaned++)) || true
+            else
+                echo "[KEEP]  $dir_name: mismatched $existing_base (use --force to remove)"
+            fi
         fi
     done
 
