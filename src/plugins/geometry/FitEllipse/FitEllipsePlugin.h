@@ -12,7 +12,7 @@ namespace DeepLux {
 // 按离群阈值迭代剔除后重拟合，输出中心/角度/长短半轴/椭圆度/误差。
 class DEEPLUX_PLUGIN_API FitEllipsePlugin : public ModuleBase {
     Q_OBJECT
-    Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
+    Q_PLUGIN_METADATA(IID DEEPLUX_MODULE_INTERFACE_IID FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
 
 public:

@@ -1,3 +1,4 @@
+#include <core/engine/EngineTestSupport.h>
 #define DEEPLUX_BUILD_TESTS 1
 #include "core/base/ModuleBase.h"
 #include "core/engine/RunEngine.h"
@@ -111,7 +112,8 @@ bool loadPauseFlow(PauseFlow& flow, bool blockFirst, bool firstBreakpoint) {
     if (loaded) {
         // 探针模块未注册插件（默认 gui）：后台线程执行必须以 worker 亲和内联执行。
         for (const QString& name : {QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}) {
-            RunEngine::instance().setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
+            RunEngineTestAccess(RunEngine::instance())
+                .setModuleExecutionAffinityForTest(name, ExecutionAffinity::Worker);
         }
     }
     return loaded;
@@ -124,9 +126,9 @@ class TestRunEngineUserPause : public QObject {
 private slots:
     void init() {
         RunEngine::instance().stop();
-        RunEngine::instance().clearFinalizeHookForTest();
-        RunEngine::instance().clearExecutionFaultInjectionForTest();
-        RunEngine::instance().clearBeforeJobStartHookForTest();
+        RunEngineTestAccess(RunEngine::instance()).clearFinalizeHookForTest();
+        RunEngineTestAccess(RunEngine::instance()).clearExecutionFaultInjectionForTest();
+        RunEngineTestAccess(RunEngine::instance()).clearBeforeJobStartHookForTest();
         RunEngine::instance().clearModules();
     }
 
@@ -242,7 +244,7 @@ private slots:
         QSignalSpy finishedSpy(&engine, &RunEngine::runFinished);
 
         QSemaphore hookReached;
-        engine.setFinalizeHookForTest([&]() {
+        RunEngineTestAccess(engine).setFinalizeHookForTest([&]() {
             hookReached.release();
             RunEngine::instance().stop();
         });
@@ -254,7 +256,7 @@ private slots:
         QCOMPARE(engine.state(), RunState::Stopped);
         QVERIFY(!engine.isPausedAtBreakpoint());
         QCOMPARE(flow.aCalls.load(), 0); // 断点暂停发生在 A 执行前
-        engine.clearFinalizeHookForTest();
+        RunEngineTestAccess(engine).clearFinalizeHookForTest();
     }
 
     // t3 审查 O6：stepOnce 的 stop 判定与单步态重置在同一临界区——收尾窗口内 stop 获胜后，
@@ -271,7 +273,7 @@ private slots:
         engine.addModule(&second);
 
         QSemaphore hookReached;
-        engine.setFinalizeHookForTest([&]() {
+        RunEngineTestAccess(engine).setFinalizeHookForTest([&]() {
             hookReached.release();
             RunEngine::instance().stop();
         });
@@ -279,7 +281,7 @@ private slots:
         QVERIFY(hookReached.tryAcquire(1, 2000));
         QCOMPARE(engine.state(), RunState::Stopped);
         QCOMPARE(flow.log, QStringList({QStringLiteral("First")}));
-        engine.clearFinalizeHookForTest();
+        RunEngineTestAccess(engine).clearFinalizeHookForTest();
 
         // 收尾窗口 stop 已重置单步态：下一步从流程起点重新开始。
         QVERIFY(engine.stepOnce());

@@ -30,13 +30,13 @@ void TerminalWidget::setupUI() {
     mainLayout->setSpacing(0);
 
     // 终端屏幕
-    m_screen = new TerminalScreen(24, 80);
-    m_parser = new AnsiParser(m_screen, this);
+    m_screen = std::make_unique<TerminalScreen>(24, 80);
+    m_parser = new AnsiParser(m_screen.get(), this);
     connect(m_parser, &AnsiParser::screenUpdated, this, &TerminalWidget::onScreenUpdated);
     connect(m_parser, &AnsiParser::cliCommandReceived, this, [this](const QString& cmd) { emit commandEntered(cmd); });
 
     // 渲染器
-    m_renderer = new TerminalRenderer(m_screen, this);
+    m_renderer = new TerminalRenderer(m_screen.get(), this);
     connect(m_renderer, &TerminalRenderer::sizeChanged, this, &TerminalWidget::onRendererSizeChanged);
     mainLayout->addWidget(m_renderer, 1);
 

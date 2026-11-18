@@ -1,5 +1,7 @@
 # SAM 原生部署：阶段 5（Linux 安装与插件）
 
+> **验证边界**：本文是 Linux 安装与真实模型流程的累积记录。CPU/CUDA 成功结果来自本机 RTX 3090 环境；它们不代表 Windows、另一台目标机、无 Python 的纯净系统或工业数据集验收。Windows 编译/打包状态见 [Windows 构建与部署](../windows-build.md)。
+
 ## 本批范围
 
 `DEEPLUX_NATIVE_SAM` 默认 `ON`，需要显式提供 `ONNXRUNTIME_DIR`（CMake 参数或同名环境变量）；
@@ -7,7 +9,7 @@
 Linux 安装将 ONNX Runtime 主库及现有 Provider
 复制为真实文件，版本符号链接改为包内相对链接；DeepLux、核心库和 UI 库使用相对
 RUNPATH。Windows 配置识别 `lib/onnxruntime.lib` 及 `lib` 或 `bin` 中的
-`onnxruntime.dll`，并从所选目录安装运行库；本批未在 Windows 构建或运行。
+`onnxruntime.dll`，并从所选目录安装运行库；本文所述 Linux 安装批次没有验证 Windows 构建或运行，后续 Windows 编译/打包验证不包含真实模型推理。
 macOS 原生推理仍不支持。
 
 第二批将所有本次构建的 Linux 插件目标及其 metadata 安装到 `plugins/<插件目录>`，

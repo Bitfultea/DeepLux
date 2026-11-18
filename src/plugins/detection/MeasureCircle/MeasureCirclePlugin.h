@@ -8,7 +8,7 @@ namespace DeepLux {
 // 代数最小二乘拟合圆，按剔除半径剔除离群边缘点后重拟合，输出圆心/半径/直径/圆度。
 class DEEPLUX_PLUGIN_API MeasureCirclePlugin : public ModuleBase {
     Q_OBJECT
-    Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
+    Q_PLUGIN_METADATA(IID DEEPLUX_MODULE_INTERFACE_IID FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
 
 public:

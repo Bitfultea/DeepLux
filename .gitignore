@@ -42,6 +42,9 @@ Makefile
 *.cmake.in
 CTestTestfile.cmake
 
+# Test artifacts
+Testing/
+
 # OS
 .DS_Store
 Thumbs.db

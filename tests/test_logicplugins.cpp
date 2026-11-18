@@ -9,10 +9,14 @@
 
 #include <QElapsedTimer>
 #include <QJsonObject>
+#include <QSemaphore>
 #include <QThread>
 #include <QVariant>
 #include <QtTest/QtTest>
+#include <atomic>
+#include <memory>
 #include <thread>
+#include <vector>
 
 using namespace DeepLux;
 
@@ -56,6 +60,7 @@ private slots:
     // IfPlugin - BoolLink mode
     void testIfBoolLinkTrue();
     void testIfBoolLinkFalse();
+    void testIfWorkerReadsRunEngineOutputConcurrently();
 
     // IfPlugin - validation
     void testIfValidationEmptyBoolLink();
@@ -190,6 +195,77 @@ void TestLogicPlugins::testIfBoolLinkFalse() {
     ImageData input, output;
     QVERIFY2(plugin.execute(input, output), "a false BoolLink is a valid result, not an execution failure");
     QCOMPARE(output.data("if_result").toBool(), false);
+}
+
+void TestLogicPlugins::testIfWorkerReadsRunEngineOutputConcurrently() {
+    constexpr int readerCount = 4;
+    RunEngine& engine = RunEngine::instance();
+    engine.setOutput("ConcurrentSource", "flag", false);
+
+    std::vector<std::unique_ptr<IfPlugin>> plugins;
+    plugins.reserve(readerCount);
+    for (int i = 0; i < readerCount; ++i) {
+        auto plugin = std::make_unique<IfPlugin>();
+        QVERIFY(plugin->initialize());
+        plugin->setParams(QJsonObject{
+            {"conditionType", "BoolLink"}, {"boolLinkText", "$ConcurrentSource.flag"}, {"boolInversion", false}});
+        plugins.push_back(std::move(plugin));
+    }
+
+    QSemaphore ready;
+    QSemaphore start;
+    std::atomic<int> failures{0};
+    std::atomic<int> overlappingReaders{0};
+    std::atomic<quint64> writeEpoch{0};
+    std::atomic<bool> writerDone{false};
+    std::thread writer([&] {
+        ready.release();
+        start.acquire();
+        QElapsedTimer timeout;
+        timeout.start();
+        bool value = false;
+        while (overlappingReaders.load(std::memory_order_acquire) < readerCount && timeout.elapsed() < 10000) {
+            value = !value;
+            engine.setOutput("ConcurrentSource", "flag", value);
+            writeEpoch.fetch_add(1, std::memory_order_release);
+        }
+        writerDone.store(true, std::memory_order_release);
+    });
+
+    std::vector<std::thread> readers;
+    readers.reserve(readerCount);
+    for (auto& plugin : plugins) {
+        readers.emplace_back([&, current = plugin.get()] {
+            ready.release();
+            start.acquire();
+            ImageData input;
+            bool overlapped = false;
+            while (!writerDone.load(std::memory_order_acquire)) {
+                const quint64 before = writeEpoch.load(std::memory_order_acquire);
+                ImageData output;
+                if (!current->execute(input, output) || output.data("if_result").type() != QVariant::Bool) {
+                    failures.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (!overlapped && writeEpoch.load(std::memory_order_acquire) > before) {
+                    overlapped = true;
+                    overlappingReaders.fetch_add(1, std::memory_order_release);
+                }
+            }
+        });
+    }
+
+    bool allReady = true;
+    for (int i = 0; i < readerCount + 1; ++i) {
+        allReady = ready.tryAcquire(1, 5000) && allReady;
+    }
+    start.release(readerCount + 1);
+    writer.join();
+    for (std::thread& reader : readers) {
+        reader.join();
+    }
+    QVERIFY(allReady);
+    QCOMPARE(overlappingReaders.load(std::memory_order_acquire), readerCount);
+    QCOMPARE(failures.load(std::memory_order_relaxed), 0);
 }
 
 // =========================================================================

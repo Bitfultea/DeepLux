@@ -11,7 +11,7 @@ public:
     explicit AgentInterfaceVersionMismatchFixture(QObject* parent = nullptr);
 
     int interfaceVersion() const override {
-        return DeepLux::DEEPLUX_MODULE_INTERFACE_VERSION - 1;
+        return DEEPLUX_MODULE_INTERFACE_VERSION - 1;
     }
 
 protected:

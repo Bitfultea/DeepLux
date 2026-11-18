@@ -14,7 +14,7 @@ namespace DeepLux {
 // 旋转中心补正未实现（台账 partial），坐标按参数单位直接作差。
 class DEEPLUX_PLUGIN_API CalculateOffsetPlugin : public ModuleBase {
     Q_OBJECT
-    Q_PLUGIN_METADATA(IID "com.deeplux.IModule" FILE "metadata.json")
+    Q_PLUGIN_METADATA(IID DEEPLUX_MODULE_INTERFACE_IID FILE "metadata.json")
     Q_INTERFACES(DeepLux::IModule)
 
 public:

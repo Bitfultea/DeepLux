@@ -1,6 +1,6 @@
 # DeepLux 插件手册
 
-本手册覆盖 `src/plugins` 中全部 69 个带 `metadata.json` 的运行时插件。参数名称和可编辑范围以各插件的元数据为准；本文补充其在流程中的接入位置、实际使用步骤和结果检查方式。
+本手册覆盖 `src/plugins` 中全部 69 份插件 `metadata.json`，包括平台替代项和可选插件；默认单个平台构建为 66 个插件，构建开关会改变产物数量。参数名称和可编辑范围以各插件的元数据为准；本文补充其在流程中的接入位置、实际使用步骤和结果检查方式。
 
 > 运行前先执行 `cmake --build build --target sync-plugins`。相机、PLC、串口和 3D 模块还受操作系统、硬件、SDK、网络和现场权限影响，配置前应确认相应资源可用。
 
@@ -20,15 +20,47 @@ flowchart LR
 - “单步”适合定位输入、参数或连接问题；“循环”适合已稳定的在线流程，不应把它作为逐步调参手段。
 - 需要文件、相机、网络或变量的插件，在保存工程前可能允许暂不填写，但运行时会明确报错。
 
+## 控制流层级、流程树拖动与结构编辑来源
+
+> 本节说明 B1–B5 引入的执行顺序布局规则，适用于「逻辑控制」分类下的 If / Loop / While / Parallel 等插件及其下游模块。
+
+### 控制流层级与画布视觉
+
+- `IModule::flowControlType()` 声明 `Sequential` / `Conditional` / `Loop` / `While` / `Parallel` 等层级；`FlowGraphAnalyzer` 用它与 `inputPorts()` / `outputPorts()` 构造 `FlowGraphCatalog`。所有调用方（RunEngine、UI 协调器、Agent、拖动候选校验）共用同一契约，不在调用方重复推断 `next`/`control` 隐式边或 `PortSpec.control`。
+- 计划中的 `rank` 是前向依赖层级，`lane` 是同层分支的分组：If 的 `true`/`false` 分支同 rank、不同 lane；Loop/While 的 `body` 分支 rank 大于循环节点；嵌套控制的子分支 rank 递增。
+- 画布上 `branchLabel`（`true` / `false` / `body` / `done` / `branch`）绘制为节点上方徽标；`FlowOrderPlan::loopBackEdges` 命中的连线使用虚线 + 箭头 + `LOOP` 标记。徽标只扩大绘制包围盒，节点 `shape()` 恒为原始矩形，**命中测试、选择与碰撞不受影响**。
+- 流程树按 `displayOrder` 展示、画布按 `rank`/`lane` 排列、引擎按 `dataOrder` 运行；三者来自同一份 `FlowOrderPlan` 但语义不同，控制流的展示顺序不等于动态执行轨迹。
+
+### 流程树拖动与重连规则
+
+| 工程形态 | 拖动结果 |
+| --- | --- |
+| 无连接顺序列表 | 允许任意重排，只调整模块顺序，不创建连接 |
+| 已连接简单线性链（全部为数据边、端口模式唯一、入/出度 ≤ 1、单连通分量、无环） | 按新顺序以同一端口模式重连 |
+| 控制分支 / 汇合 / 多端口模式 / 成环 | 拒绝并复位；工程数据、`isModified()`、结构信号与撤销栈均不变 |
+
+- 提交路径：`FlowGraphAnalyzer::validateCandidate` 只读校验 → `ReorderLinearChainCommand` 保存 before/after 指纹与位置 → `QUndoStack::push()` 触发的**首次 `redo()`** 是唯一一次 `applyStructureTransaction`；一次拖动只产生一条有效撤销记录。
+- 失败或指纹不匹配时命令只 `setObsolete(true)`，不修改工程；连续两次重排可两次 Undo/Redo。
+- 仅交换两条连接的**声明顺序**也会改变 `structureFingerprint`（SHA-1 含声明下标，不排序连接），因此能检出外部静默改动。
+
+### Agent 结构编辑的 origin 语义
+
+- `Project::structureChanged(origin)` 的 `origin` 取 `Gui` / `Agent` / `System`。Agent 通过 `add_module` / `connect_modules` / `disconnect_modules` 等工具编辑工程时以 `StructureEditOrigin::Agent` 发信号；GUI 拖动以 `Gui` 发信号。
+- Gui 与 Agent 的撤销栈对**非自身来源**的结构变更做对称失效：按 `sessionToken` + `structureFingerprint` 判定，失效命令 `setObsolete(true)`；交错 Undo/Redo 不覆盖对方后续编辑。
+- Agent 不计算坐标、不直接改画布或流程树；布局由 `FlowLayoutCoordinator` 通过 `Project` 结构信号合并后完成。`get_flow_state` 只读追加 `executionRank` / `lane` / `displayIndex`，既有字段与 `connections[from,to]` 保持不变。
+- 无法解析的 `moduleId` 记入结构化 `errors`/`warnings` 并跳过，不猜测控制类型、不伪造 rank。
+
+详见 [架构说明](architecture.md) 与 [执行顺序布局验收报告](reports/execution-order-layout-acceptance.md)。
+
 ## 执行亲和性（execution.affinity）与审计状态
 
 `metadata.json` 的 `execution` 字段声明执行属性，后台执行服务与 UI 都按它分流：
 
 - `affinity`：`gui`（默认）或 `worker`。`gui` 模块在 GUI 线程执行，后台工作者通过 `BlockingQueuedConnection` 回投；`worker` 模块直接在后台服务工作线程内联执行。未审计插件一律保持 `gui`。
-- `threadSafe` / `blocking`：保留的并行资格条件（`worker` 亲和 + `threadSafe` + 非 `blocking` 才可进入并行批次）。
-- 审计规则（design §6.3 + B9/t21 复盘）：① `process()` 及直接调用链不得创建/启动 QTimer、QEventLoop、QTcpSocket、QSerialPort、QProcess；② 不触碰 QWidget/QPixmap/QPainter/OpenGL/视口/相机 SDK；③ 不调用 `QCoreApplication::processEvents()`；④ 不依赖 CameraManager/相机线程亲和性；⑤ 无未加锁的全局可变状态；⑥ 两个实例在 worker 线程执行与 GUI 线程输出一致。补充：`process()` 不得创建 QObject（如 `VarModel`）或把它移交/删除到 GUI 线程；审计必须扫描 `GlobalVarManager/VarModel/PluginManager/RunEngine` 等单例/全局状态，不能只看文件级 static 变量（该规则目前以 `tests/test_workerpluginconsistency.cpp` 注释沉淀，不是自动检查）。
+- `threadSafe` / `blocking`：保留的并行资格条件（`worker` 亲和 + `threadSafe` + 非 `blocking` + 无断点才可进入并行池；其他模块按序串行执行，GUI 亲和模块仍在 GUI 线程运行）。
+- 审计规则（design §6.4 + B9/t21 复盘）：① `process()` 及可达调用链不得创建/启动 QTimer、QEventLoop、QTcpSocket、QSerialPort、QProcess；② 不触碰 QWidget/QPixmap/QPainter/OpenGL/视口/相机 SDK；③ 不调用 `QCoreApplication::processEvents()`；④ 不依赖 CameraManager/相机线程亲和性；⑤ 无未加锁的全局可变状态；⑥ 两个实例在 worker 线程执行与 GUI 线程输出一致。补充：`process()` 不得创建 QObject（如 `VarModel`）或把它移交/删除到 GUI 线程；CI 的 `check_plugin_affinity.py` 对配置的 GUI/线程 API、单例写入及词法可识别的文件级可变状态执行静态检查。该检查不是完整 C++ 语义分析，模板/宏/复杂别名或间接别名仍须人工审计；静态通过不替代双线程行为测试。
 
-**已审计并标记 `execution.affinity=worker` 的插件（30 个，2026-11-01）**
+**已完成 worker 并发一致性审计并具备并行资格的插件（30 个，2026-11-01）**
 
 | 分类 | 插件 |
 | --- | --- |
@@ -41,12 +73,14 @@ flowchart LR
 
 **保持 `gui` 的插件与限制**
 
-- plan B9 明确排除：GrabImage、DisplayData、ShowImage、ImageScript（事件循环/脚本状态）；Delay、Parallel、QueueIn、QueueOut、TableOutPut（共享状态/线程池/表格 UI）。
+- plan B9 明确排除并行池：Delay（同步等待，`threadSafe=false`，仍可在 worker 线程执行）、Parallel、QueueIn、QueueOut、TableOutPut（共享状态/线程池/表格 UI）。
+- 保持 `gui`：GrabImage、DisplayData、ShowImage、ImageScript（事件循环/脚本状态）。
+- Delay 保留 `affinity=worker`，但 `threadSafe=false`，因此可在后台执行、不会进入并行池；上表只统计已完成并行一致性审计的插件，不含 Delay。
 - 按设计保持 `gui`：MeasurementInput、ShowPoint、SamPredict、全部相机/PLC/串口/TCP 插件（设备与通讯的 QObject/线程亲和性）。
 - 一致性冒烟未通过（需真实数据/工程参数）：SaveImage、3DPreProcessing、ColorRecognition、QRCode、MeasureCircle、MeasureGap、FitPlane、PointSurfaceDistance、N点标定、GapMeasure3D、FreeformSurface、SplitString、VarDefinePlugin、VarSetPlugin、Condition。
 - `DefectDetection`：本构建 `ENABLE_HYMSON3D=OFF`，插件未构建，无法执行一致性冒烟，保持 `gui`。
 - **StrFormatPlugin**（t21 复核移出 worker）：`process()` 在 worker 线程写全局 `GlobalVarManager` 并 `new VarModel`（QObject），GUI 侧 `GlobalVarView` 会读写并 `delete` 这些 QObject，且 `count()/isEmpty()` 为无锁读者——属 UI 绑定未拆分，保持 `gui`，与 QueueIn/QueueOut 按共享状态延后同类。
-- **Matching** 为 design §6.3（审计与标记，第二处 6.3 编号）的补审项（plan B9 候选清单未列），经一致性冒烟通过后标记 `worker`。
+- **Matching** 为 design §6.4 的补审项（plan B9 候选清单未列），经一致性冒烟通过后标记 `worker`。
 
 复跑一致性冒烟：
 
@@ -432,7 +466,7 @@ ctest --test-dir build -R test_workerpluginconsistency --output-on-failure
 ### `并行执行` - 多分支并行控制
 
 - **用途**：从 `branch` 控制端口启动多个独立分支；多个分支连接回下一个并行节点的 `control` 端口时按 `all` 策略汇合。
-- **使用**：设置最大并发数并连接至少两个分支。只有元数据声明 `execution.threadSafe=true` 的模块会并发执行，其余模块自动串行。
+- **使用**：设置最大并发数并连接至少两个分支。只有 `worker` 亲和、声明 `execution.threadSafe=true`、非阻塞且无断点的模块会并发执行，其余模块由引擎按序串行执行。
 - **关键配置**：最大并发数。元数据：[metadata.json](../src/plugins/logic/Parallel/metadata.json)。
 - **检查**：分别验证并行分支耗时、汇合后执行顺序，以及禁用节点、断点和失败取消行为。
 
@@ -579,6 +613,6 @@ ctest --test-dir build -R test_workerpluginconsistency --output-on-failure
 
 ## 文档维护
 
-- 本文按当前 `metadata.json` 覆盖 69 个插件。新增插件时必须同步增加本手册条目，并描述其上游数据、关键参数、结果和失败条件。
+- 本文按当前 `metadata.json` 覆盖 69 个插件定义；其中平台替代项或未启用的可选项不会全部出现在单次构建中。新增插件时必须同步增加本手册条目，并描述其上游数据、关键参数、结果和失败条件。
 - 修改参数名称、范围、结果键或平台依赖时，应同时更新本手册与对应元数据，避免检查器与文档出现两套说法。
 - 用户级流程示例见 [快速上手](quick-start.md)，运行时边界见 [架构说明](architecture.md)。

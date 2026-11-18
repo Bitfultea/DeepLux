@@ -6,7 +6,7 @@
     "author": "DeepLux Team",
     "description": "延时指定时间",
     "execution": {
-        "threadSafe": true,
+        "threadSafe": false,
         "affinity": "worker"
     },
     "ui": {

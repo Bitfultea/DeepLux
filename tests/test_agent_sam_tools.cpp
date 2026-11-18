@@ -3533,7 +3533,7 @@ private slots:
         delay.id = QStringLiteral("slice116_future_delay");
         delay.moduleId = QStringLiteral("延时");
         delay.name = QStringLiteral("Slice 116 future-source guard");
-        delay.params = QJsonObject{{QStringLiteral("delayMs"), 0}};
+        delay.params = QJsonObject{{QStringLiteral("delayMs"), 1}};
         grab.breakpoint = false;
         predict.breakpoint = false;
         project->addModule(delay);

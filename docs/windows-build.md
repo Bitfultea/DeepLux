@@ -3,6 +3,8 @@
 本文记录 DeepLux 在 Windows（MSVC）上的构建、插件同步和可分发部署流程。Linux 流程见
 [README](../README.md) 与 `scripts/deploy-linux.sh`。
 
+> **历史验证快照**：本页现存 Windows 实测数字来自 commit `d381129c`（2026-10-25，MSVC / Qt 6.8.3）。其中 77/77 是当时的 CTest 数量，不是当前测试基线；部署插件数也会随平台、SDK 和 CMake 选项变化。当前验收请以最新 Windows CI 运行记录为准。
+
 ## 1. 依赖
 
 | 依赖 | 说明 |
@@ -57,7 +59,7 @@ cmake --build build-win --config Release --parallel
 ```
 
 产物位于 `build-win\bin`：`DeepLux.exe`、`deeplux_core.dll`、各 `*Plugin.dll`
-（默认 66 个；启用 `ENABLE_HYMSON3D=ON` 后为 67 个）。插件与主程序必须来自同一次构建，
+（标准配置通常为 66 个；实际数量由平台和启用的可选插件决定）。仓库 69 份 metadata 还包括平台替代项和未启用插件，不等于单次构建数。插件与主程序必须来自同一次构建，
 接口 ABI 版本不匹配会被 `PluginManager` 拒绝加载。
 
 ## 3. 开发期插件同步
@@ -117,8 +119,7 @@ cmake --build build-win --target deploy-windows
    收集 Release 版 OpenCV DLL 并复制到 `<Prefix>\bin`（跳过 `opencv_*d.dll` 调试库）；
 4. 在干净 `PATH` 下运行 `DeepLux.exe --cli list-plugins` 冒烟测试，插件数不足即失败。
 
-成功输出包含 `plugins: 66` 与 `[SMOKE] exit=0 loaded=65`。`-Prefix` 目录会被删除后重建，
-请指向专用输出目录。
+部署脚本从本次安装 manifest 计算预期模块数，要求 CLI 退出码为 0、加载数与预期模块数一致，且缺失、失败或重复身份清单为空。相机插件属于插件包计数，但不列入 CLI 模块清单；因此历史输出示例 `plugins: 66`、`loaded=65` 的差 1 是相机插件，不是漏加载。不要把这组历史数字当作所有配置的固定期望值。`-Prefix` 目录会被删除后重建，请指向专用输出目录。
 
 Windows CI（`.github/workflows/ci.yml` 的 `windows-msvc` job）在编译后同样执行
 `sync-plugins` 与 `deploy-windows`，覆盖安装树、运行时依赖和插件加载回归。
@@ -154,6 +155,7 @@ ctest --test-dir build-win-tests --output-on-failure --timeout 300
 
 本次在 Windows 上 77/77 通过。测试串口/相机依赖硬件时按用例内的跳过逻辑处理；
 `ui_capture_mainwindow` 使用 offscreen 平台生成并自校验界面截图。
+该结果属于上方标注的 2026-10-25 历史快照；后续新增测试后须以当前 CI 运行的注册数和结果重新验收。
 
 ## 6. Windows 平台实现说明
 
@@ -165,8 +167,7 @@ ctest --test-dir build-win-tests --output-on-failure --timeout 300
   Linux（`ENABLE_CAMERA_HIKVISION=ON` + SDK）下构建，Windows 上打开该选项会给出明确提示，
   Windows MVS SDK 目录结构整合待补。
 * **原生 SAM**：Windows 上已验证 `ONNXRUNTIME_DIR` 配置、`onnxruntime.lib` 链接、
-  `onnxruntime.dll` 安装与程序启动；真实模型推理精度/性能尚未验收
-  （见 `docs/sam_native/stage5_packaging.md`）。
+  `onnxruntime.dll` 安装与程序启动；Windows 下真实模型推理精度/性能尚未验收。Linux 本机 CPU/CUDA 结果不代表 Windows 运行结果（见 `docs/sam_native/stage5_packaging.md`）。
 * **多配置生成器**：Visual Studio / Ninja Multi-Config 的产物位于 `bin/<Config>`，
   `sync-plugins` 递归查找，`deploy-windows` 会自动探测配置目录并使用
   `cmake --install --config <Config>`。

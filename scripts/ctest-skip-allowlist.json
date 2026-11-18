@@ -1,0 +1,62 @@
+{
+  "TestAgentVisualPluginsG8::testAgentLoadsDecodesAndDisplaysRealImageOutput": {
+    "reason_contains": [
+      "OpenCV package does not install cvconfig.h; QUIRC capability cannot be verified",
+      "OpenCV was built without QUIRC QR decoding support"
+    ],
+    "why": "The test requires OpenCV QUIRC support; when present, failure to decode its fixture is a test failure."
+  },
+  "TestRunEngine::testWorkerExecutionLogIncludesThreadId": {
+    "reason_contains": [
+      "Worker execution thread IDs are emitted only in debug builds"
+    ],
+    "why": "The worker thread ID diagnostic is compiled only in debug builds."
+  },
+  "TestMainWindow::testQuickAnnotateNativeRealImageShowsMask": {
+    "reason_contains": [
+      "原生 SAM 未启用",
+      "设置 DEEPLUX_TEST_REAL_SAM_IMAGE 后运行真实图 GUI 验收"
+    ],
+    "why": "Real-model GUI acceptance requires a separately provisioned model package and image."
+  },
+  "TestPluginManager::testNonCameraUserPluginFallsBackToBundledCamera": {
+    "reason_contains": [
+      "V4L2 camera plugin is available only on Linux"
+    ],
+    "why": "The V4L2 camera fixture is Linux-only."
+  },
+  "TestPluginManager::testAvailabilityDetectsMacOSPluginBinary": {
+    "reason_contains": [
+      "macOS binary discovery is only meaningful on macOS"
+    ],
+    "why": "The plugin availability probe targets macOS-specific binary formats."
+  },
+  "TestSamOnnxInference::cudaProvider": {
+    "reason_contains": ["设置 DEEPLUX_TEST_CUDA=1 后，在 CUDA 版 ONNX Runtime 构建中运行"],
+    "why": "CUDA provider validation requires a CUDA ONNX Runtime package and GPU runner."
+  },
+  "TestSamOnnxInference::cudaExecutionProfile": {
+    "reason_contains": ["设置 DEEPLUX_TEST_CUDA=1 后，在 CUDA 版运行时上运行"],
+    "why": "CUDA execution profiling requires a CUDA ONNX Runtime package and GPU runner."
+  },
+  "TestSamOnnxInference::cudaRealImageParity": {
+    "reason_contains": ["设置 DEEPLUX_TEST_CUDA_REAL=1 和 DEEPLUX_TEST_REAL_SAM_IMAGES 后运行真实图对照"],
+    "why": "Real-image parity requires separately provisioned industrial images and a CUDA runner."
+  },
+  "TestSamOnnxInference::cudaDualSessionShutdown": {
+    "reason_contains": ["设置 DEEPLUX_TEST_CUDA=1 后运行双会话生命周期回归"],
+    "why": "CUDA session lifecycle validation requires a CUDA ONNX Runtime package and GPU runner."
+  },
+  "TestSamOnnxInference::cudaSynthetic3000Benchmark": {
+    "reason_contains": ["设置 DEEPLUX_TEST_CUDA_BENCH=1 后，在 CUDA 版运行时上运行"],
+    "why": "The large-image CUDA benchmark requires a CUDA ONNX Runtime package and GPU runner."
+  },
+  "TestSamOnnxInference::cudaProduct3000Benchmark": {
+    "reason_contains": ["设置 DEEPLUX_TEST_CUDA_BENCH=1 后，在 CUDA 版运行时上运行"],
+    "why": "The production-image CUDA benchmark requires a CUDA ONNX Runtime package and GPU runner."
+  },
+  "TestSamOnnxInference::cudaConversionProfile": {
+    "reason_contains": ["设置 DEEPLUX_TEST_CUDA_BENCH=1 后，在 CUDA 版运行时上运行"],
+    "why": "CUDA conversion profiling requires a CUDA ONNX Runtime package and GPU runner."
+  }
+}

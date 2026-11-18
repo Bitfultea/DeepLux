@@ -2815,7 +2815,7 @@ private slots:
                 terminalSession = actor->executeTool(QStringLiteral("get_run_results"),
                                                      QJsonObject{{QStringLiteral("runId"), startedSessionId}});
             },
-            Qt::DirectConnection);
+            Qt::QueuedConnection);
         QVERIFY(controller.confirmPendingTools(controller.pendingConfirmationId()));
         QTRY_COMPARE_WITH_TIMEOUT(cycleStopped.count(), 1, 10000);
         QVERIFY(!startedSessionId.isEmpty());
@@ -2825,7 +2825,7 @@ private slots:
         QCOMPARE(countModuleSignal(moduleStarted, instanceId), 3);
         QCOMPARE(cycleStopped.count(), 1);
 
-        QVERIFY(!terminalSession.isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(!terminalSession.isEmpty(), 5000);
         QCOMPARE(terminalSession.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
         QCOMPARE(terminalSession.value(QStringLiteral("maxCycles")).toInt(), 3);
         QCOMPARE(terminalSession.value(QStringLiteral("completedCycles")).toInt(), 3);
@@ -2960,7 +2960,7 @@ private slots:
                 terminalSession = actor->executeTool(QStringLiteral("get_run_results"),
                                                      QJsonObject{{QStringLiteral("runId"), sessionId}});
             },
-            Qt::DirectConnection);
+            Qt::QueuedConnection);
         QVERIFY(controller.confirmPendingTools(approvedId));
         QTRY_COMPARE_WITH_TIMEOUT(cycleStopped.count(), 1, 10000);
         QVERIFY(!sessionId.isEmpty());
@@ -2978,7 +2978,7 @@ private slots:
         }
         QCOMPARE(fileBytes(), expectedBytes);
         QCOMPARE(QFileInfo(outputPath).size(), expectedBytes.size());
-        QVERIFY(!terminalSession.isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(!terminalSession.isEmpty(), 5000);
         QCOMPARE(terminalSession.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
         QCOMPARE(terminalSession.value(QStringLiteral("isBusy")).toBool(), false);
         QCOMPARE(terminalSession.value(QStringLiteral("maxCycles")).toInt(), 3);
@@ -3172,7 +3172,7 @@ private slots:
                     terminalSession =
                         actor->executeTool(QStringLiteral("get_run_results"), {{QStringLiteral("runId"), sessionId}});
                 },
-                Qt::DirectConnection);
+                Qt::QueuedConnection);
             QVERIFY(controller.confirmPendingTools(approvedId));
             QTRY_COMPARE_WITH_TIMEOUT(cycleStopped.count(), 1, 10000);
             QVERIFY(!sessionId.isEmpty());
@@ -3190,7 +3190,7 @@ private slots:
                 QVERIFY2(result.success, qPrintable(result.errorMessage));
             }
 
-            QVERIFY(!terminalSession.isEmpty());
+            QTRY_VERIFY_WITH_TIMEOUT(!terminalSession.isEmpty(), 5000);
             QCOMPARE(terminalSession.value(QStringLiteral("status")).toString(), QStringLiteral("completed"));
             QCOMPARE(terminalSession.value(QStringLiteral("isBusy")).toBool(), false);
             QCOMPARE(terminalSession.value(QStringLiteral("maxCycles")).toInt(), 3);
@@ -3775,13 +3775,19 @@ private slots:
         QString firstTickSessionId;
         QString firstTickSwapError;
         QObject firstTickSignalContext;
-        const QMetaObject::Connection firstTickSwapConnection = QObject::connect(
+        const QMetaObject::Connection firstTickSessionConnection = QObject::connect(
             actor, &AgentActor::toolExecuted, &firstTickSignalContext,
             [&](const QString& toolName, const QJsonObject& result) {
-                if (toolName != QLatin1String("run_flow") ||
-                    result.value(QStringLiteral("status")).toString() != QLatin1String("started"))
+                if (toolName == QLatin1String("run_flow") &&
+                    result.value(QStringLiteral("status")).toString() == QLatin1String("started"))
+                    firstTickSessionId = result.value(QStringLiteral("sessionId")).toString();
+            },
+            Qt::DirectConnection);
+        const QMetaObject::Connection firstTickSwapConnection = QObject::connect(
+            &engine, &RunEngine::moduleStarted, &firstTickSignalContext,
+            [&](const QString& moduleId) {
+                if (moduleId != firstTickId)
                     return;
-                firstTickSessionId = result.value(QStringLiteral("sessionId")).toString();
                 const QByteArray replacementName = QFile::encodeName(replacementAlias);
                 const QByteArray currentName = QFile::encodeName(alias);
                 if (std::rename(replacementName.constData(), currentName.constData()) != 0)
@@ -3797,9 +3803,18 @@ private slots:
         QVERIFY(controller.confirmPendingTools(firstTickConfirmation));
         QTRY_COMPARE_WITH_TIMEOUT(firstTickCycleStopped.count(), 1, 10000);
         QObject::disconnect(firstTickSwapConnection);
+        QObject::disconnect(firstTickSessionConnection);
         QVERIFY(!firstTickSessionId.isEmpty());
         QVERIFY2(firstTickSwapError.isEmpty(), qPrintable(firstTickSwapError));
         QCOMPARE(QFileInfo(alias).symLinkTarget(), QFileInfo(rootB).canonicalFilePath());
+        if (firstTickRunFinished.count() > 1) {
+            qWarning() << "bounded-cycle unexpected runFinished count:" << firstTickRunFinished.count();
+            for (const QList<QVariant>& arguments : firstTickRunFinished) {
+                const RunResult result = qvariant_cast<RunResult>(arguments.at(0));
+                qWarning() << "bounded-cycle runFinished:" << result.runId << result.success << result.errorCode
+                           << result.failedModule << result.errorMessage;
+            }
+        }
         QTRY_COMPARE_WITH_TIMEOUT(firstTickRunFinished.count(), 1, 5000);
         QCOMPARE(firstTickStarted.count(), 1);
         QCOMPARE(firstTickFinished.count(), 1);

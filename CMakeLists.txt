@@ -64,9 +64,11 @@ if(USE_QT6)
 endif()
 
 if(NOT Qt6_FOUND)
-    message(STATUS "Qt6 not found, trying Qt5...")
     find_package(Qt5 REQUIRED COMPONENTS ${QT_CORE_COMPONENTS})
     set(QT_VERSION_MAJOR 5)
+    if(USE_QT6)
+        message(WARNING "Qt6 was requested but not found; using Qt5 ${Qt5_VERSION} from ${Qt5_DIR}.")
+    endif()
 else()
     set(QT_VERSION_MAJOR 6)
 endif()
@@ -90,17 +92,20 @@ if(QT_VERSION_MAJOR EQUAL 5 AND OPENSSL_FOUND)
     endif()
 endif()
 
-# 运行期 SSL 可用性检查（编译小测试程序验证）
-if(QT_VERSION_MAJOR EQUAL 5)
-    set(_qt_network_lib Qt5::Network)
+# 运行期 SSL 可用性检查（编译小测试程序验证）；交叉编译不能执行目标程序。
+if(CMAKE_CROSSCOMPILING)
+    message(STATUS "Skipping Qt SSL runtime probe while cross-compiling; verify SSL support on the target system.")
 else()
-    set(_qt_network_lib Qt6::Network)
-endif()
+    if(QT_VERSION_MAJOR EQUAL 5)
+        set(_qt_network_lib Qt5::Network)
+    else()
+        set(_qt_network_lib Qt6::Network)
+    endif()
 
-set(CMAKE_REQUIRED_INCLUDES ${Qt${QT_VERSION_MAJOR}Network_INCLUDE_DIRS})
-set(CMAKE_REQUIRED_LIBRARIES ${_qt_network_lib})
-include(CheckCXXSourceRuns)
-check_cxx_source_runs("
+    set(CMAKE_REQUIRED_INCLUDES ${Qt${QT_VERSION_MAJOR}Network_INCLUDE_DIRS})
+    set(CMAKE_REQUIRED_LIBRARIES ${_qt_network_lib})
+    include(CheckCXXSourceRuns)
+    check_cxx_source_runs("
 #include <QSslSocket>
 #include <QCoreApplication>
 int main(int argc, char** argv) {
@@ -109,14 +114,15 @@ int main(int argc, char** argv) {
 }
 " QT_SSL_WORKS)
 
-if(NOT QT_SSL_WORKS)
-    message(WARNING
-        "Qt SSL backend is not available at runtime.\n"
-        "HTTPS requests (Agent Chat, etc.) will fail with 'SSL handshake failed'.\n"
-        "Common causes:\n"
-        "  - Qt was built against a different OpenSSL version than the one installed\n"
-        "  - LD_LIBRARY_PATH points to an incompatible Qt installation\n"
-        "  - Missing libssl/libcrypto development packages\n")
+    if(NOT QT_SSL_WORKS)
+        message(WARNING
+            "Qt SSL backend is not available at runtime.\n"
+            "HTTPS requests (Agent Chat, etc.) will fail with 'SSL handshake failed'.\n"
+            "Common causes:\n"
+            "  - Qt was built against a different OpenSSL version than the one installed\n"
+            "  - LD_LIBRARY_PATH points to an incompatible Qt installation\n"
+            "  - Missing libssl/libcrypto development packages\n")
+    endif()
 endif()
 
 # ========== 查找 OpenCV ==========
@@ -143,8 +149,11 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 # Platform and OpenCV defines are set on deeplux_core target (see src/core/CMakeLists.txt)
 
 # ========== 测试开关 ==========
-# 必须在 src/core 之前声明：core 在测试构建中需要导出测试可见性宏。
+# Must be consistent across all translation units that include exported class headers.
 option(BUILD_TESTS "Build unit tests" ON)
+if(BUILD_TESTS)
+    add_compile_definitions(DEEPLUX_BUILD_TESTS)
+endif()
 
 # ========== 子目录 ==========
 add_subdirectory(src/core)
@@ -190,6 +199,8 @@ remove_definitions(-DDEEPLUX_PLUGIN_EXPORTS)
 # ========== 插件 target 清单（供测试注入跨平台路径）==========
 # tests/CMakeLists.txt 需要每个插件 target 的 $<TARGET_FILE:...> 与 metadata.json，
 # 用于在 Windows/Linux/macOS 以及多配置生成器下安装真实插件到临时目录。
+set(DEEPLUX_PLUGIN_ABI_EXPORTS_SOURCE "${CMAKE_SOURCE_DIR}/src/core/interface/PluginAbiExports.cpp")
+
 function(deeplux_collect_plugin_targets directory)
     get_property(plugin_targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
     foreach(plugin_target IN LISTS plugin_targets)
@@ -201,8 +212,10 @@ function(deeplux_collect_plugin_targets directory)
             continue()
         endif()
         if(EXISTS "${directory}/metadata.json")
+            target_sources(${plugin_target} PRIVATE "${DEEPLUX_PLUGIN_ABI_EXPORTS_SOURCE}")
             set_property(GLOBAL APPEND PROPERTY DEEPLUX_PLUGIN_TARGET_ENTRIES
                 "${plugin_target}|${directory}/metadata.json")
+            set_property(GLOBAL APPEND PROPERTY DEEPLUX_PLUGIN_ABI_TARGETS "${plugin_target}")
         endif()
     endforeach()
     get_property(plugin_subdirs DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
@@ -218,19 +231,26 @@ foreach(plugin_domain IN LISTS plugin_domains)
     endif()
 endforeach()
 
+get_property(_deeplux_plugin_abi_targets GLOBAL PROPERTY DEEPLUX_PLUGIN_ABI_TARGETS)
+foreach(_plugin_target IN LISTS _deeplux_plugin_abi_targets)
+    get_target_property(_plugin_sources ${_plugin_target} SOURCES)
+    list(FIND _plugin_sources "${DEEPLUX_PLUGIN_ABI_EXPORTS_SOURCE}" _abi_source_index)
+    if(_abi_source_index EQUAL -1)
+        message(FATAL_ERROR "Plugin ${_plugin_target} has metadata but no plugin-owned ABI export source")
+    endif()
+endforeach()
+
 # ========== SAM server runtime files ==========
 set(DEEPLUX_SAM_SERVER_SOURCE_DIR ${CMAKE_SOURCE_DIR}/tools/sam_server)
 set(DEEPLUX_SAM_SERVER_BUILD_DIR ${CMAKE_BINARY_DIR}/tools/sam_server)
 
-add_custom_target(stage-sam-server ALL
+add_custom_target(stage-sam-server
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${DEEPLUX_SAM_SERVER_SOURCE_DIR}
             ${DEEPLUX_SAM_SERVER_BUILD_DIR}
     COMMENT "Staging SAM server runtime files"
     VERBATIM
 )
-add_dependencies(DeepLux stage-sam-server)
-
 # ========== SAM 性能基线工具（原生推理计划·阶段0）==========
 add_subdirectory(tools/sam_bench)
 
@@ -341,6 +361,75 @@ list(SORT packaged_plugin_dirs)
 string(REPLACE ";" "\n" packaged_plugin_manifest "${packaged_plugin_dirs}")
 file(WRITE "${CMAKE_BINARY_DIR}/plugins.manifest" "${packaged_plugin_manifest}\n")
 install(FILES "${CMAKE_BINARY_DIR}/plugins.manifest"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/deeplux")
+
+# ========== 插件事实文件（plugin-facts.json）==========
+# 单一事实源：源码 metadata 数、打包插件数、分域计数、接口版本、构建开关。
+# 文档（README/plugins.md）只引用该文件，不再手写易漂移的数字。
+file(GLOB_RECURSE _deeplux_plugin_files "${CMAKE_SOURCE_DIR}/src/plugins/*")
+set(_deeplux_metadata_files "")
+foreach(_f IN LISTS _deeplux_plugin_files)
+    if(_f MATCHES "/metadata\\.json$")
+        list(APPEND _deeplux_metadata_files "${_f}")
+    endif()
+endforeach()
+list(LENGTH _deeplux_metadata_files _deeplux_source_metadata_count)
+list(LENGTH packaged_plugin_dirs _deeplux_packaged_count)
+
+# 接口版本：从 IModule.h 的 constexpr 提取，避免与 C++ 定义漂移。
+set(_deeplux_abi_interface_version "0")
+file(STRINGS "${CMAKE_SOURCE_DIR}/src/core/interface/PluginAbi.h" _imod_ver_line
+    REGEX "^#define DEEPLUX_MODULE_INTERFACE_VERSION [0-9]+$")
+if(_imod_ver_line)
+    string(REGEX MATCH "[0-9]+$" _deeplux_abi_interface_version "${_imod_ver_line}")
+endif()
+
+# 分域计数
+set(_deeplux_domain_names "")
+foreach(_meta IN LISTS _deeplux_metadata_files)
+    string(REGEX REPLACE "^${CMAKE_SOURCE_DIR}/src/plugins/([^/]+)/.*$" "\\1" _domain "${_meta}")
+    list(APPEND _deeplux_domain_names "${_domain}")
+endforeach()
+list(SORT _deeplux_domain_names)
+list(REMOVE_DUPLICATES _deeplux_domain_names)
+set(_deeplux_domain_json "")
+foreach(_d IN LISTS _deeplux_domain_names)
+    set(_cnt 0)
+    foreach(_meta IN LISTS _deeplux_metadata_files)
+        string(REGEX REPLACE "^${CMAKE_SOURCE_DIR}/src/plugins/([^/]+)/.*$" "\\1" _dom "${_meta}")
+        if(_dom STREQUAL _d)
+            math(EXPR _cnt "${_cnt}+1")
+        endif()
+    endforeach()
+    if(NOT _deeplux_domain_json STREQUAL "")
+        string(APPEND _deeplux_domain_json ",\n")
+    endif()
+    string(APPEND _deeplux_domain_json "    \"${_d}\": ${_cnt}")
+endforeach()
+
+# 构建开关归一化为 ON/OFF
+foreach(_sw IN ITEMS DEEPLUX_NATIVE_SAM ENABLE_HYMSON3D BUILD_TESTS)
+    if(${_sw})
+        set(${_sw}_str "ON")
+    else()
+        set(${_sw}_str "OFF")
+    endif()
+endforeach()
+
+set(_deeplux_facts "{\n")
+string(APPEND _deeplux_facts "  \"generated_by\": \"cmake-plugin-facts\",\n")
+string(APPEND _deeplux_facts "  \"source_metadata_count\": ${_deeplux_source_metadata_count},\n")
+string(APPEND _deeplux_facts "  \"packaged_plugin_count\": ${_deeplux_packaged_count},\n")
+string(APPEND _deeplux_facts "  \"abi_interface_version\": ${_deeplux_abi_interface_version},\n")
+string(APPEND _deeplux_facts "  \"build_type\": \"${CMAKE_BUILD_TYPE}\",\n")
+string(APPEND _deeplux_facts "  \"switches\": {\n")
+string(APPEND _deeplux_facts "    \"native_sam\": \"${DEEPLUX_NATIVE_SAM_str}\",\n")
+string(APPEND _deeplux_facts "    \"hymson3d\": \"${ENABLE_HYMSON3D_str}\",\n")
+string(APPEND _deeplux_facts "    \"build_tests\": \"${BUILD_TESTS_str}\"\n")
+string(APPEND _deeplux_facts "  },\n")
+string(APPEND _deeplux_facts "  \"domains\": {\n${_deeplux_domain_json}\n  }\n}\n")
+file(WRITE "${CMAKE_BINARY_DIR}/plugin-facts.json" "${_deeplux_facts}")
+install(FILES "${CMAKE_BINARY_DIR}/plugin-facts.json"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/deeplux")
 
 # Windows 安装树自带 OpenCV 运行库；Qt 运行库由 scripts/deploy-windows.ps1

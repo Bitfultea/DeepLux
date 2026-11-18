@@ -117,6 +117,7 @@ inline constexpr int Processing = 1004;             // 算法/运行期错误
 inline constexpr int Cancelled = 1005;              // 被取消
 inline constexpr int SideEffectUncertain = 1006;    // 外部副作用结果无法确认
 inline constexpr int ConfirmedTargetChanged = 1007; // 已批准的文件目标在操作前发生变化
+inline constexpr int DuplicateModuleInBatch = 1008; // 并行批次包含重复模块实例
 } // namespace ExecError
 
 inline constexpr char AgentFolderDeleteAuthorizationProperty[] = "_deeplux.agent.folderDeleteAuthorization";

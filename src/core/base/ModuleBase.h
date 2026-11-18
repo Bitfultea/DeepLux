@@ -83,6 +83,13 @@ public:
     void setCancellationToken(CancellationToken* token);
     CancellationToken* cancellationToken() const;
 
+    /// T2.8（2026-11-10 评审裁定）：把指定 token 从所有模块的借用表中摘除。
+    ///
+    /// 由 CancellationToken 析构调用，作为「token 先于模块销毁」的兜底清理。
+    /// token 表是 .cpp 私有静态状态，故由 ModuleBase 提供这个静态出口；
+    /// 不改变 ModuleBase 的对象布局与 ABI。
+    static void detachCancellationToken(CancellationToken* token);
+
     // 端口声明（由 PluginManager 从 metadata.json 注入）
     QList<PortSpec> inputPorts() const override {
         return m_inputPorts;

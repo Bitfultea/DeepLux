@@ -81,6 +81,8 @@ private slots:
         auto* filter = dlg.findChild<QLineEdit*>("KnowledgeFilterEdit");
         auto* preview = dlg.findChild<QPlainTextEdit*>("KnowledgePreview");
         QVERIFY(list && filter && preview);
+        // This test covers filtering, not Qt's animated clear-button implementation.
+        filter->setClearButtonEnabled(false);
 
         const int all = list->count();
         filter->setText(QStringLiteral("FilterTarget"));

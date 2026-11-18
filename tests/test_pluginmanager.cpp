@@ -5,11 +5,13 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLibrary>
 #include <QSemaphore>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QtTest/QtTest>
+#include <atomic>
 #include <core/base/ModuleBase.h>
 #include <core/device/CameraManager.h>
 #include <core/interface/IModule.h>
@@ -70,15 +72,92 @@ private slots:
     void testExecutionMetadataValidation();
     void testBlockingMetadataParsedAndInjected();
     void testAvailabilityItemUsesMetadataSnapshotAndLoadedPriority();
+    void testAvailabilityDetectsMacOSPluginBinary();
     void testCameraAvailabilityPlatformCompatibility();
     void testExecutionAffinityDefaultsToGui();
     void testExecutionAffinityParsesWorker();
     void testExecutionAffinityUnknownFallsBackToGui();
     void testBrokenUserPluginFallsBackToBundle();
     void testNonCameraUserPluginFallsBackToBundledCamera();
+    void testRejectsPluginWithWrongAbiExportBeforeInstance();
+    void testRejectsPluginWithWrongAbiFingerprintBeforeInstance();
+    void testRejectsLegacyPluginWithoutAbiExport();
+    void testRejectsAbiExportsOwnedByDependency();
+    void testValidAbiPreflightLoadsNativeInitializerOnce();
+    void testConcurrentLoadsAreSerializedOnManagerThread();
+    void testUnloadRejectsForeignThread();
+    void testWorkerLoadHonorsTimeoutWhenManagerThreadIsNotPumping();
+    void testWorkerLoadReportsResultAfterStartedLoadExceedsDispatchTimeout();
 
 private:
 };
+
+namespace {
+
+class ScopedEnvironmentVariable {
+public:
+    ScopedEnvironmentVariable(const QByteArray& name, const QByteArray& value)
+        : m_name(name), m_previous(qgetenv(name.constData())), m_wasSet(qEnvironmentVariableIsSet(name.constData())) {
+        qputenv(m_name.constData(), value);
+    }
+
+    ~ScopedEnvironmentVariable() {
+        if (m_wasSet) {
+            qputenv(m_name.constData(), m_previous);
+        } else {
+            qunsetenv(m_name.constData());
+        }
+    }
+
+private:
+    QByteArray m_name;
+    QByteArray m_previous;
+    bool m_wasSet;
+};
+
+QString installAbiFixture(QTemporaryDir& root, const QString& name, const QString& sourceLibrary) {
+    const QString pluginDir = root.filePath(name);
+    if (!QDir().mkpath(pluginDir)) {
+        return {};
+    }
+
+    QFile metadata(QDir(pluginDir).filePath(QStringLiteral("metadata.json")));
+    if (!metadata.open(QIODevice::WriteOnly)) {
+        return {};
+    }
+    QJsonObject json;
+    json.insert(QStringLiteral("id"), QStringLiteral("com.deeplux.test.") + name.toLower());
+    json.insert(QStringLiteral("name"), name);
+    json.insert(QStringLiteral("version"), QStringLiteral("1.0.0"));
+    json.insert(QStringLiteral("category"), QStringLiteral("test"));
+    json.insert(QStringLiteral("ports"),
+                QJsonObject{{QStringLiteral("inputs"), QJsonArray{}}, {QStringLiteral("outputs"), QJsonArray{}}});
+    const QByteArray metadataBytes = QJsonDocument(json).toJson(QJsonDocument::Compact);
+    if (metadata.write(metadataBytes) != metadataBytes.size()) {
+        return {};
+    }
+    metadata.close();
+
+    const QString installedLibrary = QDir(pluginDir).filePath(QFileInfo(sourceLibrary).fileName());
+    if (!QFile::copy(sourceLibrary, installedLibrary)) {
+        return {};
+    }
+    return installedLibrary;
+}
+
+QString loadFailure(PluginManager& manager, const QString& name) {
+    QSignalSpy failed(&manager, &PluginManager::pluginLoadFailed);
+    if (manager.loadPlugin(name)) {
+        manager.unloadPlugin(name);
+        return QStringLiteral("unexpectedly loaded");
+    }
+    if (failed.size() != 1) {
+        return QStringLiteral("pluginLoadFailed signal count: %1").arg(failed.size());
+    }
+    return failed.first().at(1).toString();
+}
+
+} // namespace
 
 void TestPluginManager::initTestCase() {
     qDebug() << "=== TestPluginManager Start ===";
@@ -494,6 +573,25 @@ void TestPluginManager::testBlockingMetadataParsedAndInjected() {
     // （该测试通过 installAllPlugins 可靠加载真实插件）
 }
 
+void TestPluginManager::testAvailabilityDetectsMacOSPluginBinary() {
+#ifdef Q_OS_DARWIN
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QFile library(root.filePath(QStringLiteral("libFixture.dylib")));
+    QVERIFY(library.open(QIODevice::WriteOnly));
+    library.close();
+
+    PluginInfo info;
+    info.name = QStringLiteral("Fixture");
+    info.path = root.filePath(QStringLiteral("metadata.json"));
+    const QJsonObject item = PluginManager::availabilityItem(info, false);
+    QCOMPARE(item.value(QStringLiteral("availability")).toString(), QStringLiteral("loadable"));
+    QVERIFY(!item.value(QStringLiteral("reasons")).toArray().contains(QStringLiteral("PLUGIN_BINARY_MISSING")));
+#else
+    QSKIP("macOS binary discovery is only meaningful on macOS");
+#endif
+}
+
 void TestPluginManager::testAvailabilityItemUsesMetadataSnapshotAndLoadedPriority() {
     QTemporaryDir root;
     QVERIFY(root.isValid());
@@ -752,6 +850,228 @@ void TestPluginManager::testNonCameraUserPluginFallsBackToBundledCamera() {
     QVERIFY(manager.availableCameras().contains("PackagingCameraFallback"));
     manager.unloadPlugin("PackagingCameraFallback");
 #endif
+}
+
+void TestPluginManager::testRejectsPluginWithWrongAbiExportBeforeInstance() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString installed =
+        installAbiFixture(root, QStringLiteral("AbiWrongVersion"), QStringLiteral(TEST_ABI_WRONG_VERSION_PLUGIN));
+    QVERIFY(!installed.isEmpty());
+    const QString marker = root.filePath(QStringLiteral("instance-marker"));
+    ScopedEnvironmentVariable markerEnv("DEEPLUX_ABI_FIXTURE_INSTANCE_MARKER", marker.toLocal8Bit());
+
+    PluginManager& manager = PluginManager::instance();
+    manager.shutdown();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+    const QString error = loadFailure(manager, QStringLiteral("AbiWrongVersion"));
+    QVERIFY2(error.contains(QStringLiteral("abi_version_mismatch")), qPrintable(error));
+    QVERIFY2(error.contains(installed), qPrintable(error));
+    QVERIFY2(!QFile::exists(marker), "ABI rejection must precede plugin instance construction");
+}
+
+void TestPluginManager::testRejectsLegacyPluginWithoutAbiExport() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString installed =
+        installAbiFixture(root, QStringLiteral("AbiLegacy"), QStringLiteral(TEST_ABI_LEGACY_PLUGIN));
+    QVERIFY(!installed.isEmpty());
+    const QString marker = root.filePath(QStringLiteral("instance-marker"));
+    ScopedEnvironmentVariable markerEnv("DEEPLUX_ABI_FIXTURE_INSTANCE_MARKER", marker.toLocal8Bit());
+
+    PluginManager& manager = PluginManager::instance();
+    manager.shutdown();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+    const QString error = loadFailure(manager, QStringLiteral("AbiLegacy"));
+    QVERIFY2(error.contains(QStringLiteral("missing_abi_export")), qPrintable(error));
+    QVERIFY2(error.contains(installed), qPrintable(error));
+    QVERIFY2(!QFile::exists(marker), "ABI rejection must precede plugin instance construction");
+}
+
+void TestPluginManager::testRejectsPluginWithWrongAbiFingerprintBeforeInstance() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString installed = installAbiFixture(root, QStringLiteral("AbiWrongFingerprint"),
+                                                QStringLiteral(TEST_ABI_WRONG_FINGERPRINT_PLUGIN));
+    QVERIFY(!installed.isEmpty());
+    const QString marker = root.filePath(QStringLiteral("instance-marker"));
+    ScopedEnvironmentVariable markerEnv("DEEPLUX_ABI_FIXTURE_INSTANCE_MARKER", marker.toLocal8Bit());
+
+    PluginManager& manager = PluginManager::instance();
+    manager.shutdown();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+    const QString error = loadFailure(manager, QStringLiteral("AbiWrongFingerprint"));
+    QVERIFY2(error.contains(QStringLiteral("abi_fingerprint_mismatch")), qPrintable(error));
+    QVERIFY2(error.contains(installed), qPrintable(error));
+    QVERIFY2(!QFile::exists(marker), "ABI rejection must precede plugin instance construction");
+}
+
+void TestPluginManager::testRejectsAbiExportsOwnedByDependency() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QLibrary dependency(QStringLiteral(TEST_ABI_DEPENDENCY_LIB));
+    QVERIFY2(dependency.load(), qPrintable(dependency.errorString()));
+    const QString installed =
+        installAbiFixture(root, QStringLiteral("AbiDependency"), QStringLiteral(TEST_ABI_DEPENDENCY_PLUGIN));
+    QVERIFY(!installed.isEmpty());
+    QLibrary plugin(installed);
+    QVERIFY2(plugin.load(), qPrintable(plugin.errorString()));
+    QVERIFY(plugin.resolve("deeplux_plugin_abi_version"));
+    QVERIFY(plugin.resolve("deeplux_plugin_abi_fingerprint"));
+    QVERIFY(plugin.unload());
+    const QString marker = root.filePath(QStringLiteral("instance-marker"));
+    ScopedEnvironmentVariable markerEnv("DEEPLUX_ABI_FIXTURE_INSTANCE_MARKER", marker.toLocal8Bit());
+
+    PluginManager& manager = PluginManager::instance();
+    manager.shutdown();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+    const QString error = loadFailure(manager, QStringLiteral("AbiDependency"));
+    QVERIFY2(error.contains(QStringLiteral("abi_symbol_not_owned")), qPrintable(error));
+    QVERIFY2(error.contains(installed), qPrintable(error));
+    QVERIFY2(!QFile::exists(marker), "ABI rejection must precede plugin instance construction");
+}
+
+void TestPluginManager::testValidAbiPreflightLoadsNativeInitializerOnce() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString installed =
+        installAbiFixture(root, QStringLiteral("AbiValid"), QStringLiteral(TEST_ABI_VALID_PLUGIN));
+    QVERIFY(!installed.isEmpty());
+    const QString marker = root.filePath(QStringLiteral("native-load-marker"));
+    ScopedEnvironmentVariable markerEnv("DEEPLUX_ABI_FIXTURE_NATIVE_LOAD_MARKER", marker.toLocal8Bit());
+
+    PluginManager& manager = PluginManager::instance();
+    manager.shutdown();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+    QVERIFY2(manager.loadPlugin(QStringLiteral("AbiValid")), "valid ABI fixture should load");
+
+    QFile markerFile(marker);
+    QVERIFY(markerFile.open(QIODevice::ReadOnly));
+    QCOMPARE(markerFile.readAll(), QByteArray("load\n"));
+    manager.unloadPlugin(QStringLiteral("AbiValid"));
+}
+
+void TestPluginManager::testConcurrentLoadsAreSerializedOnManagerThread() {
+    constexpr int kCallers = 8;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString installed =
+        installAbiFixture(root, QStringLiteral("AbiValid"), QStringLiteral(TEST_ABI_VALID_PLUGIN));
+    QVERIFY(!installed.isEmpty());
+    const QString marker = root.filePath(QStringLiteral("native-load-marker"));
+    ScopedEnvironmentVariable markerEnv("DEEPLUX_ABI_FIXTURE_NATIVE_LOAD_MARKER", marker.toLocal8Bit());
+
+    PluginManager& manager = PluginManager::instance();
+    manager.shutdown();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+
+    QSemaphore start;
+    QVector<int> results(kCallers, 0);
+    std::atomic_int completed{0};
+    QVector<QThread*> threads;
+    for (int i = 0; i < kCallers; ++i) {
+        QThread* worker = QThread::create([&, i] {
+            start.acquire();
+            results[i] = manager.loadPlugin(QStringLiteral("AbiValid"));
+            completed.fetch_add(1, std::memory_order_release);
+        });
+        QVERIFY(worker);
+        threads.append(worker);
+        worker->start();
+    }
+    start.release(kCallers);
+    QTRY_COMPARE_WITH_TIMEOUT(completed.load(std::memory_order_acquire), kCallers, 5000);
+    for (QThread* worker : threads) {
+        QVERIFY(worker->wait(5000));
+        delete worker;
+    }
+    for (int result : results)
+        QVERIFY(result);
+    QVERIFY(manager.isPluginLoaded(QStringLiteral("AbiValid")));
+
+    QFile markerFile(marker);
+    QVERIFY(markerFile.open(QIODevice::ReadOnly));
+    QCOMPARE(markerFile.readAll(), QByteArray("load\n"));
+    QVERIFY(manager.tryUnloadPlugin(QStringLiteral("AbiValid")));
+}
+
+void TestPluginManager::testUnloadRejectsForeignThread() {
+    PluginManager& manager = PluginManager::instance();
+    const QString pluginName = QStringLiteral("GrabImage");
+    if (!manager.isPluginLoaded(pluginName))
+        QVERIFY(manager.loadPlugin(pluginName));
+
+    bool unloaded = true;
+    QString error;
+    QThread* worker = QThread::create([&] { unloaded = manager.tryUnloadPlugin(pluginName, &error); });
+    QVERIFY(worker);
+    worker->start();
+    QVERIFY(worker->wait(5000));
+    delete worker;
+
+    QVERIFY(!unloaded);
+    QCOMPARE(error, QStringLiteral("PLUGIN_THREAD_AFFINITY"));
+    QVERIFY(manager.isPluginLoaded(pluginName));
+    QVERIFY(manager.tryUnloadPlugin(pluginName));
+}
+
+void TestPluginManager::testWorkerLoadHonorsTimeoutWhenManagerThreadIsNotPumping() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QVERIFY(!installAbiFixture(root, QStringLiteral("AbiValid"), QStringLiteral(TEST_ABI_VALID_PLUGIN)).isEmpty());
+
+    PluginManager& manager = PluginManager::instance();
+    manager.shutdown();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+    QVERIFY(!manager.isPluginLoaded(QStringLiteral("AbiValid")));
+
+    bool loaded = true;
+    QThread* worker = QThread::create([&] { loaded = manager.loadPlugin(QStringLiteral("AbiValid"), 25); });
+    QVERIFY(worker);
+    worker->start();
+    QVERIFY(worker->wait(1000));
+    delete worker;
+    QVERIFY(!loaded);
+
+    QCoreApplication::processEvents();
+    QVERIFY(!manager.isPluginLoaded(QStringLiteral("AbiValid")));
+}
+
+void TestPluginManager::testWorkerLoadReportsResultAfterStartedLoadExceedsDispatchTimeout() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QVERIFY(!installAbiFixture(root, QStringLiteral("AbiSlow"), QStringLiteral(TEST_ABI_VALID_PLUGIN)).isEmpty());
+    const QString marker = root.filePath(QStringLiteral("native-load-marker"));
+    ScopedEnvironmentVariable markerEnv("DEEPLUX_ABI_FIXTURE_NATIVE_LOAD_MARKER", marker.toLocal8Bit());
+    ScopedEnvironmentVariable delayEnv("DEEPLUX_ABI_FIXTURE_NATIVE_LOAD_DELAY_MS", QByteArrayLiteral("1200"));
+
+    PluginManager& manager = PluginManager::instance();
+    manager.shutdown();
+    manager.addPluginPath(root.path());
+    manager.scanPlugins();
+
+    bool loaded = false;
+    QSemaphore callerReady;
+    QThread* worker = QThread::create([&] {
+        callerReady.release();
+        loaded = manager.loadPlugin(QStringLiteral("AbiSlow"), 1000);
+    });
+    QVERIFY(worker);
+    worker->start();
+    QVERIFY(callerReady.tryAcquire(1, 1000));
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(marker), 3000);
+    QVERIFY(worker->wait(5000));
+    delete worker;
+    QVERIFY(loaded);
+    QVERIFY(manager.isPluginLoaded(QStringLiteral("AbiSlow")));
+    QVERIFY(manager.tryUnloadPlugin(QStringLiteral("AbiSlow")));
 }
 
 QTEST_MAIN(TestPluginManager)

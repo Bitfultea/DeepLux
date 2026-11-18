@@ -1,3 +1,4 @@
+#include <core/engine/EngineTestSupport.h>
 #define DEEPLUX_BUILD_TESTS 1
 #include "core/base/ModuleBase.h"
 #include "core/engine/RunEngine.h"
@@ -45,8 +46,8 @@ class TestRunEngineJobLease : public QObject {
 private slots:
     void init() {
         RunEngine::instance().stop();
-        RunEngine::instance().clearBeforeJobStartHookForTest();
-        RunEngine::instance().clearExecutionFaultInjectionForTest();
+        RunEngineTestAccess(RunEngine::instance()).clearBeforeJobStartHookForTest();
+        RunEngineTestAccess(RunEngine::instance()).clearExecutionFaultInjectionForTest();
         RunEngine::instance().clearModules();
     }
 
@@ -66,7 +67,7 @@ private slots:
         QVERIFY(RunEngine::instance().stepOnceForJob(token, &reason));
         QCOMPARE(probe.calls.load(), 2);
         QVERIFY(RunEngine::instance().endExternalJob(token));
-        QVERIFY(!RunEngine::instance().isExternalJobActiveForTest());
+        QVERIFY(!RunEngineTestAccess(RunEngine::instance()).isExternalJobActiveForTest());
     }
 
     // B3.1 Step 1（计划用例）：非所有者入口在租约期间一律拒绝。
@@ -96,7 +97,7 @@ private slots:
         RunEngine::JobToken token;
         QVERIFY(RunEngine::instance().beginExternalJob(&token, nullptr));
         QVERIFY2(RunEngine::instance().isBusy(), "external job lease must keep the engine busy");
-        QVERIFY(RunEngine::instance().isExternalJobActiveForTest());
+        QVERIFY(RunEngineTestAccess(RunEngine::instance()).isExternalJobActiveForTest());
 
         LeaseProbeModule extra;
         QVERIFY(extra.initialize());
@@ -163,7 +164,7 @@ private slots:
 
         // 屏障：钩子同步调 stop() 并释放信号量；信号量只用于证明窗口被执行，超时仅防挂死。
         QSemaphore reached;
-        engine.setBeforeJobStartHookForTest([&]() {
+        RunEngineTestAccess(engine).setBeforeJobStartHookForTest([&]() {
             reached.release();
             RunEngine::instance().stop();
         });
@@ -175,7 +176,7 @@ private slots:
         QCOMPARE(probe.calls.load(), 0);
         QCOMPARE(engine.state(), RunState::Stopped);
 
-        engine.clearBeforeJobStartHookForTest();
+        RunEngineTestAccess(engine).clearBeforeJobStartHookForTest();
         QVERIFY(engine.endExternalJob(token));
 
         // 新 job 不被旧 job 的取消标志阻塞。
@@ -196,7 +197,7 @@ private slots:
 
         // 屏障 1：信号量只证明钩子在启动临界区内被执行；断言依赖同锁复核的结果。
         QSemaphore runWindowReached;
-        engine.setBeforeJobStartHookForTest([&]() {
+        RunEngineTestAccess(engine).setBeforeJobStartHookForTest([&]() {
             runWindowReached.release();
             RunEngine::instance().stop();
         });
@@ -211,14 +212,14 @@ private slots:
         QCOMPARE(probe.calls.load(), 0);
         QCOMPARE(engine.state(), RunState::Stopped);
 
-        engine.clearBeforeJobStartHookForTest();
+        RunEngineTestAccess(engine).clearBeforeJobStartHookForTest();
         QVERIFY(engine.endExternalJob(token));
 
         // 单步所有者入口同样覆盖该窗口。
         RunEngine::JobToken stepToken;
         QVERIFY(engine.beginExternalJob(&stepToken, nullptr));
         QSemaphore stepWindowReached;
-        engine.setBeforeJobStartHookForTest([&]() {
+        RunEngineTestAccess(engine).setBeforeJobStartHookForTest([&]() {
             stepWindowReached.release();
             RunEngine::instance().stop();
         });
@@ -230,7 +231,7 @@ private slots:
         QCOMPARE(probe.calls.load(), 0);
         QCOMPARE(engine.state(), RunState::Stopped);
 
-        engine.clearBeforeJobStartHookForTest();
+        RunEngineTestAccess(engine).clearBeforeJobStartHookForTest();
         QVERIFY(engine.endExternalJob(stepToken));
     }
 };

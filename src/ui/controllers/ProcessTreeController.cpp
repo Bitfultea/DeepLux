@@ -10,8 +10,11 @@
 #include "core/model/Project.h"
 
 #include <QAction>
+#include <QHash>
 #include <QLabel>
 #include <QMenu>
+#include <QScrollBar>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 
 namespace DeepLux {
@@ -101,6 +104,88 @@ void ProcessTreeController::addModule(const ModuleInstance& inst) {
 
     m_instanceItemMap.insert(inst.id, newItem);
     markModulesNeedSync();
+}
+
+void ProcessTreeController::applyExecutionOrder(const QStringList& displayOrder) {
+    if (!m_tree) {
+        return;
+    }
+
+    // 重排期间屏蔽树信号：避免 takeTopLevelItem/insertTopLevelItem 产生
+    // currentItemChanged(nullptr) 之类的瞬态通知干扰检查器与运行结果显示。
+    const QSignalBlocker blocker(m_tree);
+
+    QTreeWidgetItem* savedCurrent = m_tree->currentItem();
+    const QList<QTreeWidgetItem*> savedSelection = m_tree->selectedItems();
+    const int savedScroll = m_tree->verticalScrollBar() ? m_tree->verticalScrollBar()->value() : 0;
+    QHash<QTreeWidgetItem*, bool> savedExpanded;
+    for (int i = 0; i < m_tree->topLevelItemCount(); ++i) {
+        QTreeWidgetItem* item = m_tree->topLevelItem(i);
+        savedExpanded.insert(item, item->isExpanded());
+    }
+
+    // 先取出全部顶层项，避免插入时索引漂移；指针在整个过程中保持有效。
+    QList<QTreeWidgetItem*> items;
+    items.reserve(m_tree->topLevelItemCount());
+    while (m_tree->topLevelItemCount() > 0) {
+        items.append(m_tree->takeTopLevelItem(0));
+    }
+
+    QHash<QString, QTreeWidgetItem*> byId;
+    for (QTreeWidgetItem* item : items) {
+        const QString id = item->data(0, Qt::UserRole + 1).toString();
+        if (!id.isEmpty() && !byId.contains(id)) {
+            byId.insert(id, item);
+        }
+    }
+
+    QList<QTreeWidgetItem*> orderedItems;
+    QSet<QString> placed;
+    orderedItems.reserve(items.size());
+    for (const QString& id : displayOrder) {
+        QTreeWidgetItem* item = byId.value(id, nullptr);
+        if (!item || placed.contains(id)) {
+            continue; // 计划中的未知 id 或重复 id 不产生节点
+        }
+        orderedItems.append(item);
+        placed.insert(id);
+    }
+    // 防御：不在计划中的节点追加末尾，保证不丢节点。
+    for (QTreeWidgetItem* item : items) {
+        const QString id = item->data(0, Qt::UserRole + 1).toString();
+        if (!id.isEmpty() && placed.contains(id)) {
+            continue;
+        }
+        orderedItems.append(item);
+        if (!id.isEmpty()) {
+            placed.insert(id);
+        }
+    }
+
+    for (int index = 0; index < orderedItems.size(); ++index) {
+        QTreeWidgetItem* item = orderedItems.at(index);
+        m_tree->insertTopLevelItem(index, item);
+        item->setData(0, Qt::UserRole + 6, index);
+        item->setExpanded(savedExpanded.value(item, false));
+    }
+
+    // 恢复选中/当前项/滚动位置（信号仍被屏蔽，最终状态与重排前一致）。
+    if (savedCurrent && orderedItems.contains(savedCurrent)) {
+        m_tree->setCurrentItem(savedCurrent);
+    } else {
+        m_tree->setCurrentItem(nullptr);
+    }
+    m_tree->clearSelection();
+    for (QTreeWidgetItem* item : savedSelection) {
+        if (item && orderedItems.contains(item)) {
+            item->setSelected(true);
+        }
+    }
+    if (m_tree->verticalScrollBar()) {
+        m_tree->verticalScrollBar()->setValue(savedScroll);
+    }
+
+    // m_instanceItemMap 以实例 ID 为键，与行顺序无关，无需重建。
 }
 
 void ProcessTreeController::removeModule(const QString& instanceId) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/engine/FlowGraphAnalyzer.h"
 #include "core/manager/PluginManager.h"
 #include "deeplux/DataContract.h"
 
@@ -9,8 +10,11 @@
 #include <QMap>
 #include <QMutex>
 #include <QObject>
+#include <QPainterPath>
 #include <QPoint>
 #include <QPointF>
+#include <QPointer>
+#include <QSet>
 #include <QWidget>
 
 namespace DeepLux {
@@ -30,6 +34,11 @@ class FlowCanvas : public QGraphicsView {
     Q_OBJECT
 
 public:
+    enum class LayoutMode {
+        Full,      // 重新计算 X（lane）与 Y（rank）
+        Normalize, // 仅按 rank 对齐 Y，保留有效 X
+    };
+
     explicit FlowCanvas(QWidget* parent = nullptr);
     ~FlowCanvas() override;
 
@@ -39,6 +48,19 @@ public:
     void removeNode(const QString& nodeId);
     void clearNodes();
     void loadFromProject(Project* project);
+    // 绑定/解绑写回目标工程；不存在全局回退。
+    void setProject(Project* project);
+    Project* attachedProject() const {
+        return m_project.data();
+    }
+
+    // 按执行计划布局（只移动现有节点，不重建、不改变选择）
+    void applyExecutionLayout(const FlowOrderPlan& plan, LayoutMode mode);
+    /// B5.1：把计划里的控制流元数据（branchLabel / loopBackEdges）投射到画布项。
+    /// 只改变绘制状态，不新建/删除节点或连线，也不改变命中区域。
+    void applyControlFlowVisuals(const FlowOrderPlan& plan);
+    // 节点拖动结束后的写回入口（FlowNodeItem 调用）
+    void notifyNodePositionChanged(const QString& nodeId, const QPointF& pos);
 
     // 连接操作（字符串端口 ID）
     void addConnection(const QString& fromNodeId, const QString& fromPortId, const QString& toNodeId,
@@ -68,6 +90,7 @@ signals:
     void connectionCreated(const QString& fromId, const QString& toId);
     void connectionRemoved(const QString& fromId, const QString& toId);
     void connectionRequest(const QString& fromId, const QString& fromPort, const QString& toId, const QString& toPort);
+    void nodePositionChanged(const QString& nodeId, const QPointF& pos);
     void nodeMoveStarted(const QString& nodeId, const QPointF& visualPosition);
     void nodeMoveFinished(const QString& nodeId, const QPointF& startVisualPosition, const QPointF& finalVisualPosition,
                           bool crossedDragThreshold, bool canceled);
@@ -80,11 +103,19 @@ protected:
     void drawBackground(QPainter* painter, const QRectF& rect) override;
 
 private:
+    friend class FlowNodeItem;
     void removeConnectionsForNode(const QString& nodeId);
+    bool hasMoveFinishedHandler() const;
+
+public:
+    /// 连接键规则（B5.1 提升为 public static）：与 FlowGraphAnalyzer / RunEngine
+    /// 生成 FlowOrderPlan::loopBackEdges 的规范键完全一致
+    /// —— from + 0x1F + to + 0x1F + fromPort + 0x1F + toPort。
+    /// 画布去重与循环回边判定共用这唯一一条规则，禁止另造第二套。
+    static QString connectionKey(const ModuleConnection& connection);
     static QString connectionKey(const QString& fromId, const QString& fromPort, const QString& toId,
                                  const QString& toPort);
 
-public:
     void updateConnectionsForNode(const QString& nodeId);
     void applyTheme(bool isDark);
     void showDragLine(const QPointF& start, const QPointF& end);
@@ -98,7 +129,10 @@ public:
     int m_nodeCounter = 0;
     bool m_loadingProject = false;
     bool m_syncingFromProject = false;
+    QPointer<Project> m_project;             // loadFromProject 绑定的工程（可为空）
+    bool m_applyingLayout = false;           // 程序化布局期间抑制拖动写回
     QGraphicsPathItem* m_dragLine = nullptr; // P1-fix: 场景级临时拖线
+    QSet<QString> m_loopBackEdgeKeys;        // B5.1：当前计划的回边规范键，供新增连线复用
 };
 
 /**
@@ -175,7 +209,16 @@ public:
         return m_highlightCompatible;
     }
 
+    /// B5.1：控制分支标签（true/false/body/done/branch），由 FlowOrderNode::branchLabel 驱动。
+    void setBranchLabel(const QString& label);
+    QString branchLabel() const {
+        return m_branchLabel;
+    }
+
     QRectF boundingRect() const override;
+    /// B5.1：命中区域固定为「节点 + 端口标签」的原始矩形，分支徽标画在其上方，
+    /// 不得因为徽标扩大 boundingRect 而改变鼠标命中/选择行为。
+    QPainterPath shape() const override;
     void paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget = nullptr) override;
 
 protected:
@@ -201,12 +244,14 @@ private:
 
     QString m_status;
     QString m_timeText;
+    QString m_branchLabel; // B5.1：控制分支标签（空 = 主链/普通数据节点）
     bool m_disabledVisual = false;
     bool m_breakpointVisual = false;
     bool m_highlightCompatible = false;
 
     // 拖线状态
     bool m_draggingConnection = false;
+    bool m_movedDuringDrag = false;
     bool m_moveGestureCandidate = false;
     bool m_moveGestureCanceled = false;
     bool m_moveGestureCrossedThreshold = false;
@@ -243,6 +288,14 @@ public:
         return m_edgeType == QLatin1String("control");
     }
 
+    /// B5.1：循环回边（FlowOrderPlan::loopBackEdges）使用虚线 + 箭头 + 循环标记。
+    void setLoopBackEdge(bool loopBack);
+    bool isLoopBackEdge() const {
+        return m_loopBackEdge;
+    }
+    Qt::PenStyle strokeStyle() const;
+    static QString loopBackMarkerText();
+
     QRectF boundingRect() const override;
     void paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget = nullptr) override;
 
@@ -255,6 +308,7 @@ private:
     QString m_fromPortId;
     QString m_toPortId;
     QString m_edgeType;
+    bool m_loopBackEdge = false; // B5.1：由规范键命中 FlowOrderPlan::loopBackEdges
     QPainterPath m_path;
 };
 

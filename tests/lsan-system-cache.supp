@@ -1,0 +1,14 @@
+# Qt platform registries, process-lifetime plugin loaders/libraries/metadata, and Fontconfig
+# caches retained during QtTest shutdown. Other project allocation stacks remain unsuppressed.
+leak:QScreen::QScreen
+leak:QPlatformScreen::QPlatformScreen
+leak:QWindowSystemInterface::handleScreenAdded
+leak:QPluginLoader::QPluginLoader
+leak:QPluginLoader::setFileName
+leak:QLibrary::QLibrary
+leak:libqxcb-glx-integration.so
+# Mesa retains two tiny per-context allocations after the software GL draw path.
+leak:QOpenGLFunctions::glDrawArrays
+leak:FcPatternObjectCount
+leak:FcValueDestroy
+leak:FcValueSave

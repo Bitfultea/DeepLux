@@ -3,6 +3,7 @@
 set(UI_SOURCES
     ThemeManager.cpp
     controllers/ProcessTreeController.cpp
+    controllers/FlowLayoutCoordinator.cpp
     views/MainWindow.cpp
     views/SplashScreen.cpp
     viewmodels/MainViewModel.cpp
@@ -53,6 +54,7 @@ add_subdirectory(terminal)
 
 set(UI_HEADERS
     controllers/ProcessTreeController.h
+    controllers/FlowLayoutCoordinator.h
     views/MainWindow.h
     views/SplashScreen.h
     viewmodels/MainViewModel.h
