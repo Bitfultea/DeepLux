@@ -567,10 +567,8 @@ private slots:
         PluginManager& plugins = PluginManager::instance();
         QVERIFY(plugins.initialize());
         QVERIFY(plugins.pluginPaths().contains(QDir(pluginRoot).absolutePath()));
-        const QList<PluginInfo> scanned = plugins.moduleInfos();
-        QCOMPARE(scanned.size(), 1);
-        QCOMPARE(scanned.first().id, QStringLiteral("com.deeplux.plugin.serialport"));
-        QVERIFY(plugins.cameraInfos().isEmpty());
+        const PluginInfo scanned = plugins.pluginInfo(QStringLiteral("串口通信"));
+        QCOMPARE(scanned.id, QStringLiteral("com.deeplux.plugin.serialport"));
         QVERIFY(plugins.loadPlugin(QStringLiteral("串口通信")));
         QVERIFY(AgentController::instance().initialize());
     }

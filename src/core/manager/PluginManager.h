@@ -4,6 +4,7 @@
 #include "../platform/Platform.h"
 #include "core/deeplux/DataContract.h"
 
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QEvent>
 #include <QHash>
@@ -96,6 +97,7 @@ public:
     QList<PluginInfo> moduleInfos() const;
     QList<PluginInfo> cameraInfos() const;
     PluginInfo pluginInfo(const QString& name) const;
+    QString resolveModuleName(const QString& idOrName) const;
     static QJsonObject availabilityItem(const PluginInfo& info, bool loaded);
     static QString currentPlatformName();
     static QJsonObject cameraAvailabilityItem(const PluginInfo& info, bool loaded, const QString& currentPlatform);
@@ -164,6 +166,13 @@ private:
     QMap<QString, PluginInfo> m_modules;
     QMap<QString, PluginInfo> m_cameras;
     QMap<QString, PluginInfo> m_bundledPlugins;
+    struct DevelopmentPlugin {
+        QString library;
+        QByteArray sha256;
+    };
+    QMap<QString, DevelopmentPlugin> m_developmentPlugins;
+    bool m_developmentManifestPresent = false;
+    bool m_developmentManifestValid = false;
     QMap<QString, QObject*> m_loadedPlugins;
     QMap<QString, QPluginLoader*> m_pluginLoaders;
     QMap<QString, QLibrary*> m_pluginAbiLibraries;

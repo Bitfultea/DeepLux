@@ -62,22 +62,28 @@ cmake --build build-win --config Release --parallel
 （标准配置通常为 66 个；实际数量由平台和启用的可选插件决定）。仓库 69 份 metadata 还包括平台替代项和未启用插件，不等于单次构建数。插件与主程序必须来自同一次构建，
 接口 ABI 版本不匹配会被 `PluginManager` 拒绝加载。
 
-## 3. 开发期插件同步
+## 3. 开发期插件暂存与运行
 
 应用运行时从以下位置加载插件：
 
-1. `<exe>/../plugins`（随包插件目录）；
-2. `~/.deeplux/plugins`（用户插件目录，Windows 上同样是 `%USERPROFILE%\.deeplux\plugins`）。
+1. `<exe>/../plugins`（随包插件目录；开发构建带清单时，同名构建插件不可被覆盖）；
+2. `~/.deeplux/plugins`（用户插件目录，Windows 上同样是 `%USERPROFILE%\.deeplux\plugins`，用于未随包/本次构建的扩展）。
 
-开发期把新构建的插件同步到用户目录：
+构建应用会自动将本次构建的插件暂存到 `<exe>/../plugins`，不会修改用户插件目录。可以显式构建暂存目标：
 
 ```powershell
 cmake --build build-win --target sync-plugins
 ```
 
 `scripts/sync-plugins.ps1` 会递归扫描 `build-win\bin`（含多配置的 `bin\Release`）或
-`build-win\lib`，收集 `*Plugin.dll`，按 `metadata.json` 的目录名落到
-`~/.deeplux/plugins/<PluginName>/`，并清理残留的旧 DLL。
+`build-win\lib`，按 `metadata.json` 将 DLL 放入构建树插件目录，并生成相对路径的开发清单和
+SHA-256。运行时同名插件以清单指定的构建产物为准，文件摘要不符会拒绝加载；没有进入本次构建的用户扩展仍可从用户插件目录加载。
+
+开发运行可同时隔离配置、日志和项目数据：
+
+```powershell
+cmake --build build-win --target run-local --config Release
+```
 
 验证（Visual Studio 生成器把 `bin` 换成 `bin\Release`）：
 

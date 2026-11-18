@@ -148,8 +148,8 @@ void LoginDialog::onLoginClicked() {
     emit loginRequested(m_userName, m_passWord);
 
     // Perform login via UserManager
-    UserManager::instance().login(
-        m_userName, m_passWord, static_cast<UserType>(m_userTypeCombo->currentData().toInt()));
+    UserManager::instance().login(m_userName, m_passWord,
+                                  static_cast<UserType>(m_userTypeCombo->currentData().toInt()));
 
     Logger::instance().info(QString("User logged in: %1").arg(m_userName), "Auth");
     accept();

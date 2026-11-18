@@ -95,6 +95,7 @@ signals:
     void nodeMoveFinished(const QString& nodeId, const QPointF& startVisualPosition, const QPointF& finalVisualPosition,
                           bool crossedDragThreshold, bool canceled);
     void editRejected(const QString& reason);
+    void pluginDropRequested(const QString& pluginId, const QPointF& scenePosition);
 
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;

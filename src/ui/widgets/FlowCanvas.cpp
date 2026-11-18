@@ -1,5 +1,6 @@
 #include "FlowCanvas.h"
 
+#include "PluginDragPayload.h"
 #include "core/common/ModuleIconProvider.h"
 #include "core/engine/RunEngine.h"
 #include "core/manager/ProjectManager.h"
@@ -599,13 +600,17 @@ void FlowCanvas::hideDragLine() {
 }
 
 void FlowCanvas::dragEnterEvent(QDragEnterEvent* event) {
-    if (event->mimeData()->hasText()) {
+    if (!PluginDragPayload::pluginId(event->mimeData()).isEmpty())
         event->acceptProposedAction();
-    }
+    else
+        event->ignore();
 }
 
 void FlowCanvas::dragMoveEvent(QDragMoveEvent* event) {
-    event->accept();
+    if (!PluginDragPayload::pluginId(event->mimeData()).isEmpty())
+        event->acceptProposedAction();
+    else
+        event->ignore();
 }
 
 void FlowCanvas::dropEvent(QDropEvent* event) {
@@ -614,13 +619,13 @@ void FlowCanvas::dropEvent(QDropEvent* event) {
         event->ignore();
         return;
     }
-    QString moduleData = event->mimeData()->text();
-    QStringList parts = moduleData.split("|");
-    if (parts.size() >= 2) {
-        QPointF pos = mapToScene(event->pos());
-        addNode(parts[0], parts[1], pos);
+    const QString pluginId = PluginDragPayload::pluginId(event->mimeData());
+    if (!pluginId.isEmpty()) {
+        emit pluginDropRequested(pluginId, mapToScene(event->pos()));
+        event->acceptProposedAction();
+        return;
     }
-    event->acceptProposedAction();
+    event->ignore();
 }
 
 void FlowCanvas::drawBackground(QPainter* painter, const QRectF& rect) {

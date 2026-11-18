@@ -15,6 +15,7 @@
 #include <limits>
 #include <ui/controllers/FlowLayoutCoordinator.h>
 #include <ui/widgets/FlowCanvas.h>
+#include <ui/widgets/PluginDragPayload.h>
 
 using namespace DeepLux;
 
@@ -94,7 +95,8 @@ private slots:
     void testNodeDragWithoutAttachedProjectDoesNotWriteBack();
     void testLayoutInitializedRestoresSavedPositions();
     void testNodePositionQuantizationIsFiniteAndInt32Safe();
-    void testTextDropRejectsBusyAndAddsNodeAfterStop();
+    void testPluginDropRejectsBusyAndRequestsInsertionAfterStop();
+    void testStablePluginDropRequestsInsertion();
 };
 
 void TestFlowCanvas::init() {
@@ -133,12 +135,13 @@ void TestFlowCanvas::testAddNodeAndConnectionSyncsToCurrentProject() {
     QCOMPARE(project->connections().size(), 0);
 }
 
-void TestFlowCanvas::testTextDropRejectsBusyAndAddsNodeAfterStop() {
+void TestFlowCanvas::testPluginDropRejectsBusyAndRequestsInsertionAfterStop() {
     TestableFlowCanvas canvas;
     canvas.show();
     Project* project = ProjectManager::instance().currentProject();
     QVERIFY(project);
     QSignalSpy rejectedSpy(&canvas, &FlowCanvas::editRejected);
+    QSignalSpy dropSpy(&canvas, &FlowCanvas::pluginDropRequested);
 
     QSemaphore entered;
     QSemaphore release;
@@ -160,7 +163,8 @@ void TestFlowCanvas::testTextDropRejectsBusyAndAddsNodeAfterStop() {
     QVERIFY(engine.isBusy());
 
     QMimeData mime;
-    mime.setText(QStringLiteral("test.module|Test Module"));
+    const QString pluginId = QStringLiteral("com.deeplux.plugin.test");
+    PluginDragPayload::setPluginId(&mime, pluginId);
     QDropEvent busyDrop(QPointF(80, 80), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier);
     canvas.dropEvent(&busyDrop);
     QVERIFY(!busyDrop.isAccepted());
@@ -176,8 +180,30 @@ void TestFlowCanvas::testTextDropRejectsBusyAndAddsNodeAfterStop() {
     QDropEvent idleDrop(QPointF(80, 80), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier);
     canvas.dropEvent(&idleDrop);
     QVERIFY(idleDrop.isAccepted());
-    QCOMPARE(canvas.nodeIds().size(), 1);
-    QCOMPARE(project->modules().size(), 1);
+    QCOMPARE(dropSpy.count(), 1);
+    QCOMPARE(dropSpy.first().at(0).toString(), pluginId);
+    QVERIFY(canvas.nodeIds().isEmpty());
+    QVERIFY(project->modules().isEmpty());
+}
+
+void TestFlowCanvas::testStablePluginDropRequestsInsertion() {
+    const QString pluginId = QStringLiteral("com.deeplux.plugin.test");
+    TestableFlowCanvas canvas;
+    QSignalSpy dropSpy(&canvas, &FlowCanvas::pluginDropRequested);
+    QMimeData mime;
+    PluginDragPayload::setPluginId(&mime, pluginId);
+    QDropEvent drop(QPointF(80, 90), Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier);
+    canvas.dropEvent(&drop);
+
+    QVERIFY(drop.isAccepted());
+    QCOMPARE(dropSpy.count(), 1);
+    QCOMPARE(dropSpy.first().at(0).toString(), pluginId);
+    const QPointF scenePosition = dropSpy.first().at(1).toPointF();
+    const QPointF expectedPosition = canvas.mapToScene(QPoint(80, 90));
+    QVERIFY(qAbs(scenePosition.x() - expectedPosition.x()) < 1.0);
+    QVERIFY(qAbs(scenePosition.y() - expectedPosition.y()) < 1.0);
+    QVERIFY(canvas.nodeIds().isEmpty());
+    QVERIFY(ProjectManager::instance().currentProject()->modules().isEmpty());
 }
 
 void TestFlowCanvas::testConnectionHasPaintableBoundsAfterAdd() {

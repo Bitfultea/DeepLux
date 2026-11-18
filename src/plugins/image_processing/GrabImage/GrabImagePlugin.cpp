@@ -3,7 +3,9 @@
 #include "core/common/ConfigWidgetHelper.h"
 #include "core/common/Logger.h"
 #include "core/device/CameraManager.h"
+#include "core/geometry/MeasurementData.h"
 #include "core/interface/ICamera.h"
+#include "core/io/TiffLoader.h"
 
 #include <QAction>
 #include <QCheckBox>
@@ -412,6 +414,20 @@ bool GrabImagePlugin::grabFromFolder(ImageData& output) {
 
 bool GrabImagePlugin::loadImageFile(const QString& filePath, ImageData& output) {
 #ifdef DEEPLUX_HAS_OPENCV
+    const auto attachTiffPointCloud = [&]() {
+        const QString suffix = QFileInfo(filePath).suffix().toLower();
+        if (suffix != QLatin1String("tif") && suffix != QLatin1String("tiff"))
+            return;
+        PointCloudData cloud;
+        QString error;
+        if (TiffLoader::load(filePath, cloud, error)) {
+            MeasurementData::setPointCloud(output, cloud);
+        } else {
+            Logger::instance().warning(
+                QString("TIFF loaded as 2D image only; height map conversion failed: %1").arg(error), "GrabImage");
+        }
+    };
+
     // 使用QImage加载图像（更好地处理各种格式和编码）
     QImage image;
     Logger::instance().debug("GrabImage::grabFromFile - trying QImage::load...", "GrabImage");
@@ -428,6 +444,7 @@ bool GrabImagePlugin::loadImageFile(const QString& filePath, ImageData& output) 
             return false;
         }
         output.setMat(mat.clone());
+        attachTiffPointCloud();
         Logger::instance().info(QString("加载图像成功(OpenCV): %1 (%2x%3, type=%4)")
                                     .arg(filePath)
                                     .arg(mat.cols)
@@ -444,6 +461,7 @@ bool GrabImagePlugin::loadImageFile(const QString& filePath, ImageData& output) 
                              "GrabImage");
 
     output.setQImage(image);
+    attachTiffPointCloud();
     if (!output.isValid()) {
         emit errorOccurred(QString("图像数据无效: %1").arg(filePath));
         return false;

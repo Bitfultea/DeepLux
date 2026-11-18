@@ -2,61 +2,25 @@
 # =============================================================================
 # DeepLux Plugin Sync Script
 # =============================================================================
-# 将 CMake 构建目录中新编译的插件 .so 同步到 ~/.deeplux/plugins/ 对应目录。
-# 解决因插件库与主程序不同步导致的跨 DLL 虚表不匹配问题。
+# 将本次构建的插件 .so 暂存到可迁移的构建树目录，不修改用户插件目录。
 #
 # 用法:
-#   ./scripts/sync-plugins.sh [--force] [--plugins-home DIR] [BUILD_DIR]
+#   ./scripts/sync-plugins.sh [BUILD_DIR] [SOURCE_DIR] [DESTINATION]
 #
-#   BUILD_DIR       可选，CMake 构建目录（默认: <项目根>/build）
-#   --force         允许删除插件目录中不匹配的旧 .so（默认只保留并告警）
-#   --plugins-home  显式指定插件目录；缺省时优先 DEEPLUX_APP_DATA_DIR/plugins，
-#                   再回退 $HOME/.deeplux/plugins
+#   BUILD_DIR  可选，CMake 构建目录（默认: 脚本所在目录的父目录，即项目根目录）
 # =============================================================================
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-
-# 参数解析：--force 允许删除不匹配的旧 .so；--plugins-home 显式指定目标目录。
-FORCE=0
-BUILD_DIR=""
-PLUGINS_HOME_OVERRIDE=""
-PLUGINS_HOME_SET=0
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --force) FORCE=1; shift ;;
-        --plugins-home)
-            if [ $# -lt 2 ]; then
-                echo "[ERROR] --plugins-home requires a directory" >&2
-                exit 2
-            fi
-            if [ -z "$2" ]; then
-                echo "[ERROR] --plugins-home requires a non-empty directory" >&2
-                exit 2
-            fi
-            PLUGINS_HOME_OVERRIDE="$2"
-            PLUGINS_HOME_SET=1
-            shift 2
-            ;;
-        -*) echo "[ERROR] Unknown option: $1" >&2; exit 2 ;;
-        *) if [ -z "$BUILD_DIR" ]; then BUILD_DIR="$1"; shift; else echo "[ERROR] Unexpected argument: $1" >&2; exit 2; fi ;;
-    esac
-done
-BUILD_DIR="${BUILD_DIR:-$PROJECT_DIR/build}"
-
-# 目标插件目录解析：显式参数 > DEEPLUX_APP_DATA_DIR/plugins > $HOME/.deeplux/plugins。
-# 与应用 PathUtils::pluginPath() 同源，避免隔离环境写入真实用户目录。
-if [ "$PLUGINS_HOME_SET" -eq 1 ]; then
-    PLUGINS_HOME="$PLUGINS_HOME_OVERRIDE"
-elif [ -n "${DEEPLUX_APP_DATA_DIR:-}" ]; then
-    PLUGINS_HOME="${DEEPLUX_APP_DATA_DIR%/}/plugins"
-else
-    PLUGINS_HOME="${HOME}/.deeplux/plugins"
-fi
+BUILD_DIR="${1:-$PROJECT_DIR}"
+SOURCE_DIR="${2:-$PROJECT_DIR}"
+PLUGINS_HOME="${3:-$BUILD_DIR/plugins}"
 
 mkdir -p "$PLUGINS_HOME"
+manifest_entries=$(mktemp)
+trap 'rm -f -- "$manifest_entries"' EXIT
 
 json_field() {
     local json_path="$1"
@@ -91,7 +55,7 @@ find_so_match() {
 }
 
 # 收集所有候选 .so 文件（普通插件 + 相机插件）
-declare -A SO_MAP=()
+declare -A SO_MAP
 for so in "$BUILD_DIR"/lib/lib*Plugin.so "$BUILD_DIR"/plugins/camera/lib*Plugin.so; do
     [ -f "$so" ] || continue
     # 从文件名提取插件名: libFooPlugin.so -> Foo
@@ -100,14 +64,12 @@ for so in "$BUILD_DIR"/lib/lib*Plugin.so "$BUILD_DIR"/plugins/camera/lib*Plugin.
     SO_MAP["$name"]="$so"
 done
 
-if [ "${#SO_MAP[@]}" -eq 0 ]; then
-    echo "[ERROR] No plugin .so files found in $BUILD_DIR (expected lib/*Plugin.so or plugins/camera/lib*Plugin.so)" >&2
-    echo "[ERROR] Pass the correct build directory, e.g. ./scripts/sync-plugins.sh build" >&2
-    exit 1
+if [ ${#SO_MAP[@]} -eq 0 ]; then
+    echo "[WARN] No plugin .so files found in $BUILD_DIR; staging an empty build manifest"
 fi
 
 echo "[INFO] Found ${#SO_MAP[@]} plugin .so files in build directory"
-echo "[INFO] Target plugin home: $PLUGINS_HOME"
+echo "[INFO] Target runtime plugins: $PLUGINS_HOME"
 echo ""
 
 copied=0
@@ -115,7 +77,7 @@ skipped=0
 cleaned=0
 prepared=0
 
-# 新增插件首次构建时，~/.deeplux/plugins 下还没有对应目录。
+# 新增插件首次构建时，暂存目录下还没有对应目录。
 # 先根据源码 metadata 创建运行时目录，避免只同步已有插件导致 GUI 扫描不到新插件。
 while IFS= read -r -d '' metadata_path; do
     plugin_src_dir=$(dirname "$metadata_path")
@@ -151,9 +113,9 @@ while IFS= read -r -d '' metadata_path; do
             cp "$plugin_src_dir/$icon_name" "$target_dir/$icon_name"
         fi
     fi
-done < <(find "$PROJECT_DIR/src/plugins" -path '*/metadata.json' -print0)
+done < <(find "$SOURCE_DIR/src/plugins" -path '*/metadata.json' -print0)
 
-# 遍历 ~/.deeplux/plugins/ 下的每个插件目录
+# 遍历暂存目录下的每个插件目录
 for plugin_dir in "$PLUGINS_HOME"/*/; do
     [ -d "$plugin_dir" ] || continue
     [ -f "$plugin_dir/metadata.json" ] || continue
@@ -165,8 +127,7 @@ for plugin_dir in "$PLUGINS_HOME"/*/; do
 
     dir_name=$(basename "$plugin_dir")
 
-    # 清理该目录下不匹配的 .so 文件（防止旧脚本错误导致的多余 .so 堆积）。
-    # 仅在显式 --force 时删除，避免默认行为误删用户文件。
+    # 清理该目录下不匹配的 .so 文件（防止旧脚本错误导致的多余 .so 堆积）
     short_dir_name="${dir_name%Plugin}"
     for existing_so in "$plugin_dir"/*.so; do
         [ -f "$existing_so" ] || continue
@@ -174,13 +135,9 @@ for plugin_dir in "$PLUGINS_HOME"/*/; do
         existing_name=$(echo "$existing_base" | sed 's/^lib//;s/Plugin\.so$//')
         if [ "$existing_name" != "$meta_name" ] && [ "$existing_name" != "$dir_name" ] &&
             [ "$existing_name" != "$short_dir_name" ]; then
-            if [ "$FORCE" -eq 1 ]; then
-                rm -f "$existing_so"
-                echo "[CLEAN] $dir_name: removed mismatched $existing_base"
-                ((cleaned++)) || true
-            else
-                echo "[KEEP]  $dir_name: mismatched $existing_base (use --force to remove)"
-            fi
+            rm -f "$existing_so"
+            echo "[CLEAN] $dir_name: removed mismatched $existing_base"
+            ((cleaned++)) || true
         fi
     done
 
@@ -200,6 +157,7 @@ for plugin_dir in "$PLUGINS_HOME"/*/; do
             echo "[SKIP]  $meta_name ($dir_name): already up-to-date"
             ((skipped++)) || true
         fi
+        printf '%s\t%s\t%s\n' "$meta_name" "$(basename "$dst_so")" "$(sha256sum "$dst_so" | cut -d' ' -f1)" >> "$manifest_entries"
     else
         echo "[MISS]  $meta_name ($dir_name): no matching .so in build directory"
     fi
@@ -207,3 +165,20 @@ done
 
 echo ""
 echo "[DONE] prepared=$prepared copied=$copied skipped=$skipped cleaned=$cleaned"
+
+python3 - "$PLUGINS_HOME/deeplux-plugin-manifest.json" "$manifest_entries" <<'PY'
+import json
+import pathlib
+import sys
+
+entries = []
+for line in pathlib.Path(sys.argv[2]).read_text(encoding="utf-8").splitlines():
+    name, library, digest = line.split("\t")
+    entries.append({"name": name, "library": library, "sha256": digest})
+target = pathlib.Path(sys.argv[1])
+temporary = target.with_suffix(target.suffix + ".tmp")
+temporary.write_text(json.dumps({"formatVersion": 1, "mode": "development", "plugins": entries},
+                               ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+temporary.replace(target)
+print(f"[MANIFEST] {len(entries)} build-matched plugins: {target}")
+PY

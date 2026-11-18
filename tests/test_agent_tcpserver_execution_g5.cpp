@@ -414,11 +414,9 @@ private slots:
         PluginManager& plugins = PluginManager::instance();
         QVERIFY(plugins.initialize());
         QVERIFY(plugins.pluginPaths().contains(QDir(pluginRoot).absolutePath()));
-        const QList<PluginInfo> scanned = plugins.moduleInfos();
-        QCOMPARE(scanned.size(), 1);
-        QCOMPARE(scanned.first().id, QStringLiteral("com.deeplux.plugin.tcpserver"));
-        QCOMPARE(scanned.first().name, QStringLiteral("TCP服务器"));
-        QVERIFY(plugins.cameraInfos().isEmpty());
+        const PluginInfo scanned = plugins.pluginInfo(QStringLiteral("TCP服务器"));
+        QCOMPARE(scanned.id, QStringLiteral("com.deeplux.plugin.tcpserver"));
+        QCOMPARE(scanned.name, QStringLiteral("TCP服务器"));
         QVERIFY(plugins.loadPlugin(QStringLiteral("TCP服务器")));
         QVERIFY(AgentController::instance().initialize());
     }

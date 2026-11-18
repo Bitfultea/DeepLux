@@ -6,6 +6,8 @@
 #include <QTimer>
 #include <QtTest/QtTest>
 #include <core/base/ModuleBase.h>
+#include <core/display/DisplayData.h>
+#include <core/display/IDisplayPort.h>
 #include <core/engine/DisplayFrame.h>
 #include <core/engine/FlowExecutionService.h>
 #include <core/engine/RunEngine.h>
@@ -18,7 +20,7 @@
 using namespace DeepLux;
 
 /// B8.1 探针：每轮输出一张可辨识的图像，metadata 带 value/tag 供快照比对。
-class FrameProbeModule : public ModuleBase {
+class FrameProbeModule : public ModuleBase, public IDisplayPort {
     Q_OBJECT
 
 public:
@@ -35,6 +37,18 @@ public:
     std::function<void()> duringProcess;
     std::atomic_int runs{0};
 
+    bool hasDisplayOutput() const override {
+        return m_displayData.isValid();
+    }
+
+    DisplayData getDisplayData() const override {
+        return m_displayData;
+    }
+
+    QString preferredViewport() const override {
+        return QStringLiteral("main");
+    }
+
 protected:
     bool process(const ImageData& input, ImageData& output) override {
         Q_UNUSED(input)
@@ -46,6 +60,7 @@ protected:
         image.fill(QColor(qMin(255, 10 * value), 40, 60));
         lastImage = image;
         output = ImageData(image);
+        m_displayData = DisplayData(output);
         if (provenance.isValid())
             output.setCoordinateProvenance(provenance);
         output.setData(QStringLiteral("value"), value);
@@ -56,6 +71,9 @@ protected:
     QWidget* createConfigWidget() override {
         return nullptr;
     }
+
+private:
+    DisplayData m_displayData;
 };
 
 namespace {

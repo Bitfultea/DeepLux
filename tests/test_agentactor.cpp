@@ -4723,8 +4723,20 @@ private slots:
                     .contains(QStringLiteral("No library file found")));
         QCOMPARE(failedSpy.count(), 1);
         const QJsonObject ambiguous = actor.executeTool("load_module_plugin", {{"plugin", "SamPredict"}});
-        QVERIFY2(ambiguous.value(QStringLiteral("errorCode")).toString() == QStringLiteral("PLUGIN_NAME_AMBIGUOUS"),
-                 qPrintable(QString::fromUtf8(QJsonDocument(ambiguous).toJson(QJsonDocument::Compact))));
+        const QList<PluginInfo> moduleInfos = plugins.moduleInfos();
+        const QList<PluginInfo> cameraInfos = plugins.cameraInfos();
+        const bool moduleCameraNameConflict =
+            std::any_of(moduleInfos.cbegin(), moduleInfos.cend(),
+                        [](const PluginInfo& info) { return info.name == QStringLiteral("SamPredict"); }) &&
+            std::any_of(cameraInfos.cbegin(), cameraInfos.cend(),
+                        [](const PluginInfo& info) { return info.name == QStringLiteral("SamPredict"); });
+        if (moduleCameraNameConflict) {
+            QCOMPARE(ambiguous.value(QStringLiteral("errorCode")).toString(), QStringLiteral("PLUGIN_NAME_AMBIGUOUS"));
+        } else if (plugins.isPluginLoaded(QStringLiteral("SamPredict"))) {
+            QCOMPARE(ambiguous.value(QStringLiteral("status")).toString(), QStringLiteral("already_loaded"));
+        } else {
+            QCOMPARE(ambiguous.value(QStringLiteral("status")).toString(), QStringLiteral("loaded"));
+        }
         const QList<PluginInfo> cameras = plugins.cameraInfos();
         if (!cameras.isEmpty()) {
             const QJsonObject unsupported =

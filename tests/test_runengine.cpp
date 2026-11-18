@@ -11,6 +11,8 @@
 #include <core/base/ModuleBase.h>
 #include <core/common/CancellationToken.h>
 #include <core/common/Logger.h>
+#include <core/display/DisplayData.h>
+#include <core/display/IDisplayPort.h>
 #include <core/engine/RunEngine.h>
 #include <core/manager/GlobalVarManager.h>
 #include <core/model/Project.h>
@@ -472,7 +474,7 @@ private:
 
 // 阶段 6：记录每个并行任务收到的 ExecutionContext.runId，
 // 验证同一次运行的所有任务看到同一固化 runId。
-class RunIdRecordingModule : public ModuleBase {
+class RunIdRecordingModule : public ModuleBase, public IDisplayPort {
     Q_OBJECT
 public:
     RunIdRecordingModule(const QString& name, QMutex* mutex, QStringList* sink, QList<qint64>* frameSink = nullptr)
@@ -506,6 +508,18 @@ public:
         m_emitSyntheticImage = enable;
     }
 
+    bool hasDisplayOutput() const override {
+        return m_displayData.isValid();
+    }
+
+    DisplayData getDisplayData() const override {
+        return m_displayData;
+    }
+
+    QString preferredViewport() const override {
+        return QStringLiteral("main");
+    }
+
 protected:
     bool process(const ImageData& input, ImageData& output) override {
         if (m_emitSyntheticImage) {
@@ -513,6 +527,7 @@ protected:
             QImage img(8, 8, QImage::Format_RGB32);
             img.fill(QColor(20, 40, 60));
             output = ImageData(img);
+            m_displayData = DisplayData(output);
         } else {
             output = input;
         }
@@ -529,6 +544,7 @@ private:
     QList<qint64>* m_frameSink = nullptr;
     QString m_mark;
     bool m_emitSyntheticImage = false;
+    DisplayData m_displayData;
 };
 
 // 阶6 五轮：确定性同步门模块——进入 process 时释放 entered 信号量，随后阻塞在

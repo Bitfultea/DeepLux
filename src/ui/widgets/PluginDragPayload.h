@@ -7,6 +7,23 @@
 
 namespace DeepLux::PluginDragPayload {
 
+inline constexpr char kPluginIdMimeType[] = "application/x-deeplux-plugin-id-v1";
+
+inline void setPluginId(QMimeData* mimeData, const QString& pluginId) {
+    if (mimeData && !pluginId.trimmed().isEmpty()) {
+        mimeData->setData(kPluginIdMimeType, pluginId.trimmed().toUtf8());
+    }
+}
+
+inline QString pluginId(const QMimeData* mimeData) {
+    if (!mimeData || !mimeData->hasFormat(kPluginIdMimeType)) {
+        return {};
+    }
+    const QByteArray data = mimeData->data(kPluginIdMimeType);
+    const QString id = QString::fromUtf8(data).trimmed();
+    return id.toUtf8() == data ? id : QString();
+}
+
 inline QString pluginName(const QMimeData* mimeData) {
     static constexpr char kItemModelData[] = "application/x-qabstractitemmodeldatalist";
 

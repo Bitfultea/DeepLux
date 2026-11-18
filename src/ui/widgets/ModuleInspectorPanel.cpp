@@ -3,6 +3,7 @@
 #include "../ThemeManager.h"
 #include "AppIconProvider.h"
 #include "PropertyPanel.h"
+#include "core/geometry/MeasurementData.h"
 
 #include <QCheckBox>
 #include <QGridLayout>
@@ -547,9 +548,55 @@ void ModuleInspectorPanel::refreshResults(const ImageData& output) {
     }
     sortedKeys.append(unordered);
 
-    // 如果没有 ui.results 描述，通过 allData() 显示原始键值
     int row = 0;
+    const auto addResultRow = [this, &row](const QString& label, const QString& value) {
+        m_resultsTable->insertRow(row);
+        m_resultsTable->setItem(row, 0, new QTableWidgetItem(label));
+        auto* valueItem = new QTableWidgetItem(value);
+        valueItem->setToolTip(value);
+        m_resultsTable->setItem(row, 1, valueItem);
+        ++row;
+    };
+    if (m_currentModule && m_currentModule->moduleId() == QLatin1String("com.deeplux.plugin.grabimage")) {
+        addResultRow(tr("图像尺寸"), tr("%1 × %2").arg(output.width()).arg(output.height()));
+        addResultRow(tr("通道数"), QString::number(output.channels()));
+
+        const auto cloud = MeasurementData::pointCloud(output, nullptr);
+        if (cloud) {
+            addResultRow(tr("3D 点数"), QString::number(cloud->points.size()));
+            Eigen::Vector3d minimum;
+            Eigen::Vector3d maximum;
+            bool hasFinitePoint = false;
+            for (const Eigen::Vector3d& point : cloud->points) {
+                if (!point.allFinite())
+                    continue;
+                if (!hasFinitePoint) {
+                    minimum = maximum = point;
+                    hasFinitePoint = true;
+                } else {
+                    minimum = minimum.cwiseMin(point);
+                    maximum = maximum.cwiseMax(point);
+                }
+            }
+            if (hasFinitePoint) {
+                const auto formatPoint = [](const Eigen::Vector3d& point) {
+                    return QStringLiteral("(%1, %2, %3)")
+                        .arg(point.x(), 0, 'g', 15)
+                        .arg(point.y(), 0, 'g', 15)
+                        .arg(point.z(), 0, 'g', 15);
+                };
+                addResultRow(tr("3D AABB 最小值"), formatPoint(minimum));
+                addResultRow(tr("3D AABB 最大值"), formatPoint(maximum));
+            } else {
+                addResultRow(tr("3D AABB"), tr("无有效点"));
+            }
+        }
+    }
+
+    // 如果没有 ui.results 描述，通过 allData() 显示原始键值
     for (const QString& key : sortedKeys) {
+        if (key == QLatin1String(MeasurementKeys::PointCloud))
+            continue;
         QVariant value = all.value(key);
 
         // 获取元数据描述

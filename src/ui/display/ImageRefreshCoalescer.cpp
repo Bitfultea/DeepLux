@@ -60,25 +60,24 @@ void ImageRefreshCoalescer::schedule(const DisplayFrame& frame) {
     }
 
     Slot& slot = slotFor(frame.viewportId);
+    if (!slot.hasPending) {
+        slot.pendingAtMs = m_clock.elapsed();
+    }
     slot.pending = frame;
     slot.hasPending = true;
     scheduleSlot(slot);
 }
 
 void ImageRefreshCoalescer::scheduleSlot(Slot& slot) {
-    if (slot.timer && slot.timer->isActive()) {
-        return; // 已排定的刷新时点不得被后续通知重置（频率上限而非防抖）
-    }
     const qint64 now = m_clock.elapsed();
-    qint64 delay = 0;
+    qint64 deadline = qMax(now, slot.pendingAtMs + qMax(0, slot.pending.delayMs));
     if (slot.lastRenderMs >= 0) {
-        delay = slot.lastRenderMs + ThrottleMs - now;
+        deadline = qMax(deadline, slot.lastRenderMs + ThrottleMs);
     }
-    delay = std::max<qint64>(0, delay);
     if (!slot.timer) {
         return;
     }
-    slot.timer->start(static_cast<int>(delay));
+    slot.timer->start(static_cast<int>(qMax<qint64>(0, deadline - now)));
 }
 
 void ImageRefreshCoalescer::renderSlot(const QString& viewportId) {
@@ -107,6 +106,10 @@ void ImageRefreshCoalescer::forceFlush() {
             continue;
         }
         if (it.value().timer) {
+            if (it.value().hasPending && it.value().pending.delayMs > 0) {
+                scheduleSlot(it.value());
+                continue;
+            }
             it.value().timer->stop();
         }
         renderSlot(viewportId);

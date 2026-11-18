@@ -15,17 +15,17 @@ public:
     // LOD 级别数量
     static constexpr int MAX_LOD_LEVELS = 4;
 
-    // 默认距离阈值 [近, 中, 远, 超远] (单位：米)
-    static constexpr std::array<float, MAX_LOD_LEVELS> DEFAULT_DISTANCES = {1.0f, 5.0f, 20.0f, 100.0f};
+    // 相机距离 / 点云包围盒对角线
+    static constexpr std::array<float, MAX_LOD_LEVELS> DEFAULT_DISTANCES = {1.0f, 2.0f, 4.0f, 8.0f};
 
     // 默认采样率
-    static constexpr std::array<float, MAX_LOD_LEVELS> DEFAULT_SAMPLE_RATES = {1.0f, 0.5f, 0.2f, 0.1f};
+    static constexpr std::array<float, MAX_LOD_LEVELS> DEFAULT_SAMPLE_RATES = {1.0f, 0.5f, 0.25f, 0.125f};
 
     LODController();
 
     /**
      * @brief 根据相机距离计算 LOD 级别
-     * @param cameraDistance 相机到目标中心的距离
+     * @param cameraDistance 相机距离与场景对角线的比值
      * @return LOD 级别 (0 = 最高细节)
      */
     int calculateLODLevel(float cameraDistance) const;

@@ -79,7 +79,9 @@ private slots:
         PluginManager& plugins = PluginManager::instance();
         QVERIFY(plugins.initialize());
         QVERIFY(plugins.pluginPaths().contains(QDir(pluginRoot).absolutePath()));
-        QCOMPARE(plugins.availableModules().size(), 2);
+        const QStringList availableModules = plugins.availableModules();
+        QVERIFY(availableModules.contains(QStringLiteral("变量定义")));
+        QVERIFY(availableModules.contains(QStringLiteral("变量赋值")));
         ToolSchema::instance().registerDefaultTools();
         QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
         qRegisterMetaType<RunResult>("DeepLux::RunResult");

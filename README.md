@@ -77,7 +77,7 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy-windows.ps1 `
 .\dist\DeepLux-win64\bin\DeepLux.exe --gui
 ```
 
-- `sync-plugins` 把插件与 `metadata.json` 同步到 `~/.deeplux/plugins`；开发期也可直接从 `build-win\bin` 运行，但需把 Qt/OpenCV 的 `bin` 加入 `PATH`。
+- 构建会把插件与 `metadata.json` 暂存到构建目录的 `plugins/`，并生成锁定文件名和 SHA-256 的清单；不会写入 `~/.deeplux/plugins`。开发运行可用 `cmake --build build --target run-local`。Windows 直接运行时仍需把 Qt/OpenCV 的 `bin` 加入 `PATH`。
 - 部署脚本生成自包含目录（Qt、OpenCV、VC++ 运行库和当前构建的插件），并在干净 `PATH` 下按包内 manifest 动态校验 CLI 冒烟结果；具体判据与 Windows 快照说明见[Windows 构建与部署](docs/windows-build.md)。目标机未安装 VC++ 运行库时，先运行一次 `bin\vc_redist.x64.exe`。
 - Windows CLI 使用部署包内的 `deeplux.cmd`（GUI 子系统 exe 在 PowerShell 中不会等待进程）：
 
@@ -158,7 +158,7 @@ cmake --build build-win-tests --parallel
 ctest --test-dir build-win-tests --output-on-failure --timeout 300
 ```
 
-新增或修改插件后需完整重建并执行 `sync-plugins`，避免主程序与插件 ABI 不一致。参数 Schema、`validateParams()`、`clone()` 等契约由 `test_pluginparametercontracts` 持续校验；约定见 [AGENTS.md](AGENTS.md)。
+新增或修改插件后完整重建应用即可自动暂存对应插件；`sync-plugins` 是保留的兼容目标。开发运行时清单会锁定插件文件名并校验 SHA-256，避免同名旧用户插件覆盖本次构建。参数 Schema、`validateParams()`、`clone()` 等契约由 `test_pluginparametercontracts` 持续校验；约定见 [AGENTS.md](AGENTS.md)。
 
 ## 许可证
 
