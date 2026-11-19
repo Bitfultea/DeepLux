@@ -24,7 +24,7 @@ The first PR #9 run (`44277686502`) failed in three independent areas:
 - Ubuntu Qt 5, ASan/UBSan, and TSan jobs stopped at plugin-sync verification. CMake now stages plugins beside the build executable, but the verifier still looked under the isolated user app-data directory.
 - Windows plugin staging used `Get-FileHash`, which was unavailable in the PowerShell runtime used by the runner.
 
-The fixes use the version-correct Qt signature, verify both supported build-tree runtime layouts, and compute DLL hashes through .NET's SHA-256 implementation. The workflow labels now describe build-tree verification.
+The fixes use the version-correct Qt signature, verify both supported build-tree runtime layouts, and compute DLL hashes through .NET's SHA-256 implementation. The workflow labels now describe build-tree verification. The rerun passed Qt 5, Qt 6, TSan, docs-status, format, and plugin-affinity jobs. Windows then exposed another path-normalization defect: the stale-file cleanup treated the copied DLL as stale because CMake's destination contained `Release/..`; that comparison has now been corrected to compare normalized paths. Windows CTest and ASan/UBSan results were still running when this follow-up was recorded.
 
 ## Follow-up local validation — 2026-11-19
 
@@ -33,4 +33,4 @@ The fixes use the version-correct Qt signature, verify both supported build-tree
 - Plugin-sync verifier and isolation configuration tests — passed; the verifier also passed against the actual local build tree.
 - Documentation status tests 8/8, changed-file C++ format check, whitespace check, and plugin ABI export scan 66/66 — passed.
 
-Hosted checks for the corrected PR head are pending the next push. Windows/macOS, physical devices, and production model/provider behavior are not covered by this local Linux Qt 5.15.3 run.
+The normalized-path correction is pending push and a new hosted run. Windows/macOS, physical devices, and production model/provider behavior are not covered by this local Linux Qt 5.15.3 run.

@@ -134,6 +134,7 @@ foreach ($metaFile in $metadataFiles) {
     # Copy DLL (compare hash: timestamps are unreliable across generators)
     $srcDll = $dllMap[$matchName]
     $dstDll = Join-Path $targetDir (Split-Path -Leaf $srcDll)
+    $dstDllFullPath = [System.IO.Path]::GetFullPath($dstDll)
     $needsCopy = -not (Test-Path $dstDll)
     if (-not $needsCopy) {
         $srcHash = Get-FileSha256 $srcDll
@@ -156,7 +157,11 @@ foreach ($metaFile in $metadataFiles) {
     # Remove stale libraries of the same plugin (e.g. old `libFooPlugin.dll`
     # layouts) so QPluginLoader cannot pick up an ABI-mismatched binary.
     Get-ChildItem -Path $targetDir -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -like "*Plugin.dll" -and $_.FullName -ne $dstDll } |
+        Where-Object {
+            $_.Name -like "*Plugin.dll" -and
+            [string]::Compare([System.IO.Path]::GetFullPath($_.FullName), $dstDllFullPath,
+                [System.StringComparison]::OrdinalIgnoreCase) -ne 0
+        } |
         ForEach-Object {
             Write-Host "[DEL]   stale $($_.Name)"
             Remove-Item $_.FullName -Force
