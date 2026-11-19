@@ -154,15 +154,19 @@ protected:
         return formats;
     }
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    QMimeData* mimeData(const QList<QTreeWidgetItem*>& items) const override{
+#else
     QMimeData* mimeData(const QList<QTreeWidgetItem*> items) const override {
-        QMimeData* data = QTreeWidget::mimeData(items);
-        if (items.size() == 1) {
-            PluginDragPayload::setPluginId(data, items.first()->data(0, Qt::UserRole + 2).toString());
-        }
-        return data;
+#endif
+        QMimeData* result = QTreeWidget::mimeData(items);
+    if (items.size() == 1) {
+        PluginDragPayload::setPluginId(result, items.first()->data(0, Qt::UserRole + 2).toString());
     }
-};
-} // namespace
+    return result;
+}
+}; // namespace
+} // namespace DeepLux
 #ifdef DEEPLUX_BUILD_TESTS
 AgentChatPanel* MainWindow::agentChatPanel() const {
     return m_agentChatPanel.data();

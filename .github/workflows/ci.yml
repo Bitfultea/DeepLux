@@ -83,7 +83,7 @@ jobs:
       - name: Sync plugins
         run: cmake --build build --target sync-plugins
 
-      - name: Verify isolated plugin sync
+      - name: Verify build-tree plugin sync
         run: python3 scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
 
       - name: Test
@@ -150,7 +150,7 @@ jobs:
         run: python scripts/configure_ci_plugin_isolation.py --name windows
       - name: Sync plugins
         run: cmake --build build --config Release --target sync-plugins
-      - name: Verify isolated plugin sync
+      - name: Verify build-tree plugin sync
         run: python scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
       - name: Deploy runtime and run CLI smoke test
         run: cmake --build build --config Release --target deploy-windows
@@ -185,7 +185,7 @@ jobs:
         run: python scripts/configure_ci_plugin_isolation.py --name windows-ctest
       - name: Sync plugins
         run: cmake --build build --config Release --target sync-plugins
-      - name: Verify isolated plugin sync
+      - name: Verify build-tree plugin sync
         run: python scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
       - name: Test
         id: run-windows-ctest
@@ -257,7 +257,7 @@ jobs:
         run: python3 scripts/configure_ci_plugin_isolation.py --name asan
       - name: Sync plugins
         run: cmake --build build --target sync-plugins
-      - name: Verify isolated plugin sync
+      - name: Verify build-tree plugin sync
         run: python3 scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
       - name: Test
         env:
@@ -308,7 +308,7 @@ jobs:
       - name: Sync plugins
         id: sync-tsan
         run: cmake --build build --target sync-plugins
-      - name: Verify isolated plugin sync
+      - name: Verify build-tree plugin sync
         run: python3 scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
       - name: Run concurrency suites and preserve raw output
         id: run-tsan
@@ -385,7 +385,7 @@ jobs:
       - name: Sync plugins
         run: cmake --build build --target sync-plugins
 
-      - name: Verify isolated plugin sync
+      - name: Verify build-tree plugin sync
         run: python3 scripts/verify_ci_plugin_sync.py --build-dir build --plugin FitCirclePlugin
 
       - name: Test

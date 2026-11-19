@@ -16,6 +16,21 @@ Base: `origin/main` at `09303861786b732372827a0955bc7c4a4db25481`
 
 The first full CTest attempt had one intermittent PLCWrite preview assertion failure. The complete PLCWrite test passed 13/13 on isolated rerun, and the subsequent full CTest passed 132/132. The failure did not reproduce; timing or test-state sensitivity is not fully ruled out.
 
-## Hosted checks and remaining scope
+## Hosted CI findings and remediation
 
-GitHub Actions has not run for this PR yet. Windows, macOS, physical cameras/PLC/serial devices, and production model/provider behavior are not covered by this Linux Qt 5.15.3 run.
+The first PR #9 run (`44277686502`) failed in three independent areas:
+
+- Qt 6 and Windows builds rejected `PluginToolBoxTree::mimeData` because its parameter was passed by value, while Qt 6 requires a const reference.
+- Ubuntu Qt 5, ASan/UBSan, and TSan jobs stopped at plugin-sync verification. CMake now stages plugins beside the build executable, but the verifier still looked under the isolated user app-data directory.
+- Windows plugin staging used `Get-FileHash`, which was unavailable in the PowerShell runtime used by the runner.
+
+The fixes use the version-correct Qt signature, verify both supported build-tree runtime layouts, and compute DLL hashes through .NET's SHA-256 implementation. The workflow labels now describe build-tree verification.
+
+## Follow-up local validation — 2026-11-19
+
+- `cmake --build build-codex-agent -j2` — passed.
+- Full CTest with a temporary HOME and loopback socket access — passed, 132/132, 0 failures, 3 allowlisted skips.
+- Plugin-sync verifier and isolation configuration tests — passed; the verifier also passed against the actual local build tree.
+- Documentation status tests 8/8, changed-file C++ format check, whitespace check, and plugin ABI export scan 66/66 — passed.
+
+Hosted checks for the corrected PR head are pending the next push. Windows/macOS, physical devices, and production model/provider behavior are not covered by this local Linux Qt 5.15.3 run.

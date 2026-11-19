@@ -16,7 +16,7 @@ class PluginSyncVerifierTest(unittest.TestCase):
         self.root = Path(self.temp_dir.name)
         self.build = self.root / "build"
         self.artifact = self.build / "lib" / "libFitCirclePlugin.so"
-        self.synced = self.root / "appdata" / "plugins" / "FitCircle" / "libFitCirclePlugin.so"
+        self.synced = self.build / "plugins" / "FitCircle" / "libFitCirclePlugin.so"
         self.artifact.parent.mkdir(parents=True)
         self.synced.parent.mkdir(parents=True)
 
@@ -26,13 +26,22 @@ class PluginSyncVerifierTest(unittest.TestCase):
     def test_accepts_exact_copy(self) -> None:
         self.artifact.write_bytes(b"plugin artifact")
         self.synced.write_bytes(b"plugin artifact")
-        verify_plugin_sync(self.build, self.synced.parents[2], "FitCirclePlugin")
+        verify_plugin_sync(self.build, "FitCirclePlugin")
 
     def test_rejects_different_copy(self) -> None:
         self.artifact.write_bytes(b"plugin artifact")
         self.synced.write_bytes(b"different plugin")
         with self.assertRaisesRegex(RuntimeError, "differs from every"):
-            verify_plugin_sync(self.build, self.synced.parents[2], "FitCirclePlugin")
+            verify_plugin_sync(self.build, "FitCirclePlugin")
+
+    def test_accepts_multiconfig_runtime_layout(self) -> None:
+        self.synced.unlink(missing_ok=True)
+        self.synced.parent.rmdir()
+        self.synced = self.build / "bin" / "plugins" / "FitCircle" / "libFitCirclePlugin.so"
+        self.synced.parent.mkdir(parents=True)
+        self.artifact.write_bytes(b"plugin artifact")
+        self.synced.write_bytes(b"plugin artifact")
+        verify_plugin_sync(self.build, "FitCirclePlugin")
 
 
 if __name__ == "__main__":

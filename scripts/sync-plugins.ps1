@@ -76,6 +76,20 @@ $prepared = 0
 $matched = @{}
 $manifestEntries = @()
 
+function Get-FileSha256([string]$Path) {
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $algorithm = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return [System.BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace("-", "").ToLowerInvariant()
+        } finally {
+            $algorithm.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 foreach ($metaFile in $metadataFiles) {
     # metadata.json is UTF-8 without BOM. Windows PowerShell 5.1 decodes
     # Get-Content as ANSI by default, which corrupts non-ASCII labels and can
@@ -122,8 +136,8 @@ foreach ($metaFile in $metadataFiles) {
     $dstDll = Join-Path $targetDir (Split-Path -Leaf $srcDll)
     $needsCopy = -not (Test-Path $dstDll)
     if (-not $needsCopy) {
-        $srcHash = (Get-FileHash $srcDll -Algorithm SHA256).Hash
-        $dstHash = (Get-FileHash $dstDll -Algorithm SHA256).Hash
+        $srcHash = Get-FileSha256 $srcDll
+        $dstHash = Get-FileSha256 $dstDll
         $needsCopy = $srcHash -ne $dstHash
     }
     if ($needsCopy) {
@@ -136,7 +150,7 @@ foreach ($metaFile in $metadataFiles) {
     $manifestEntries += [ordered]@{
         name = $metaName
         library = (Split-Path -Leaf $dstDll)
-        sha256 = (Get-FileHash $dstDll -Algorithm SHA256).Hash.ToLowerInvariant()
+        sha256 = Get-FileSha256 $dstDll
     }
 
     # Remove stale libraries of the same plugin (e.g. old `libFooPlugin.dll`
