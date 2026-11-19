@@ -9,7 +9,8 @@ shift 3
 test_home=$(mktemp -d "${TMPDIR:-/tmp}/deeplux-mainwindow-home.XXXXXX")
 trap 'rm -rf -- "$test_home"' EXIT
 
-env -u DEEPLUX_APP_DATA_DIR HOME="$test_home" bash "$project_dir/scripts/sync-plugins.sh" "$build_dir"
+env -u DEEPLUX_APP_DATA_DIR HOME="$test_home" bash "$project_dir/scripts/sync-plugins.sh" "$build_dir" "$project_dir" \
+    "$test_home/.deeplux/plugins"
 if [[ "$(basename "$test_binary")" == "test_mainwindow" ]]; then
     # These plugins are also linked into test_mainwindow; use the same ELF files to avoid loading duplicate Qt metadata.
     for plugin in CropImage NPointCalibration; do

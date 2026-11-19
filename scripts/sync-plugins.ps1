@@ -1,18 +1,13 @@
 # =============================================================================
 # DeepLux Plugin Sync Script (Windows / PowerShell)
 # =============================================================================
-# Copy built plugin .dll files and their metadata.json into ~/.deeplux/plugins/,
-# which is the user plugin directory scanned by DeepLux on every platform
-# (PathUtils::pluginPath()).
+# Copy build-matched plugin .dll files and metadata.json into the runtime tree.
 #
 # Usage:
-#   powershell -ExecutionPolicy Bypass -File sync-plugins.ps1 [BUILD_DIR] [SOURCE_DIR] [-PluginsHome DIR]
-#
-#   -PluginsHome   explicit target; otherwise DEEPLUX_APP_DATA_DIR\plugins,
-#                  then %USERPROFILE%\.deeplux\plugins.
+#   powershell -ExecutionPolicy Bypass -File sync-plugins.ps1 [BUILD_DIR] [SOURCE_DIR] [DESTINATION]
 #
 # CMake invokes this as:
-#   powershell -ExecutionPolicy Bypass -File sync-plugins.ps1 <build> <source>
+#   powershell -ExecutionPolicy Bypass -File sync-plugins.ps1 <build> <source> <destination> <config>
 # =============================================================================
 
 param(
@@ -20,24 +15,13 @@ param(
     [string]$BuildDir = (Join-Path (Split-Path -Parent $PSScriptRoot) "build"),
     [Parameter(Position = 1)]
     [string]$SourceDir = (Split-Path -Parent $PSScriptRoot),
-    [string]$PluginsHome = ""
+    [Parameter(Position = 2)]
+    [string]$DestinationDir = (Join-Path $BuildDir "plugins"),
+    [Parameter(Position = 3)]
+    [string]$Configuration = ""
 )
 
 $ErrorActionPreference = "Stop"
-
-# Target resolution: explicit -PluginsHome > DEEPLUX_APP_DATA_DIR\plugins > %USERPROFILE%\.deeplux\plugins.
-# Must match PathUtils::pluginPath() so isolated runs never write the real user dir.
-# Distinguish "not provided" from "provided but empty": the latter is an error,
-# never a silent fallback to the default directory.
-if ($PSBoundParameters.ContainsKey('PluginsHome')) {
-    if ([string]::IsNullOrWhiteSpace($PluginsHome)) {
-        throw "sync-plugins.ps1: -PluginsHome was provided but is empty"
-    }
-} elseif ($env:DEEPLUX_APP_DATA_DIR) {
-    $PluginsHome = Join-Path $env:DEEPLUX_APP_DATA_DIR "plugins"
-} else {
-    $PluginsHome = Join-Path $env:USERPROFILE ".deeplux\plugins"
-}
 
 $srcPlugins = Join-Path $SourceDir "src\plugins"
 if (-not (Test-Path $srcPlugins)) {
@@ -45,19 +29,27 @@ if (-not (Test-Path $srcPlugins)) {
     exit 1
 }
 
-if (-not (Test-Path $PluginsHome)) {
-    New-Item -ItemType Directory -Path $PluginsHome -Force | Out-Null
+if (-not (Test-Path $DestinationDir)) {
+    New-Item -ItemType Directory -Path $DestinationDir -Force | Out-Null
 }
 
 # On Windows add_library(SHARED) puts plugin DLLs into the RUNTIME output dir
 # (CMAKE_RUNTIME_OUTPUT_DIRECTORY = <build>/bin), not <build>/lib. Visual Studio
 # and Ninja Multi-Config generators additionally append a per-config subdirectory
 # (bin/Release), so search recursively. Accept the lib layout as well.
-$searchDirs = @((Join-Path $BuildDir "bin"), (Join-Path $BuildDir "lib")) |
-    Where-Object { Test-Path $_ }
+$searchDirs = @()
+if ($Configuration) {
+    $searchDirs = @((Join-Path (Join-Path $BuildDir "bin") $Configuration),
+        (Join-Path (Join-Path $BuildDir "lib") $Configuration)) | Where-Object { Test-Path $_ }
+} else {
+    $searchDirs = @((Join-Path $BuildDir "bin"), (Join-Path $BuildDir "lib")) | Where-Object { Test-Path $_ }
+}
+$destinationFullPath = [System.IO.Path]::GetFullPath($DestinationDir).TrimEnd([char[]]@('\', '/')) + [System.IO.Path]::DirectorySeparatorChar
 $pluginLibs = @()
 foreach ($dir in $searchDirs) {
-    $pluginLibs += @(Get-ChildItem -Path $dir -Filter "*Plugin.dll" -File -Recurse -ErrorAction SilentlyContinue)
+    $pluginLibs += @(Get-ChildItem -Path $dir -Filter "*Plugin.dll" -File -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { -not ([System.IO.Path]::GetFullPath($_.FullName).StartsWith(
+            $destinationFullPath, [System.StringComparison]::OrdinalIgnoreCase)) })
 }
 
 if ($pluginLibs.Count -eq 0) {
@@ -74,7 +66,7 @@ foreach ($lib in $pluginLibs) {
 }
 
 Write-Host "[INFO] Found $($dllMap.Count) plugin DLLs in build directory"
-Write-Host "[INFO] Target plugin home: $PluginsHome"
+Write-Host "[INFO] Target runtime plugins: $DestinationDir"
 Write-Host ""
 
 $metadataFiles = @(Get-ChildItem -Path $srcPlugins -Filter "metadata.json" -Recurse -File -ErrorAction SilentlyContinue)
@@ -82,6 +74,21 @@ $copied = 0
 $skipped = 0
 $prepared = 0
 $matched = @{}
+$manifestEntries = @()
+
+function Get-FileSha256([string]$Path) {
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $algorithm = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return [System.BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace("-", "").ToLowerInvariant()
+        } finally {
+            $algorithm.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
 
 foreach ($metaFile in $metadataFiles) {
     # metadata.json is UTF-8 without BOM. Windows PowerShell 5.1 decodes
@@ -108,7 +115,7 @@ foreach ($metaFile in $metadataFiles) {
     if (-not $matchName) { continue }
     $matched[$matchName] = $true
 
-    $targetDir = Join-Path $PluginsHome $dirName
+    $targetDir = Join-Path $DestinationDir $dirName
     if (-not (Test-Path $targetDir)) {
         New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
     }
@@ -127,10 +134,11 @@ foreach ($metaFile in $metadataFiles) {
     # Copy DLL (compare hash: timestamps are unreliable across generators)
     $srcDll = $dllMap[$matchName]
     $dstDll = Join-Path $targetDir (Split-Path -Leaf $srcDll)
+    $dstDllFullPath = [System.IO.Path]::GetFullPath($dstDll)
     $needsCopy = -not (Test-Path $dstDll)
     if (-not $needsCopy) {
-        $srcHash = (Get-FileHash $srcDll -Algorithm SHA256).Hash
-        $dstHash = (Get-FileHash $dstDll -Algorithm SHA256).Hash
+        $srcHash = Get-FileSha256 $srcDll
+        $dstHash = Get-FileSha256 $dstDll
         $needsCopy = $srcHash -ne $dstHash
     }
     if ($needsCopy) {
@@ -140,11 +148,20 @@ foreach ($metaFile in $metadataFiles) {
     } else {
         $skipped++
     }
+    $manifestEntries += [ordered]@{
+        name = $metaName
+        library = (Split-Path -Leaf $dstDll)
+        sha256 = Get-FileSha256 $dstDll
+    }
 
     # Remove stale libraries of the same plugin (e.g. old `libFooPlugin.dll`
     # layouts) so QPluginLoader cannot pick up an ABI-mismatched binary.
     Get-ChildItem -Path $targetDir -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -like "*Plugin.dll" -and $_.FullName -ne $dstDll } |
+        Where-Object {
+            $_.Name -like "*Plugin.dll" -and
+            [string]::Compare([System.IO.Path]::GetFullPath($_.FullName), $dstDllFullPath,
+                [System.StringComparison]::OrdinalIgnoreCase) -ne 0
+        } |
         ForEach-Object {
             Write-Host "[DEL]   stale $($_.Name)"
             Remove-Item $_.FullName -Force
@@ -159,3 +176,10 @@ if ($unmatched.Count -gt 0) {
 
 Write-Host ""
 Write-Host "[DONE] prepared=$prepared copied=$copied skipped=$skipped"
+$manifest = [ordered]@{ formatVersion = 1; mode = "development"; plugins = $manifestEntries }
+$manifestPath = Join-Path $DestinationDir "deeplux-plugin-manifest.json"
+$manifestTemp = "$manifestPath.tmp"
+[System.IO.File]::WriteAllText($manifestTemp, ($manifest | ConvertTo-Json -Depth 5),
+    [System.Text.UTF8Encoding]::new($false))
+Move-Item -Path $manifestTemp -Destination $manifestPath -Force
+Write-Host "[MANIFEST] $($manifestEntries.Count) build-matched plugins: $manifestPath"

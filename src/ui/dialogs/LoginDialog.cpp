@@ -15,7 +15,6 @@ LoginDialog::LoginDialog(QWidget* parent) : QDialog(parent) {
     setObjectName(QStringLiteral("UserLoginDialog"));
     setWindowTitle(tr("Login"));
     setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
-    setFixedSize(360, 220);
     setStyleSheet(R"(
         QDialog {
             background-color: #2b2b2b;
@@ -72,8 +71,8 @@ LoginDialog::LoginDialog(QWidget* parent) : QDialog(parent) {
 
 void LoginDialog::setupUI() {
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
-    mainLayout->setSpacing(20);
-    mainLayout->setContentsMargins(30, 30, 30, 20);
+    mainLayout->setSpacing(12);
+    mainLayout->setContentsMargins(24, 24, 24, 20);
 
     // Title
     QLabel* titleLabel = new QLabel(tr("User Login"), this);
@@ -83,7 +82,7 @@ void LoginDialog::setupUI() {
 
     // Form
     QFormLayout* formLayout = new QFormLayout();
-    formLayout->setSpacing(15);
+    formLayout->setSpacing(10);
 
     m_userNameEdit = new QLineEdit(this);
     m_userNameEdit->setPlaceholderText(tr("Enter username"));
@@ -104,6 +103,12 @@ void LoginDialog::setupUI() {
 
     mainLayout->addLayout(formLayout);
 
+    m_feedbackLabel = new QLabel(this);
+    m_feedbackLabel->setObjectName(QStringLiteral("LoginFeedbackLabel"));
+    m_feedbackLabel->setStyleSheet("color: #ff8585; font-size: 12px;");
+    m_feedbackLabel->setWordWrap(true);
+    mainLayout->addWidget(m_feedbackLabel);
+
     // Buttons
     QDialogButtonBox* buttonBox = new QDialogButtonBox(this);
     buttonBox->setStyleSheet("QDialogButtonBox { spacing: 10px; }");
@@ -122,8 +127,8 @@ void LoginDialog::setupUI() {
 
     connect(m_loginBtn, &QPushButton::clicked, this, &LoginDialog::onLoginClicked);
     connect(m_cancelBtn, &QPushButton::clicked, this, &LoginDialog::onCancelClicked);
-    connect(buttonBox, &QDialogButtonBox::accepted, this, &QDialog::accept);
-    connect(buttonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    setMinimumWidth(440);
+    adjustSize();
 
     m_userNameEdit->setFocus();
 }
@@ -133,15 +138,18 @@ void LoginDialog::onLoginClicked() {
     m_passWord = m_passWordEdit->text();
 
     if (m_userName.isEmpty()) {
+        m_feedbackLabel->setText(tr("Please enter a username."));
         m_userNameEdit->setFocus();
         return;
     }
+    m_feedbackLabel->clear();
 
     // Emit login request
     emit loginRequested(m_userName, m_passWord);
 
     // Perform login via UserManager
-    UserManager::instance().login(m_userName, m_passWord);
+    UserManager::instance().login(m_userName, m_passWord,
+                                  static_cast<UserType>(m_userTypeCombo->currentData().toInt()));
 
     Logger::instance().info(QString("User logged in: %1").arg(m_userName), "Auth");
     accept();

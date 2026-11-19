@@ -249,7 +249,8 @@ void ToolSchema::registerDefaultTools() {
     registerTool({"open_user_login_dialog",
                   "Open or reuse the user login dialog. The user must enter and submit credentials manually; the "
                   "Agent never reads or submits them. This only requests the dialog to be shown and does not mean "
-                  "the user is logged in or authenticated.",
+                  "the user is logged in. After successful login, the application automatically resumes the prior "
+                  "request; do not ask the user to repeat it.",
                   {}});
     registerTool({"open_agent_settings_dialog",
                   "Open or reuse the Agent settings dialog for the user. The user reviews and edits settings, then "
@@ -475,9 +476,11 @@ void ToolSchema::registerDefaultTools() {
                     "returns FLOW_UNAVAILABLE",
                     false}}});
     registerTool({"validate_flow",
-                  "Validate the current project flow before running; report missing required inputs and the first "
-                  "graph/port construction error with locations when available. An explicit flowId selector is "
-                  "unavailable and returns FLOW_UNAVAILABLE.",
+                  "Validate the current project flow before running when its runtime is already synchronized; "
+                  "this read-only check does not synchronize an edited project and may return ENGINE_OUT_OF_SYNC. "
+                  "After project edits, use validate_workflow instead. Reports missing required inputs and the "
+                  "first graph/port construction error with locations when available. An explicit flowId selector "
+                  "is unavailable and returns FLOW_UNAVAILABLE.",
                   {{"flowId", "string",
                     "Optional flow selector; explicit selection is currently unavailable and "
                     "returns FLOW_UNAVAILABLE",
@@ -1057,8 +1060,9 @@ void ToolSchema::registerDefaultTools() {
     // validate_workflow（readOnly：只读工程 + 结构化校验结论）
     registerTool(makeReadOnlyTool(
         "validate_workflow",
-        "Validate the current flow without running it: missing required input ports, connection/type conflicts "
-        "for disabled nodes, and empty projects. Returns structured issues with code/node/message.",
+        "Validate the current project after edits without running modules. Synchronizes the runtime model if stale "
+        "(which may clear old runtime outputs and the single-step position); reports missing required input ports, "
+        "connection/type conflicts for disabled nodes, and empty projects as structured issues.",
         {}, 30000));
 
     // get_node_runtime_outputs（readOnly）

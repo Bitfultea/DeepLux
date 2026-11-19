@@ -87,6 +87,7 @@ public:
     }
 
     void sendUserMessage(const QString& message);
+    void resumeAfterLogin();
     void sendUserMessageWithImages(const QString& message, const QList<QPixmap>& images);
     bool cancelCurrentRequest();
     void clearConversation();
@@ -320,11 +321,13 @@ public:
     QList<PendingQuery> m_pendingQueries;
     QDateTime m_pendingQueryDeadline;
     int m_waitGeneration = 0;
+    bool m_resumeAfterLoginPending = false;
     QString m_activeLLMRequestId;
     AgentState m_state = AgentState::Idle;
     mutable QMutex m_stateMutex;
 
     void transitionTo(AgentState newState);
+    void startLoginContinuationIfIdle();
     bool tryTransitionTo(AgentState expected, AgentState newState);
     static QString stateName(AgentState state);
     static QString defaultSystemPrompt();

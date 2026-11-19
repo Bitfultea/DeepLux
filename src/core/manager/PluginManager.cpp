@@ -9,6 +9,7 @@
 #include "../platform/PathUtils.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDebug>
 #include <QDir>
 #include <QElapsedTimer>
@@ -20,6 +21,7 @@
 #include <QLibrary>
 #include <QPixmap>
 #include <QPluginLoader>
+#include <QRegularExpression>
 #include <QSemaphore>
 #include <QThread>
 #include <QTimer>
@@ -184,7 +186,42 @@ void PluginManager::scanPlugins() {
     QStringList searchPaths;
     const QString bundledPath =
         QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(QStringLiteral("../plugins"));
+    m_modules.clear();
+    m_cameras.clear();
     m_bundledPlugins.clear();
+    m_developmentPlugins.clear();
+    const QString manifestPath = QDir(bundledPath).filePath(QStringLiteral("deeplux-plugin-manifest.json"));
+    m_developmentManifestPresent = QFileInfo::exists(manifestPath);
+    m_developmentManifestValid = false;
+    if (m_developmentManifestPresent) {
+        QFile file(manifestPath);
+        QJsonParseError parseError;
+        const bool opened = file.open(QIODevice::ReadOnly);
+        const QJsonDocument manifest = opened ? QJsonDocument::fromJson(file.readAll(), &parseError) : QJsonDocument();
+        const QJsonObject root = manifest.object();
+        bool valid = opened && manifest.isObject() && parseError.error == QJsonParseError::NoError &&
+                     root.value(QStringLiteral("formatVersion")).toInt() == 1 &&
+                     root.value(QStringLiteral("mode")).toString() == QStringLiteral("development") &&
+                     root.value(QStringLiteral("plugins")).isArray();
+        const QRegularExpression digestPattern(QStringLiteral("^[0-9a-fA-F]{64}$"));
+        for (const QJsonValue& value : root.value(QStringLiteral("plugins")).toArray()) {
+            const QJsonObject entry = value.toObject();
+            const QString name = entry.value(QStringLiteral("name")).toString();
+            const QString library = entry.value(QStringLiteral("library")).toString();
+            const QByteArray digest = entry.value(QStringLiteral("sha256")).toString().toLatin1();
+            if (!value.isObject() || name.isEmpty() || library.isEmpty() || QFileInfo(library).fileName() != library ||
+                !digestPattern.match(QString::fromLatin1(digest)).hasMatch() || m_developmentPlugins.contains(name)) {
+                valid = false;
+                break;
+            }
+            m_developmentPlugins.insert(name, DevelopmentPlugin{library, digest.toLower()});
+        }
+        m_developmentManifestValid = valid;
+        if (!valid) {
+            m_developmentPlugins.clear();
+            qCritical() << "Invalid development plugin manifest; bundled plugins will fail closed:" << manifestPath;
+        }
+    }
     if (QDir(bundledPath).exists()) {
         searchPaths.append(bundledPath);
     }
@@ -221,7 +258,18 @@ void PluginManager::scanPlugins() {
 
             PluginInfo info;
             if (loadPluginMetadata(metadataPath, info)) {
-                if (basePath == bundledPath) {
+                const bool isBundledPath = QDir::cleanPath(basePath) == QDir::cleanPath(bundledPath);
+                if (isBundledPath && m_developmentManifestPresent && m_developmentManifestValid &&
+                    !m_developmentPlugins.contains(info.name)) {
+                    continue;
+                }
+                if (!isBundledPath && m_developmentManifestPresent &&
+                    (m_bundledPlugins.contains(info.name) ||
+                     (m_developmentManifestValid && m_developmentPlugins.contains(info.name)))) {
+                    continue;
+                }
+                info.loaded = m_loadedPlugins.contains(info.name);
+                if (isBundledPath) {
                     m_bundledPlugins[info.name] = info;
                 }
                 if (info.category.toLower().contains("camera")) {
@@ -515,8 +563,15 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
         return dispatch->result.load(std::memory_order_acquire) == 1;
     }
 
+    const QString canonicalName = resolveModuleName(name);
+    if (!canonicalName.isEmpty() && canonicalName != name)
+        return loadPlugin(canonicalName, timeoutMs);
+
     PluginInfo info;
     PluginInfo bundledInfo;
+    DevelopmentPlugin developmentPlugin;
+    bool developmentManaged = false;
+    bool developmentManifestValid = false;
     QElapsedTimer waitTimer;
     waitTimer.start();
 
@@ -551,6 +606,12 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
             return false;
         }
         bundledInfo = m_bundledPlugins.value(name);
+        developmentManaged = m_developmentManifestPresent && !bundledInfo.path.isEmpty();
+        developmentManifestValid = m_developmentManifestValid;
+        if (developmentManaged && developmentManifestValid) {
+            developmentPlugin = m_developmentPlugins.value(name);
+            info = bundledInfo;
+        }
         m_loadingPlugins.insert(name);
         m_loadingThreads.insert(name, QThread::currentThread());
     }
@@ -561,12 +622,16 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
         m_loadingComplete.wakeAll();
     };
 
-    auto loadCandidate = [this, &name](const PluginInfo& candidate, QString& error,
-                                       QLibrary*& abiLibrary) -> QPluginLoader* {
+    auto loadCandidate = [this, &name, developmentManaged, developmentManifestValid, developmentPlugin](
+                             const PluginInfo& candidate, QString& error, QLibrary*& abiLibrary) -> QPluginLoader* {
         error.clear();
         abiLibrary = nullptr;
         if (candidate.path.isEmpty()) {
             error = QStringLiteral("Plugin metadata path is empty");
+            return nullptr;
+        }
+        if (developmentManaged && !developmentManifestValid) {
+            error = QStringLiteral("Development plugin manifest is invalid; refusing bundled plugin load");
             return nullptr;
         }
         QDir candidateDir(QFileInfo(candidate.path).absoluteDir());
@@ -584,7 +649,22 @@ bool PluginManager::loadPlugin(const QString& name, int timeoutMs) {
             error = QStringLiteral("No library file found");
             return nullptr;
         }
-        auto* loader = new QPluginLoader(candidateDir.filePath(libs.first()));
+        QString libraryPath = candidateDir.filePath(libs.first());
+        if (developmentManaged) {
+            if (developmentPlugin.library.isEmpty()) {
+                error = QStringLiteral("Plugin is absent from the development manifest");
+                return nullptr;
+            }
+            libraryPath = candidateDir.filePath(developmentPlugin.library);
+            QFile library(libraryPath);
+            if (!library.open(QIODevice::ReadOnly) ||
+                QCryptographicHash::hash(library.readAll(), QCryptographicHash::Sha256).toHex() !=
+                    developmentPlugin.sha256) {
+                error = QStringLiteral("Build-local plugin SHA-256 mismatch: %1").arg(developmentPlugin.library);
+                return nullptr;
+            }
+        }
+        auto* loader = new QPluginLoader(libraryPath);
         loader->setLoadHints(QLibrary::LoadHints());
         if (!loader->load()) {
             error = loader->errorString();
@@ -967,18 +1047,43 @@ PluginInfo PluginManager::pluginInfo(const QString& name) const {
         if (it.key().compare(name, Qt::CaseInsensitive) == 0)
             return it.value();
     }
-    // 4. id 前缀匹配（strip "com.deeplux.plugin." → match id）
-    // 低: "com.deeplux.plugin." 长度为 20（含末尾点），mid(20) 正确
-    // 但用 size() 更安全可读
-    QString stripped = name;
-    const QString prefix = "com.deeplux.plugin.";
-    if (stripped.startsWith(prefix))
-        stripped = stripped.mid(prefix.size());
-    for (const PluginInfo& info : m_modules) {
-        if (info.id.endsWith(stripped, Qt::CaseInsensitive))
-            return info;
-    }
+    const QString canonicalName = resolveModuleName(name);
+    if (!canonicalName.isEmpty())
+        return m_modules.value(canonicalName);
     return PluginInfo();
+}
+
+QString PluginManager::resolveModuleName(const QString& idOrName) const {
+    const QString key = idOrName.trimmed();
+    if (key.isEmpty())
+        return {};
+
+    QMutexLocker locker(&m_mutex);
+    if (m_modules.contains(key))
+        return key;
+
+    const QList<PluginInfo> modules = m_modules.values();
+    auto findUnique = [&modules, &key](auto predicate) {
+        QString match;
+        for (const PluginInfo& info : modules) {
+            if (!predicate(info))
+                continue;
+            if (!match.isEmpty())
+                return QString();
+            match = info.name;
+        }
+        return match;
+    };
+
+    QString match = findUnique([&key](const PluginInfo& info) { return info.id == key; });
+    if (match.isEmpty())
+        match = findUnique([&key](const PluginInfo& info) { return info.name.compare(key, Qt::CaseInsensitive) == 0; });
+    if (match.isEmpty()) {
+        match = findUnique([&key](const PluginInfo& info) {
+            return info.id.section(QLatin1Char('.'), -1).compare(key, Qt::CaseInsensitive) == 0;
+        });
+    }
+    return match;
 }
 
 QJsonObject PluginManager::availabilityItem(const PluginInfo& info, bool loaded) {
@@ -1108,6 +1213,10 @@ QString PluginManager::unloadBlockReasonForPlugin(const QString& name) const {
 }
 
 IModule* PluginManager::createModule(const QString& name) {
+    const QString canonicalName = resolveModuleName(name);
+    if (!canonicalName.isEmpty() && canonicalName != name)
+        return createModule(canonicalName);
+
     QMutexLocker locker(&m_mutex);
     if (!m_loadedPlugins.contains(name) || !m_modules.contains(name))
         return nullptr;

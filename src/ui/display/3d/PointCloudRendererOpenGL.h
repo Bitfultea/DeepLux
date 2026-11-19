@@ -47,6 +47,9 @@ public:
     int currentLODLevel() const override {
         return m_lodBuffer.currentLevel();
     }
+    size_t currentPointCount() const {
+        return m_pointCount;
+    }
 
     void setInteractionActive(bool active);
     bool isInteractionActive() const {
@@ -101,6 +104,7 @@ private:
     size_t m_pointCount = 0;
     float m_zMin = 0;
     float m_zMax = 1;
+    float m_sceneScale = 1.0f;
 
     // LOD 支持
     PointCloudLODBuffer m_lodBuffer;

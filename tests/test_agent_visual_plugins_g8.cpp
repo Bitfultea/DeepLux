@@ -10,10 +10,12 @@
 
 #include <QColor>
 #include <QDir>
+#include <QDirIterator>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
 #include <QTextStream>
@@ -187,7 +189,23 @@ private slots:
         PluginManager& plugins = PluginManager::instance();
         QVERIFY(plugins.initialize());
         QVERIFY(plugins.pluginPaths().contains(QDir(pluginRoot).absolutePath()));
-        QCOMPARE(plugins.availableModules().size(), 36);
+        QStringList fixtureNames;
+        QDirIterator metadataFiles(pluginRoot, {QStringLiteral("metadata.json")}, QDir::Files,
+                                   QDirIterator::Subdirectories);
+        while (metadataFiles.hasNext()) {
+            QFile metadata(metadataFiles.next());
+            if (!metadata.open(QIODevice::ReadOnly))
+                continue;
+            const QString name =
+                QJsonDocument::fromJson(metadata.readAll()).object().value(QStringLiteral("name")).toString();
+            if (!name.isEmpty())
+                fixtureNames.append(name);
+        }
+        QCOMPARE(fixtureNames.size(), 36);
+        const QStringList availableModules = plugins.availableModules();
+        for (const QString& name : fixtureNames)
+            QVERIFY2(availableModules.contains(name),
+                     qPrintable(QStringLiteral("Missing fixture plugin: %1").arg(name)));
         ToolSchema::instance().registerDefaultTools();
         QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
         qRegisterMetaType<RunResult>("DeepLux::RunResult");

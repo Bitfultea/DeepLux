@@ -1,5 +1,8 @@
 #include "ToolBox.h"
 
+#include "PluginDragPayload.h"
+#include "core/manager/PluginManager.h"
+
 #include <QApplication>
 #include <QDrag>
 #include <QHeaderView>
@@ -91,13 +94,14 @@ bool ToolBox::eventFilter(QObject* obj, QEvent* event) {
 
 void ToolBox::startDrag(QTreeWidgetItem* item) {
     QString moduleId = item->data(0, Qt::UserRole).toString();
-    QString name = item->text(0);
+    const PluginInfo info = PluginManager::instance().pluginInfo(moduleId);
+    if (info.id.isEmpty()) {
+        return;
+    }
 
     QDrag* drag = new QDrag(this);
     QMimeData* mimeData = new QMimeData();
-
-    // Format: moduleId|name
-    mimeData->setText(QString("%1|%2").arg(moduleId).arg(name));
+    PluginDragPayload::setPluginId(mimeData, info.id);
     drag->setMimeData(mimeData);
 
     m_dragStartPos = QPoint(); // Reset

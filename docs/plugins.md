@@ -2,7 +2,7 @@
 
 本手册覆盖 `src/plugins` 中全部 69 份插件 `metadata.json`，包括平台替代项和可选插件；默认单个平台构建为 66 个插件，构建开关会改变产物数量。参数名称和可编辑范围以各插件的元数据为准；本文补充其在流程中的接入位置、实际使用步骤和结果检查方式。
 
-> 运行前先执行 `cmake --build build --target sync-plugins`。相机、PLC、串口和 3D 模块还受操作系统、硬件、SDK、网络和现场权限影响，配置前应确认相应资源可用。
+构建应用时会自动将本次构建的插件暂存到构建目录 `plugins/`，开发运行建议使用 `cmake --build build --target run-local`。该路径带有构建期 SHA-256 清单，同名插件以本次构建为准；`~/.deeplux/plugins` 不会被构建脚本修改。相机、PLC、串口和 3D 模块还受操作系统、硬件、SDK、网络和现场权限影响，配置前应确认相应资源可用。
 
 ## 通用使用方式
 
@@ -108,9 +108,9 @@ ctest --test-dir build -R test_workerpluginconsistency --output-on-failure
 
 ### `3DPreProcessing` - 高度图 3D 预处理
 
-- **用途**：深度/高度图测量前预处理：2 通道输入提取深度通道，自动 NoData 哨兵检测（TiffLoader 重复极值判据），高度筛选与 ROI 填充。
-- **使用**：接在高度图源（如 `GrabImage` 的 32 位 TIFF）后；启用高度筛选把区间外像素填为填充值；ROI 宽高同为 0 为全图、同 >0 生效；输出 CV_32F 高度图。
-- **关键配置**：heightFilterEnabled、heightFilterMin/Max、fillValue、autoNoData、ROI 中心/宽/高。元数据：[metadata.json](../src/plugins/image_processing/PreProcessing3D/metadata.json)。
+- **用途**：深度/高度图测量前预处理：2 通道输入提取深度通道，自动 NoData 哨兵检测（TiffLoader 重复极值判据），高度筛选、逐轴 ROI、XYZ 缩放和步长下采样。
+- **使用**：接在高度图源（如 `GrabImage` 的 32 位 TIFF）后；高度筛选上下限按输入单位计算；ROI 宽或高为 0 时该轴使用全幅，宽高可逐项设置；下采样按步长保留样本。输出 CV_32F 高度图和对应点云。
+- **关键配置**：heightFilterEnabled、heightFilterMin/Max、fillValue、autoNoData、ROI 中心/宽/高、scaleX/Y/Z、downsampleStep。元数据：[metadata.json](../src/plugins/image_processing/PreProcessing3D/metadata.json)。
 - **检查**：核验 valid/filtered 像素数与存活值域；filtered>0 时写出 height_invalid_value 契约键供 `FitPlane`/`GapMeasure3D` 优先消费；填充值与存活高度碰撞、契约键类型错误均失败关闭。
 
 ### `CropImage` - 旋转矩形批量裁剪

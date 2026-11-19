@@ -3,8 +3,10 @@
 #include "../ThemeManager.h"
 #include "AppIconProvider.h"
 #include "PropertyPanel.h"
+#include "core/geometry/MeasurementData.h"
 
 #include <QCheckBox>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QJsonArray>
@@ -172,16 +174,15 @@ void ModuleInspectorPanel::setupResultsTab() {
 void ModuleInspectorPanel::setupBottomBar() {
     m_bottomBar = new QWidget();
     m_bottomBar->setObjectName("InspectorBottomBar");
-    auto* bottomLayout = new QHBoxLayout(m_bottomBar);
-    bottomLayout->setContentsMargins(8, 6, 8, 6);
-    bottomLayout->setSpacing(4);
+    m_bottomLayout = new QGridLayout(m_bottomBar);
+    m_bottomLayout->setContentsMargins(8, 6, 8, 6);
+    m_bottomLayout->setHorizontalSpacing(4);
+    m_bottomLayout->setVerticalSpacing(4);
 
     // 主按钮：重新运行 — 样式由全局 ThemeManager 提供
     m_rerunBtn = new QPushButton(tr("重新运行"));
     m_rerunBtn->setObjectName("InspectorRerunBtn");
-    m_rerunBtn->setMinimumWidth(112);
     connect(m_rerunBtn, &QPushButton::clicked, this, &ModuleInspectorPanel::onRerunClicked);
-    bottomLayout->addWidget(m_rerunBtn);
 
     // 阶段 B 复核: 启用/断点/备注编辑（不增弹窗）
     m_enabledCheck = new QCheckBox(tr("启用"));
@@ -192,7 +193,6 @@ void ModuleInspectorPanel::setupBottomBar() {
             return;
         emit enabledToggled(m_instanceId, checked);
     });
-    bottomLayout->addWidget(m_enabledCheck);
 
     m_breakpointBtn = new QToolButton();
     m_breakpointBtn->setObjectName("InspectorBreakpointBtn");
@@ -204,7 +204,6 @@ void ModuleInspectorPanel::setupBottomBar() {
             return;
         emit breakpointToggled(m_instanceId, checked);
     });
-    bottomLayout->addWidget(m_breakpointBtn);
 
     m_noteEdit = new QLineEdit();
     m_noteEdit->setObjectName("InspectorNoteEdit");
@@ -215,7 +214,6 @@ void ModuleInspectorPanel::setupBottomBar() {
         emit noteChanged(m_instanceId, m_noteEdit->text());
         m_noteEdit->setModified(false);
     });
-    bottomLayout->addWidget(m_noteEdit, 1);
 
     m_moreBtn = new QToolButton();
     m_moreBtn->setObjectName("InspectorMoreBtn");
@@ -229,9 +227,59 @@ void ModuleInspectorPanel::setupBottomBar() {
     QAction* resetAction = moreMenu->addAction(tr("恢复默认参数"), this, &ModuleInspectorPanel::onResetClicked);
     resetAction->setObjectName("InspectorResetAction");
     m_moreBtn->setMenu(moreMenu);
-    bottomLayout->addWidget(m_moreBtn);
+    updateBottomBarLayout();
 
     layout()->addWidget(m_bottomBar);
+}
+
+void ModuleInspectorPanel::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    updateBottomBarLayout();
+}
+
+void ModuleInspectorPanel::updateBottomBarLayout() {
+    if (!m_bottomLayout || !m_bottomBar)
+        return;
+
+    const QMargins margins = m_bottomLayout->contentsMargins();
+    const int singleRowWidth = m_rerunBtn->minimumSizeHint().width() + m_enabledCheck->minimumSizeHint().width() +
+                               m_breakpointBtn->minimumSizeHint().width() + m_noteEdit->minimumSizeHint().width() +
+                               m_moreBtn->minimumSizeHint().width() + margins.left() + margins.right() +
+                               4 * m_bottomLayout->horizontalSpacing();
+    const bool compact = width() < qMax(320, singleRowWidth);
+    if (compact == m_compactBottomBar && m_bottomLayout->count() > 0)
+        return;
+
+    m_compactBottomBar = compact;
+    m_bottomLayout->removeWidget(m_rerunBtn);
+    m_bottomLayout->removeWidget(m_enabledCheck);
+    m_bottomLayout->removeWidget(m_breakpointBtn);
+    m_bottomLayout->removeWidget(m_noteEdit);
+    m_bottomLayout->removeWidget(m_moreBtn);
+    for (int column = 0; column < 5; ++column)
+        m_bottomLayout->setColumnStretch(column, 0);
+
+    if (compact) {
+        m_bottomLayout->addWidget(m_rerunBtn, 0, 0);
+        m_bottomLayout->addWidget(m_moreBtn, 0, 1, Qt::AlignRight);
+        m_bottomLayout->addWidget(m_enabledCheck, 1, 0);
+        m_bottomLayout->addWidget(m_breakpointBtn, 1, 1);
+        m_bottomLayout->addWidget(m_noteEdit, 1, 2);
+        m_bottomLayout->setColumnStretch(2, 1);
+    } else {
+        m_bottomLayout->addWidget(m_rerunBtn, 0, 0);
+        m_bottomLayout->addWidget(m_enabledCheck, 0, 1);
+        m_bottomLayout->addWidget(m_breakpointBtn, 0, 2);
+        m_bottomLayout->addWidget(m_noteEdit, 0, 3);
+        m_bottomLayout->addWidget(m_moreBtn, 0, 4);
+        m_bottomLayout->setColumnStretch(3, 1);
+    }
+    m_bottomLayout->invalidate();
+    m_bottomBar->updateGeometry();
+    if (QLayout* mainLayout = layout()) {
+        mainLayout->invalidate();
+        mainLayout->activate();
+    }
 }
 
 void ModuleInspectorPanel::setModule(IModule* module, const QString& instanceId, const PluginInfo& info) {
@@ -500,9 +548,55 @@ void ModuleInspectorPanel::refreshResults(const ImageData& output) {
     }
     sortedKeys.append(unordered);
 
-    // 如果没有 ui.results 描述，通过 allData() 显示原始键值
     int row = 0;
+    const auto addResultRow = [this, &row](const QString& label, const QString& value) {
+        m_resultsTable->insertRow(row);
+        m_resultsTable->setItem(row, 0, new QTableWidgetItem(label));
+        auto* valueItem = new QTableWidgetItem(value);
+        valueItem->setToolTip(value);
+        m_resultsTable->setItem(row, 1, valueItem);
+        ++row;
+    };
+    if (m_currentModule && m_currentModule->moduleId() == QLatin1String("com.deeplux.plugin.grabimage")) {
+        addResultRow(tr("图像尺寸"), tr("%1 × %2").arg(output.width()).arg(output.height()));
+        addResultRow(tr("通道数"), QString::number(output.channels()));
+
+        const auto cloud = MeasurementData::pointCloud(output, nullptr);
+        if (cloud) {
+            addResultRow(tr("3D 点数"), QString::number(cloud->points.size()));
+            Eigen::Vector3d minimum;
+            Eigen::Vector3d maximum;
+            bool hasFinitePoint = false;
+            for (const Eigen::Vector3d& point : cloud->points) {
+                if (!point.allFinite())
+                    continue;
+                if (!hasFinitePoint) {
+                    minimum = maximum = point;
+                    hasFinitePoint = true;
+                } else {
+                    minimum = minimum.cwiseMin(point);
+                    maximum = maximum.cwiseMax(point);
+                }
+            }
+            if (hasFinitePoint) {
+                const auto formatPoint = [](const Eigen::Vector3d& point) {
+                    return QStringLiteral("(%1, %2, %3)")
+                        .arg(point.x(), 0, 'g', 15)
+                        .arg(point.y(), 0, 'g', 15)
+                        .arg(point.z(), 0, 'g', 15);
+                };
+                addResultRow(tr("3D AABB 最小值"), formatPoint(minimum));
+                addResultRow(tr("3D AABB 最大值"), formatPoint(maximum));
+            } else {
+                addResultRow(tr("3D AABB"), tr("无有效点"));
+            }
+        }
+    }
+
+    // 如果没有 ui.results 描述，通过 allData() 显示原始键值
     for (const QString& key : sortedKeys) {
+        if (key == QLatin1String(MeasurementKeys::PointCloud))
+            continue;
         QVariant value = all.value(key);
 
         // 获取元数据描述

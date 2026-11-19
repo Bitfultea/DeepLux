@@ -83,6 +83,9 @@ public slots:
     // LOD 控制
     void setLODEnabled(bool enabled);
     bool isLODEnabled() const;
+    int currentLODLevel() const {
+        return m_renderer ? m_renderer->currentLODLevel() : 0;
+    }
     void applyTheme(bool isDark);
 
 signals:

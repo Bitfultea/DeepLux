@@ -1,7 +1,6 @@
 #include "LODController.h"
 
 #include <algorithm>
-#include <cmath>
 
 namespace DeepLux {
 
@@ -38,12 +37,13 @@ size_t LODController::getTargetPointCount(size_t originalCount, int level) const
         return originalCount;
     }
 
-    // 采样率递减：level 0 = 100%, level 1 = 50%, ...
-    float rate = std::pow(0.5f, level);
-    size_t target = static_cast<size_t>(originalCount * rate);
+    if (originalCount == 0 || m_pointBudget == 0) {
+        return 0;
+    }
 
-    // 确保不超过预算
-    return std::min(target, m_pointBudget);
+    const size_t maxDetailCount = std::min(originalCount, m_pointBudget);
+    const size_t target = static_cast<size_t>(maxDetailCount * DEFAULT_SAMPLE_RATES[level]);
+    return std::max(size_t(1), target);
 }
 
 } // namespace DeepLux

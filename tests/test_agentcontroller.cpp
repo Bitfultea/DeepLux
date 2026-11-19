@@ -4242,6 +4242,85 @@ private slots:
         QVERIFY(found);
     }
 
+    void testOutOfSyncFlowValidationContinuesWithWorkflowValidator() {
+        AgentController& controller = AgentController::instance();
+        controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+        QVERIFY(PluginManager::instance().initialize());
+        QVERIFY(PluginManager::instance().loadPlugin(QStringLiteral("GrabImage")));
+        ProjectManager::instance().closeProject();
+        Project* project = ProjectManager::instance().newProject();
+        QVERIFY(project);
+        QVERIFY(RunEngine::instance().loadProject(project));
+
+        controller.sendUserMessage(QStringLiteral("Add a GrabImage module and validate the flow"));
+        QSignalSpy errorSpy(&controller, &AgentController::llmErrorOccurred);
+        AgentResponse editAndValidate;
+        editAndValidate.success = true;
+        editAndValidate.toolCalls =
+            QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("add_before_validate")},
+                                   {QStringLiteral("type"), QStringLiteral("function")},
+                                   {QStringLiteral("name"), QStringLiteral("add_module")},
+                                   {QStringLiteral("arguments"),
+                                    QJsonObject{{QStringLiteral("plugin"), QStringLiteral("GrabImage")},
+                                                {QStringLiteral("instanceName"), QStringLiteral("batch_grab")}}}},
+                       QJsonObject{{QStringLiteral("id"), QStringLiteral("validate_stale_engine")},
+                                   {QStringLiteral("type"), QStringLiteral("function")},
+                                   {QStringLiteral("name"), QStringLiteral("validate_flow")},
+                                   {QStringLiteral("arguments"), QJsonObject{}}}};
+        m_mock->emitResponse(editAndValidate);
+
+        QVERIFY2(controller.state() == AgentController::AgentState::Thinking,
+                 errorSpy.isEmpty() ? "controller did not continue" : qPrintable(errorSpy.last().at(0).toString()));
+        QCOMPARE(m_mock->requestCount, 2);
+        QMap<QString, QJsonObject> firstBatchResults;
+        for (const AgentMessage& message : m_mock->lastCtx.messages) {
+            if (message.role == QLatin1String("tool"))
+                firstBatchResults.insert(message.toolCallId,
+                                         QJsonDocument::fromJson(message.content.toUtf8()).object());
+        }
+        QCOMPARE(
+            firstBatchResults.value(QStringLiteral("add_before_validate")).value(QStringLiteral("status")).toString(),
+            QStringLiteral("added"));
+        QCOMPARE(firstBatchResults.value(QStringLiteral("validate_stale_engine"))
+                     .value(QStringLiteral("errorCode"))
+                     .toString(),
+                 QStringLiteral("ENGINE_OUT_OF_SYNC"));
+        QCOMPARE(firstBatchResults.value(QStringLiteral("validate_stale_engine"))
+                     .value(QStringLiteral("details"))
+                     .toObject()
+                     .value(QStringLiteral("recommendedTool"))
+                     .toString(),
+                 QStringLiteral("validate_workflow"));
+        QCOMPARE(project->modules().size(), 1);
+
+        AgentResponse workflowValidation;
+        workflowValidation.success = true;
+        workflowValidation.toolCalls =
+            QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("validate_current_project")},
+                                   {QStringLiteral("type"), QStringLiteral("function")},
+                                   {QStringLiteral("name"), QStringLiteral("validate_workflow")},
+                                   {QStringLiteral("arguments"), QJsonObject{}}}};
+        m_mock->emitResponse(workflowValidation);
+        QCOMPARE(m_mock->requestCount, 3);
+        QJsonObject validationResult;
+        for (const AgentMessage& message : m_mock->lastCtx.messages) {
+            if (message.role == QLatin1String("tool") &&
+                message.toolCallId == QLatin1String("validate_current_project"))
+                validationResult = QJsonDocument::fromJson(message.content.toUtf8()).object();
+        }
+        QVERIFY(validationResult.value(QStringLiteral("ok")).toBool());
+        QCOMPARE(RunEngine::instance().modules().size(), 1);
+
+        AgentResponse done;
+        done.success = true;
+        done.content = QStringLiteral("The flow is valid.");
+        m_mock->emitResponse(done);
+        QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+        ProjectManager::instance().closeProject();
+        RunEngine::instance().stop();
+        RunEngine::instance().clearModules();
+    }
+
     // ---------- 并发防护 ----------
 
     void testBusyStateRejectsNewMessage() {

@@ -1,8 +1,10 @@
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLibrary>
@@ -32,6 +34,31 @@ public:
 private:
     QSemaphore* m_entered;
     QSemaphore* m_continueDestruction;
+};
+
+class ScopedFileRemoval {
+public:
+    explicit ScopedFileRemoval(const QString& path) : m_path(path), m_existed(QFile::exists(path)) {
+        if (m_existed) {
+            QFile file(path);
+            if (file.open(QIODevice::ReadOnly))
+                m_contents = file.readAll();
+        }
+        QFile::remove(path);
+    }
+
+    ~ScopedFileRemoval() {
+        if (!m_existed)
+            return;
+        QFile file(m_path);
+        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            file.write(m_contents);
+    }
+
+private:
+    QString m_path;
+    QByteArray m_contents;
+    bool m_existed;
 };
 
 class UnmanagedModule final : public ModuleBase {
@@ -88,6 +115,7 @@ private slots:
     void testUnloadRejectsForeignThread();
     void testWorkerLoadHonorsTimeoutWhenManagerThreadIsNotPumping();
     void testWorkerLoadReportsResultAfterStartedLoadExceedsDispatchTimeout();
+    void testDevelopmentManifestPinsPluginAndVerifiesHash();
 
 private:
 };
@@ -777,6 +805,12 @@ void TestPluginManager::testBrokenUserPluginFallsBackToBundle() {
     manager.addPluginPath(userRoot.path());
     manager.scanPlugins();
     QCOMPARE(manager.pluginInfo("PackagingFallback").path, QDir(userDir).filePath("metadata.json"));
+    if (QFileInfo::exists(QDir(bundleRoot).filePath(QStringLiteral("deeplux-plugin-manifest.json")))) {
+        // A development manifest is the bundled-plugin allowlist; unlisted files placed beside the build must fail
+        // closed.
+        QVERIFY(!manager.loadPlugin("PackagingFallback"));
+        return;
+    }
     QVERIFY(manager.loadPlugin("PackagingFallback"));
     QCOMPARE(manager.pluginInfo("PackagingFallback").path, QDir(bundleDir.path()).filePath("metadata.json"));
     manager.unloadPlugin("PackagingFallback");
@@ -840,6 +874,12 @@ void TestPluginManager::testNonCameraUserPluginFallsBackToBundledCamera() {
     QVERIFY(QFile::remove(QDir(userDir).filePath(QFileInfo(QStringLiteral(TEST_PLUGINMANAGER_LIB)).fileName())));
 
     manager.scanPlugins();
+    if (QFileInfo::exists(QDir(bundleRoot).filePath(QStringLiteral("deeplux-plugin-manifest.json")))) {
+        QVERIFY(manager.availableModules().contains("PackagingCameraFallback"));
+        QVERIFY(!manager.availableCameras().contains("PackagingCameraFallback"));
+        QVERIFY(!manager.loadPlugin("PackagingCameraFallback"));
+        return;
+    }
     QVERIFY(manager.availableModules().contains("PackagingCameraFallback"));
     QVERIFY(manager.availableCameras().contains("PackagingCameraFallback"));
     // Keep both metadata candidates visible so Agent can reject the name as ambiguous;
@@ -1072,6 +1112,67 @@ void TestPluginManager::testWorkerLoadReportsResultAfterStartedLoadExceedsDispat
     QVERIFY(loaded);
     QVERIFY(manager.isPluginLoaded(QStringLiteral("AbiSlow")));
     QVERIFY(manager.tryUnloadPlugin(QStringLiteral("AbiSlow")));
+}
+
+void TestPluginManager::testDevelopmentManifestPinsPluginAndVerifiesHash() {
+    const QString bundleRoot = QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("../plugins");
+    const QString manifestPath = QDir(bundleRoot).filePath("deeplux-plugin-manifest.json");
+    ScopedFileRemoval restoreManifest(manifestPath);
+    QVERIFY(QDir().mkpath(bundleRoot));
+    QTemporaryDir bundleDir(QDir(bundleRoot).filePath("DevelopmentPinnedXXXXXX"));
+    QTemporaryDir userRoot;
+    QVERIFY(bundleDir.isValid());
+    QVERIFY(userRoot.isValid());
+
+    const QString pluginName = QStringLiteral("DevelopmentPinned");
+    const QString libraryName = QFileInfo(QStringLiteral(TEST_PLUGINMANAGER_LIB)).fileName();
+    const QString bundleLibrary = QDir(bundleDir.path()).filePath(libraryName);
+    const QString userDir = userRoot.filePath(pluginName);
+    QVERIFY(QDir().mkpath(userDir));
+    QFile sourceMetadata(QStringLiteral(TEST_PLUGINMANAGER_METADATA));
+    QVERIFY(sourceMetadata.open(QIODevice::ReadOnly));
+    QJsonObject metadata = QJsonDocument::fromJson(sourceMetadata.readAll()).object();
+    metadata["name"] = pluginName;
+    metadata["id"] = QStringLiteral("com.deeplux.test.developmentpinned");
+    const QByteArray metadataBytes = QJsonDocument(metadata).toJson();
+    for (const QString& directory : {bundleDir.path(), userDir}) {
+        QFile output(QDir(directory).filePath("metadata.json"));
+        QVERIFY(output.open(QIODevice::WriteOnly));
+        QCOMPARE(output.write(metadataBytes), metadataBytes.size());
+    }
+    QVERIFY(QFile::copy(QStringLiteral(TEST_PLUGINMANAGER_LIB), bundleLibrary));
+    QFile staleUserLibrary(QDir(userDir).filePath(libraryName));
+    QVERIFY(staleUserLibrary.open(QIODevice::WriteOnly));
+    QVERIFY(staleUserLibrary.write("stale plugin") > 0);
+    staleUserLibrary.close();
+
+    QFile builtLibrary(bundleLibrary);
+    QVERIFY(builtLibrary.open(QIODevice::ReadOnly));
+    const QByteArray digest = QCryptographicHash::hash(builtLibrary.readAll(), QCryptographicHash::Sha256).toHex();
+    const QJsonObject entry{{"name", pluginName}, {"library", libraryName}, {"sha256", QString::fromLatin1(digest)}};
+    const QJsonObject manifest{{"formatVersion", 1}, {"mode", "development"}, {"plugins", QJsonArray{entry}}};
+    QFile manifestFile(manifestPath);
+    QVERIFY(manifestFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(manifestFile.write(QJsonDocument(manifest).toJson()), QJsonDocument(manifest).toJson().size());
+    manifestFile.close();
+
+    PluginManager& manager = PluginManager::instance();
+    manager.addPluginPath(userRoot.path());
+    manager.scanPlugins();
+    QCOMPARE(manager.pluginInfo(pluginName).path, QDir(bundleDir.path()).filePath("metadata.json"));
+    QVERIFY2(manager.loadPlugin(pluginName), qPrintable(manager.pluginInfo(pluginName).error));
+    manager.unloadPlugin(pluginName);
+
+    QVERIFY(QFile::remove(bundleLibrary));
+    QFile tamperedLibrary(bundleLibrary);
+    QVERIFY(tamperedLibrary.open(QIODevice::WriteOnly));
+    QVERIFY(tamperedLibrary.write("tampered plugin") > 0);
+    tamperedLibrary.close();
+    QSignalSpy failedSpy(&manager, &PluginManager::pluginLoadFailed);
+    QVERIFY(!manager.loadPlugin(pluginName));
+    QCOMPARE(failedSpy.count(), 1);
+    QVERIFY(failedSpy.first().at(1).toString().contains(QStringLiteral("SHA-256 mismatch")));
+    QVERIFY(!manager.isPluginLoaded(pluginName));
 }
 
 QTEST_MAIN(TestPluginManager)

@@ -38,6 +38,8 @@
 #include <QtTest/QtTest>
 #include <atomic>
 #include <core/base/ModuleBase.h>
+#include <core/display/DisplayData.h>
+#include <core/display/IDisplayPort.h>
 #include <core/engine/DisplayFrame.h>
 #include <core/engine/FlowExecutionService.h>
 #include <core/engine/RunEngine.h>
@@ -80,7 +82,7 @@ struct ContractRender {
 
 } // namespace
 
-class ContractProbeModule : public ModuleBase {
+class ContractProbeModule : public ModuleBase, public IDisplayPort {
     Q_OBJECT
 
 public:
@@ -93,6 +95,18 @@ public:
     }
 
     std::atomic_int runs{0};
+
+    bool hasDisplayOutput() const override {
+        return m_displayData.isValid();
+    }
+
+    DisplayData getDisplayData() const override {
+        return m_displayData;
+    }
+
+    QString preferredViewport() const override {
+        return QStringLiteral("main");
+    }
 
 protected:
     bool process(const ImageData& input, ImageData& output) override {
@@ -108,6 +122,7 @@ protected:
         QImage image(24, 18, QImage::Format_RGB32);
         image.fill(QColor(qMin(255, 20 * k), 40, 60));
         output = ImageData(image);
+        m_displayData = DisplayData(output);
         output.setData(QStringLiteral("contract_k"), k);
         return true;
     }
@@ -119,6 +134,7 @@ protected:
 private:
     ContractBarrier* m_barrier = nullptr;
     bool m_hold = false;
+    DisplayData m_displayData;
 };
 
 // Approved invariant: NEVER return while the worker still references captured

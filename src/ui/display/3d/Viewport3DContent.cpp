@@ -441,9 +441,6 @@ void Viewport3DContent::mousePressEvent(QMouseEvent* event) {
         m_pickPressPos = event->pos();
         m_hasPendingLeftPress = true;
     }
-    if (event->buttons() & (Qt::LeftButton | Qt::RightButton | Qt::MiddleButton)) {
-        beginInteraction();
-    }
 }
 
 void Viewport3DContent::mouseMoveEvent(QMouseEvent* event) {

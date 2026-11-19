@@ -237,7 +237,7 @@ flowchart LR
 ```bash
 cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
-cmake --build build --target sync-plugins
+cmake --build build --target run-local
 ```
 
 界面变更还应在 GUI 中检查流程、主视图、检查器和底部日志的联动；插件接口或元数据变更还应验证插件重建和运行时加载。

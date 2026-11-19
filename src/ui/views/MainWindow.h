@@ -18,6 +18,7 @@
 #include <QMainWindow>
 #include <QMap>
 #include <QPoint>
+#include <QPointF>
 #include <QPointer>
 #include <QPushButton>
 #include <QSet>
@@ -188,10 +189,14 @@ private:
 protected:
     virtual bool openDesktopUrl(const QUrl& url) const;
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void beginPendingToolboxDrop(const QString& pluginName, int insertRow, const QPointF& canvasPosition = QPointF(),
+                                 bool positionCanvasNode = false);
     void schedulePendingToolboxDrop(const QString& pluginName, const QString& instanceName, QTreeWidgetItem* item,
-                                    const QString& token, Project* targetProject);
+                                    const QString& token, Project* targetProject,
+                                    const QPointF& canvasPosition = QPointF(), bool positionCanvasNode = false);
     void commitPendingToolboxDrop(const QString& pluginName, const QString& instanceName, QTreeWidgetItem* item,
-                                  const QString& token, Project* targetProject);
+                                  const QString& token, Project* targetProject,
+                                  const QPointF& canvasPosition = QPointF(), bool positionCanvasNode = false);
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
     void closeEvent(QCloseEvent* event) override;
@@ -216,6 +221,7 @@ protected:
     bool m_isStepMode = false;
     bool m_closeWhenRunFinishes = false;
     bool m_closeAwaitingServiceJob = false;
+    bool m_closeUnsavedChangesResolved = false;
     bool m_cameraShutdownStarted = false;
     bool m_cameraShutdownReady = false;
     QMetaObject::Connection m_cameraShutdownConnection;
@@ -259,7 +265,7 @@ protected:
     QSet<QString> m_hiddenDataSourceIds;
     QString m_primaryDataSourceViewportId;
     // 自动配置流程中第一个GrabImage模块的图像路径
-    void autoConfigureGrabImage(const QString& filePath);
+    bool autoConfigureGrabImage(const QString& filePath);
 
     // 主题
     bool m_isDarkTheme = false;
@@ -276,7 +282,8 @@ protected:
     void updateDisplayCaptureForVisibility();
     void clearExecutionHighlight(QTreeWidgetItem* item);
     void showProcessModuleOutput(QTreeWidgetItem* item, bool userInitiated = false);
-    void displayImage(const ImageData& image, const QString& label = QString(), const QString& moduleId = QString());
+    void displayImage(const ImageData& image, const QString& label = QString(), const QString& moduleId = QString(),
+                      int delayMs = 0);
     bool importFile(const QString& filePath);
     bool importImageFile(const QString& filePath, const QString& existingDataSourceId = QString(),
                          bool rebuildPrimaryDisplay = true);
@@ -318,7 +325,8 @@ protected:
     void clearMeasurementOverlays();
 
     // 统一选择入口 — 同步流程树、画布和检查器
-    void selectModule(const QString& instanceId, bool revealInspector, bool force = false);
+    void selectModule(const QString& instanceId, bool revealInspector, bool force = false,
+                      bool refreshInspector = true);
 
     // 流程中的插件实例
     QMap<QString, IModule*> m_flowModules;
@@ -396,6 +404,7 @@ protected:
     QAction* m_viewToolPanelAction = nullptr;
     QAction* m_viewProcessPanelAction = nullptr;
     QAction* m_viewBottomPanelAction = nullptr;
+    QAction* m_focusModeAction = nullptr;
 
     // Agent 菜单动作
     QAction* m_agentPermissionAction = nullptr;

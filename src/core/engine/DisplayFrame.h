@@ -28,6 +28,7 @@ struct DEEPLUX_API DisplayFrame {
     quint64 frameId = 0;
     QString moduleId;
     QString viewportId;
+    int delayMs = 0;
     QImage image;
     ImageCoordinateProvenance coordinateProvenance;
     QMap<QString, QVariantMap> moduleDataSnapshot;

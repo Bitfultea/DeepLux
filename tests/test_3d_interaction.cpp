@@ -5,6 +5,7 @@
 #include <QtTest/QtTest>
 #include <cmath>
 #include <ui/display/3d/CameraController.h>
+#include <ui/display/3d/PointCloudLODBuffer.h>
 #include <ui/display/3d/PointCloudRendererOpenGL.h>
 #include <ui/display/3d/Viewport3DContent.h>
 
@@ -15,6 +16,10 @@ class Test3DInteraction : public QObject {
 
 private slots:
     void interactionModeKeepsCoarseLodUntilReleased();
+    void clickingDoesNotChangeLod();
+    void currentPointBudgetCapsRenderedCloud();
+    void tiffSizedCloudUsesRelativeInitialLod();
+    void lodSamplingDistributesOrganizedCloudSpatially();
     void heightRangeUsesFullObjectSpaceData();
     void heightShaderUsesObjectSpaceZ();
     void projectedPickReturnsOriginalWorldPointAfterCameraTransforms();
@@ -60,12 +65,14 @@ void Test3DInteraction::interactionModeKeepsCoarseLodUntilReleased() {
     renderer.setPointCloud(buffer, true);
     QCOMPARE(renderer.currentLODLevel(), 0);
 
-    renderer.updateLODForDistance(6.0f);
-    QCOMPARE(renderer.currentLODLevel(), 1);
+    renderer.updateLODForDistance(10000.0f);
+    QCOMPARE(renderer.currentLODLevel(), LODController::MAX_LOD_LEVELS - 1);
+    const size_t restingPointCount = renderer.currentPointCount();
 
     renderer.setInteractionActive(true);
     QVERIFY(renderer.isInteractionActive());
-    QVERIFY(renderer.currentLODLevel() >= 1);
+    QVERIFY(renderer.currentLODLevel() >= LODController::MAX_LOD_LEVELS - 1);
+    QVERIFY(renderer.currentPointCount() <= restingPointCount);
     const int interactionLevel = renderer.currentLODLevel();
 
     renderer.updateLODForDistance(0.2f);
@@ -75,6 +82,100 @@ void Test3DInteraction::interactionModeKeepsCoarseLodUntilReleased() {
     QVERIFY(!renderer.isInteractionActive());
     renderer.updateLODForDistance(0.2f);
     QCOMPARE(renderer.currentLODLevel(), 0);
+    QCOMPARE(renderer.currentPointCount(), size_t(1000));
+}
+
+void Test3DInteraction::clickingDoesNotChangeLod() {
+    Viewport3DContent viewport;
+    viewport.resize(640, 480);
+    viewport.displayData(displayDataForCloud(makePickCloud(QVector3D(1.0f, 2.0f, 3.0f))));
+    QCOMPARE(viewport.currentLODLevel(), 0);
+
+    const QPoint position = viewport.rect().center();
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(position), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&viewport, &press);
+    QCOMPARE(viewport.currentLODLevel(), 0);
+
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(position), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&viewport, &release);
+    QCOMPARE(viewport.currentLODLevel(), 0);
+}
+
+void Test3DInteraction::currentPointBudgetCapsRenderedCloud() {
+    PointCloudGPUBuffer buffer;
+    for (int i = 0; i < 10000; ++i) {
+        buffer.positions.push_back(static_cast<float>(i % 100));
+        buffer.positions.push_back(static_cast<float>(i / 100));
+        buffer.positions.push_back(static_cast<float>((i * 17) % 73));
+    }
+
+    PointCloudRendererOpenGL renderer;
+    renderer.lodController().setPointBudget(2048);
+    renderer.setPointCloud(buffer, true);
+    QCOMPARE(renderer.currentLODLevel(), 0);
+    QVERIFY(renderer.currentPointCount() <= 2048);
+}
+
+void Test3DInteraction::tiffSizedCloudUsesRelativeInitialLod() {
+    PointCloudGPUBuffer buffer;
+    constexpr int width = 625;
+    constexpr int height = 645;
+    buffer.positions.reserve(width * height * 3);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            buffer.positions.push_back(static_cast<float>(x));
+            buffer.positions.push_back(static_cast<float>(y));
+            buffer.positions.push_back(static_cast<float>((x + y) % 37));
+        }
+    }
+
+    CameraController camera;
+    camera.frameData(QVector3D(0.0f, 0.0f, 0.0f),
+                     QVector3D(static_cast<float>(width - 1), static_cast<float>(height - 1), 36.0f));
+    PointCloudRendererOpenGL renderer;
+    renderer.setPointCloud(buffer, true);
+    renderer.updateLODForDistance(camera.distance());
+
+    QCOMPARE(renderer.currentLODLevel(), 0);
+    QCOMPARE(renderer.currentPointCount(), size_t(100000));
+}
+
+void Test3DInteraction::lodSamplingDistributesOrganizedCloudSpatially() {
+    constexpr int width = 100;
+    constexpr int height = 80;
+    PointCloudGPUBuffer input;
+    input.positions.reserve(width * height * 3);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            input.positions.push_back(static_cast<float>(x));
+            input.positions.push_back(static_cast<float>(y));
+            input.positions.push_back(0.0f);
+            input.colors.push_back(static_cast<float>(x));
+            input.colors.push_back(static_cast<float>(y));
+            input.colors.push_back(0.0f);
+            input.intensities.push_back(static_cast<float>(y));
+        }
+    }
+
+    PointCloudLODBuffer lod;
+    LODController controller;
+    lod.setData(input, controller);
+    const PointCloudGPUBuffer* coarse = lod.getLevel(3);
+    QVERIFY(coarse);
+    QCOMPARE(coarse->pointCount(), size_t(1000));
+
+    std::array<size_t, 8> xResidueCounts{};
+    for (size_t i = 0; i < coarse->pointCount(); ++i) {
+        const int x = static_cast<int>(coarse->positions[i * 3]);
+        const int y = static_cast<int>(coarse->positions[i * 3 + 1]);
+        ++xResidueCounts[static_cast<size_t>(x % 8)];
+        QCOMPARE(coarse->colors[i * 3], coarse->positions[i * 3]);
+        QCOMPARE(coarse->colors[i * 3 + 1], coarse->positions[i * 3 + 1]);
+        QCOMPARE(coarse->intensities[i], static_cast<float>(y));
+    }
+    for (size_t count : xResidueCounts) {
+        QVERIFY(count > 50);
+    }
 }
 
 void Test3DInteraction::heightRangeUsesFullObjectSpaceData() {
@@ -90,7 +191,7 @@ void Test3DInteraction::heightRangeUsesFullObjectSpaceData() {
     QCOMPARE(renderer.heightMinimum(), -500.0f);
     QCOMPARE(renderer.heightMaximum(), 499.0f);
 
-    renderer.updateLODForDistance(20.0f);
+    renderer.updateLODForDistance(5000.0f);
     QVERIFY(renderer.currentLODLevel() > 0);
     QCOMPARE(renderer.heightMinimum(), -500.0f);
     QCOMPARE(renderer.heightMaximum(), 499.0f);

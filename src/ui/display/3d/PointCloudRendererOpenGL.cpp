@@ -64,8 +64,22 @@ void PointCloudRendererOpenGL::setPointCloud(const PointCloudGPUBuffer& buffer, 
 
     m_zMin = std::numeric_limits<float>::infinity();
     m_zMax = -std::numeric_limits<float>::infinity();
+    float xMin = std::numeric_limits<float>::infinity();
+    float xMax = -std::numeric_limits<float>::infinity();
+    float yMin = std::numeric_limits<float>::infinity();
+    float yMax = -std::numeric_limits<float>::infinity();
     for (size_t i = 2; i < buffer.positions.size(); i += 3) {
+        const float x = buffer.positions[i - 2];
+        const float y = buffer.positions[i - 1];
         const float z = buffer.positions[i];
+        if (std::isfinite(x)) {
+            xMin = std::min(xMin, x);
+            xMax = std::max(xMax, x);
+        }
+        if (std::isfinite(y)) {
+            yMin = std::min(yMin, y);
+            yMax = std::max(yMax, y);
+        }
         if (std::isfinite(z)) {
             m_zMin = std::min(m_zMin, z);
             m_zMax = std::max(m_zMax, z);
@@ -75,9 +89,12 @@ void PointCloudRendererOpenGL::setPointCloud(const PointCloudGPUBuffer& buffer, 
         m_zMin = 0.0f;
         m_zMax = 1.0f;
     }
+    const float sceneScale = std::sqrt((xMax - xMin) * (xMax - xMin) + (yMax - yMin) * (yMax - yMin) +
+                                       (m_zMax - m_zMin) * (m_zMax - m_zMin));
+    m_sceneScale = std::isfinite(sceneScale) ? std::max(sceneScale, 1e-6f) : 1.0f;
 
     // 始终将数据存储在 LOD buffer 中，保证指针有效
-    m_lodBuffer.setData(buffer);
+    m_lodBuffer.setData(buffer, m_lodController);
     selectLODLevel(0);
     m_buffersDirty = true;
 }
@@ -130,12 +147,13 @@ void PointCloudRendererOpenGL::updateLODForDistance(float distance) {
     m_currentDistance = distance;
 
     if (m_interactionActive) {
-        selectLODLevel(std::min(m_interactionLODLevel, LODController::MAX_LOD_LEVELS - 1));
+        selectLODLevel(
+            std::max(m_lodBuffer.currentLevel(), std::min(m_interactionLODLevel, LODController::MAX_LOD_LEVELS - 1)));
         return;
     }
 
     // 计算新的 LOD 级别（使用成员变量以支持用户配置）
-    selectLODLevel(m_lodController.calculateLODLevel(distance));
+    selectLODLevel(m_lodController.calculateLODLevel(distance / m_sceneScale));
 }
 
 void PointCloudRendererOpenGL::setInteractionActive(bool active) {
@@ -149,9 +167,10 @@ void PointCloudRendererOpenGL::setInteractionActive(bool active) {
     }
 
     if (active) {
-        selectLODLevel(std::min(m_interactionLODLevel, LODController::MAX_LOD_LEVELS - 1));
+        selectLODLevel(
+            std::max(m_lodBuffer.currentLevel(), std::min(m_interactionLODLevel, LODController::MAX_LOD_LEVELS - 1)));
     } else {
-        selectLODLevel(m_lodController.calculateLODLevel(m_currentDistance));
+        selectLODLevel(m_lodController.calculateLODLevel(m_currentDistance / m_sceneScale));
     }
 }
 

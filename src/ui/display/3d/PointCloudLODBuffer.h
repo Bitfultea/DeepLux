@@ -4,6 +4,9 @@
 #include "PointCloudGPUBuffer.h"
 
 #include <array>
+#include <cstdint>
+#include <utility>
+#include <vector>
 
 namespace DeepLux {
 
@@ -21,7 +24,7 @@ public:
      * @brief 设置原始数据，自动生成各级 LOD
      * @param original 原始全分辨率数据
      */
-    void setData(const PointCloudGPUBuffer& original);
+    void setData(const PointCloudGPUBuffer& original, const LODController& controller);
 
     /**
      * @brief 获取指定 LOD 级别的缓冲区
@@ -78,14 +81,15 @@ private:
     /**
      * @brief 生成降采样层级
      */
-    void generateLODLevels();
+    void generateLODLevels(const LODController& controller);
 
     /**
      * @brief 均匀降采样
      * @param input 输入数据
      * @param targetCount 目标点数
      */
-    PointCloudGPUBuffer downsample(const PointCloudGPUBuffer& input, size_t targetCount) const;
+    PointCloudGPUBuffer downsample(const PointCloudGPUBuffer& input, size_t targetCount,
+                                   const std::vector<std::pair<uint64_t, size_t>>& spatialOrder) const;
 
     PointCloudGPUBuffer m_originalBuffer;
     std::array<PointCloudGPUBuffer, LODController::MAX_LOD_LEVELS> m_lodLevels;

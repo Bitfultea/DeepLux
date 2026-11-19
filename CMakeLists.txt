@@ -261,23 +261,51 @@ if(BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-# ========== 插件同步 ==========
-# 将构建目录中新编译的插件自动同步到 ~/.deeplux/plugins/
-# 解决因插件库与主程序不同步导致的跨 DLL 虚表不匹配问题。
+# ========== 构建树插件暂存 ==========
+# 与安装包使用同一相对布局：<exe>/../plugins。构建目录可直接运行且不污染用户插件。
+get_property(DEEPLUX_PLUGIN_TARGET_ENTRIES GLOBAL PROPERTY DEEPLUX_PLUGIN_TARGET_ENTRIES)
+set(DEEPLUX_PLUGIN_TARGETS)
+foreach(_plugin_entry IN LISTS DEEPLUX_PLUGIN_TARGET_ENTRIES)
+    string(REPLACE "|" ";" _plugin_parts "${_plugin_entry}")
+    list(GET _plugin_parts 0 _plugin_target)
+    if(TARGET ${_plugin_target})
+        list(APPEND DEEPLUX_PLUGIN_TARGETS ${_plugin_target})
+    endif()
+endforeach()
+
+if(CMAKE_CONFIGURATION_TYPES)
+    set(DEEPLUX_PLUGIN_STAGE_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/../plugins")
+    set(DEEPLUX_PLUGIN_CONFIG "$<CONFIG>")
+else()
+    set(DEEPLUX_PLUGIN_STAGE_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/../plugins")
+    set(DEEPLUX_PLUGIN_CONFIG "")
+endif()
 if(WIN32)
-    add_custom_target(sync-plugins
+    add_custom_target(stage-plugins
         COMMAND powershell -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/scripts/sync-plugins.ps1"
-                "${CMAKE_BINARY_DIR}" "${CMAKE_SOURCE_DIR}"
-        COMMENT "Synchronizing built plugins to ~/.deeplux/plugins/"
+                "${CMAKE_BINARY_DIR}" "${CMAKE_SOURCE_DIR}" "${DEEPLUX_PLUGIN_STAGE_DIR}" "${DEEPLUX_PLUGIN_CONFIG}"
+        COMMENT "Staging build-matched plugins beside DeepLux"
         VERBATIM
     )
 else()
-    add_custom_target(sync-plugins
-        COMMAND "${CMAKE_SOURCE_DIR}/scripts/sync-plugins.sh" "${CMAKE_BINARY_DIR}"
-        COMMENT "Synchronizing built plugins to ~/.deeplux/plugins/"
+    add_custom_target(stage-plugins
+        COMMAND "${CMAKE_SOURCE_DIR}/scripts/sync-plugins.sh"
+                "${CMAKE_BINARY_DIR}" "${CMAKE_SOURCE_DIR}" "${DEEPLUX_PLUGIN_STAGE_DIR}"
+        COMMENT "Staging build-matched plugins beside DeepLux"
         VERBATIM
     )
 endif()
+add_dependencies(stage-plugins ${DEEPLUX_PLUGIN_TARGETS})
+add_dependencies(DeepLux stage-plugins)
+add_custom_target(sync-plugins DEPENDS stage-plugins)
+add_custom_target(run-local
+    COMMAND "${CMAKE_COMMAND}" -E env "DEEPLUX_APP_DATA_DIR=${CMAKE_BINARY_DIR}/runtime-data"
+            "$<TARGET_FILE:DeepLux>" --gui
+    DEPENDS DeepLux
+    USES_TERMINAL
+    COMMENT "Running DeepLux with build-local plugins and runtime data"
+    VERBATIM
+)
 
 # ========== Windows 部署 ==========
 # 生成可分发目录：<build>/deploy/DeepLux-win64（bin + plugins + tools），

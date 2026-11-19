@@ -81,10 +81,16 @@ private slots:
         QVERIFY(manager.pluginPaths().contains(QDir(pluginRoot).absolutePath()));
         QStringList discovered = manager.availableModules();
         discovered.sort();
-        QCOMPARE(discovered, QStringList({QStringLiteral("AgentAbiMismatchFixture"),
-                                          QStringLiteral("AgentInterfaceVersionMismatchFixture"),
-                                          QStringLiteral("AgentSchemaCacheFixture")}));
-        QVERIFY(manager.availableCameras().isEmpty());
+        for (const QString& fixture :
+             {QStringLiteral("AgentAbiMismatchFixture"), QStringLiteral("AgentInterfaceVersionMismatchFixture"),
+              QStringLiteral("AgentSchemaCacheFixture")})
+            QVERIFY2(discovered.contains(fixture),
+                     qPrintable(QStringLiteral("Missing fixture plugin: %1").arg(fixture)));
+        const QStringList cameras = manager.availableCameras();
+        for (const QString& fixture :
+             {QStringLiteral("AgentAbiMismatchFixture"), QStringLiteral("AgentInterfaceVersionMismatchFixture"),
+              QStringLiteral("AgentSchemaCacheFixture")})
+            QVERIFY(!cameras.contains(fixture));
         UserManager::instance().login(QStringLiteral("developer"), QString());
         qRegisterMetaType<AgentActionLogEntry>("AgentActionLogEntry");
     }

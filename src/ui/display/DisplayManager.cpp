@@ -118,6 +118,23 @@ void DisplayManager::displayImage(const QImage& image, const QString& viewportId
     emit dataDisplayed(target->viewportId());
 }
 
+void DisplayManager::displayDualData(const QImage& image, const DisplayData& cloudData, int delayMs,
+                                     bool preserveView) {
+    ViewportWidget* target = findAvailableViewport(cloudData.viewportId());
+    if (!target) {
+        qWarning() << "DisplayManager: No available viewport for dual image and point cloud";
+        return;
+    }
+    const auto display = [target, image, cloudData, preserveView]() {
+        target->setDualData(image, cloudData, ViewportWidget::DisplayMode::Auto3D, preserveView);
+    };
+    if (delayMs > 0)
+        QTimer::singleShot(delayMs, target, display);
+    else
+        display();
+    emit dataDisplayed(target->viewportId());
+}
+
 void DisplayManager::displayData(IDisplayPort* source, int delayMs) {
     if (!source || !source->hasDisplayOutput()) {
         return;

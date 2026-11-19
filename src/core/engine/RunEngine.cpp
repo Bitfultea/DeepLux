@@ -4,6 +4,8 @@
 #include "base/ModuleBase.h"
 #include "common/CancellationToken.h"
 #include "common/Logger.h"
+#include "display/DisplayData.h"
+#include "display/IDisplayPort.h"
 #include "interface/IModule.h"
 #include "manager/GlobalVarManager.h"
 #include "manager/PluginManager.h"
@@ -3863,8 +3865,11 @@ void RunEngine::executeModule(const QString& moduleName, ImageData& pipelineData
             m_lastOutputModuleName = moduleName;
             m_moduleOutputs[moduleName] = output;
         }
-        // 后台执行（设计 §7.1）：模块成功且输出含 image 端口时，在执行线程内发布深拷贝帧。
-        publishDisplayFrame(moduleName, output, static_cast<quint64>(execCtx.frameId), execRunId);
+        // 只让显式显示节点刷新主视图；延时同帧携带到 UI 的 latest-wins coalescer。
+        if (auto* displayPort = dynamic_cast<IDisplayPort*>(module)) {
+            const int delayMs = qMax(0, displayPort->getDisplayData().metadata().value("delay").toInt());
+            publishDisplayFrame(moduleName, output, static_cast<quint64>(execCtx.frameId), execRunId, delayMs);
+        }
     } else {
         {
             QMutexLocker locker(&moduleErrorMutex);
@@ -4222,7 +4227,7 @@ QMap<QString, QVariantMap> RunEngine::displayModuleDataSnapshot() const {
 }
 
 void RunEngine::publishDisplayFrame(const QString& moduleId, const ImageData& image, quint64 frameId,
-                                    const QString& runId) {
+                                    const QString& runId, int delayMs) {
     if (!m_displayCaptureEnabled.load(std::memory_order_acquire)) {
         return;
     }
@@ -4240,6 +4245,7 @@ void RunEngine::publishDisplayFrame(const QString& moduleId, const ImageData& im
     frame.moduleId = moduleId;
     frame.viewportId = QStringLiteral("main"); // 本轮仅覆盖主视口（viewportId 作为键保留）
     frame.image = frameImage;
+    frame.delayMs = qMax(0, delayMs);
     frame.coordinateProvenance = image.coordinateProvenance();
     {
         QMutexLocker locker(&m_displayFrameMutex);
@@ -4267,6 +4273,7 @@ std::optional<DisplayFrame> RunEngine::snapshotFinalDisplayFrame(const QString& 
             frame.frameId = it.value().frameId;
             frame.moduleId = it.value().moduleId;
             frame.image = it.value().image;
+            frame.delayMs = it.value().delayMs;
             frame.coordinateProvenance = it.value().coordinateProvenance;
         }
     }

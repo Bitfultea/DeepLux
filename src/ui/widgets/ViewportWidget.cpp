@@ -145,6 +145,10 @@ void ViewportWidget::setupUi() {
     m_toggleViewAction->setToolTip(tr("切换到 3D 视图"));
     m_toggleViewAction->setVisible(false);
     m_toolbar->addAction(m_toggleViewAction);
+    if (auto* button = qobject_cast<QToolButton*>(m_toolbar->widgetForAction(m_toggleViewAction))) {
+        button->setObjectName("ViewportToggleViewButton");
+        button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    }
     connect(m_toggleViewAction, &QAction::triggered, this, &ViewportWidget::onToggleView);
 
     m_contentSeparatorAction = m_toolbar->addSeparator();
@@ -343,13 +347,17 @@ bool ViewportWidget::setDisplayMode(DisplayMode mode) {
 
 void ViewportWidget::updateToggleAction() {
     if (m_toggleViewAction) {
-        m_toggleViewAction->setVisible(hasCachedImage() && hasCachedPointCloud());
+        const bool canToggle = hasCachedImage() && hasCachedPointCloud();
+        m_toggleViewAction->setVisible(hasCachedImage() || hasCachedPointCloud());
+        m_toggleViewAction->setEnabled(canToggle);
         if (m_displayMode == DisplayMode::Auto3D) {
             m_toggleViewAction->setText(QStringLiteral("2D"));
-            m_toggleViewAction->setToolTip(QStringLiteral("切换到 2D 视图"));
+            m_toggleViewAction->setToolTip(canToggle ? QStringLiteral("切换到 2D 视图")
+                                                     : QStringLiteral("切换到 2D 需要同时有 2D 图像和 3D 点云"));
         } else {
             m_toggleViewAction->setText(QStringLiteral("3D"));
-            m_toggleViewAction->setToolTip(QStringLiteral("切换到 3D 视图"));
+            m_toggleViewAction->setToolTip(canToggle ? QStringLiteral("切换到 3D 视图")
+                                                     : QStringLiteral("切换到 3D 需要同时有 2D 图像和 3D 点云"));
         }
     }
     updateToolbarState();

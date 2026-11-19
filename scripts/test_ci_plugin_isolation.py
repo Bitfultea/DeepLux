@@ -70,7 +70,7 @@ def main() -> int:
 
             verify_indices = [
                 i for i, step in enumerate(steps)
-                if i > sync_index and "Verify isolated plugin sync" in step.get("name", "")
+                if i > sync_index and "Verify build-tree plugin sync" in step.get("name", "")
             ]
             assert verify_indices, f"{name}: plugin sync has no post-sync isolation verification"
             assert_sync_verification(name, steps[verify_indices[0]])

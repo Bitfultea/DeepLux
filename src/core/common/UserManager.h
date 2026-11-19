@@ -71,6 +71,7 @@ public:
 
     // 用户登录
     bool login(const QString& userName, const QString& password);
+    bool login(const QString& userName, const QString& password, UserType userType);
     void logout();
 
     // 当前用户

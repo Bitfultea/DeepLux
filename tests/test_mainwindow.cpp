@@ -82,6 +82,7 @@
 #include <core/config/SystemConfig.h>
 #include <core/deeplux/PayloadTypes.h>
 #include <core/display/DisplayData.h>
+#include <core/display/IDisplayPort.h>
 #include <core/engine/EngineTestSupport.h>
 #include <core/engine/FlowExecutionService.h>
 #include <core/engine/FlowGraphAnalyzer.h>
@@ -156,6 +157,8 @@ public:
     void setMaxTokens(int) override {}
     void setToolsEnabled(bool) override {}
     void sendRequest(const AgentConversation& context, const QList<ToolDefinition>&) override {
+        ++requestCount;
+        lastCtx = context;
         m_requestId = context.requestId;
     }
 
@@ -166,6 +169,9 @@ public:
         emit responseReceived(correlated);
         QCoreApplication::processEvents();
     }
+
+    int requestCount = 0;
+    AgentConversation lastCtx;
 
 private:
     QString m_requestId;
@@ -262,6 +268,34 @@ protected:
     QWidget* createConfigWidget() override {
         return nullptr;
     }
+};
+
+class MainWindowDisplayProbeModule : public MainWindowOutputProbeModule, public IDisplayPort {
+public:
+    using MainWindowOutputProbeModule::MainWindowOutputProbeModule;
+
+    bool hasDisplayOutput() const override {
+        return m_displayData.isValid();
+    }
+
+    DisplayData getDisplayData() const override {
+        return m_displayData;
+    }
+
+    QString preferredViewport() const override {
+        return QStringLiteral("main");
+    }
+
+protected:
+    bool process(const ImageData& input, ImageData& output) override {
+        if (!MainWindowOutputProbeModule::process(input, output))
+            return false;
+        m_displayData = DisplayData(output);
+        return true;
+    }
+
+private:
+    DisplayData m_displayData;
 };
 
 class BlockingNPointCalibrationPlugin : public NPointCalibrationPlugin {
@@ -514,6 +548,15 @@ ModuleConnection b3DataEdge(const QString& from, const QString& to) {
     connection.toPort = QStringLiteral("image");
     connection.edgeType = QStringLiteral("data");
     return connection;
+}
+
+void addShowImageModule(Project& project, const QString& id, const QString& sourceId) {
+    ModuleInstance display;
+    display.id = id;
+    display.moduleId = QStringLiteral("ShowImage");
+    display.name = id;
+    project.addModule(display);
+    project.addConnection(b3DataEdge(sourceId, id));
 }
 
 ModuleConnection b3ControlEdge(const QString& from, const QString& fromPort, const QString& to, const QString& toPort) {
@@ -814,6 +857,7 @@ private slots:
     void testAgentChatReadableLayout_data();
     void testAgentChatReadableLayout();
     void testToolboxDragPayloadUsesDraggedPlugin();
+    void testToolboxDragCarriesCanonicalPluginIds();
     void testAgentInputErrorPathDoesNotCrashOrStayThinking();
     void testAgentPartialFailureSummaryAppearsInChat();
     void testAgentActiveSamCategoryEditConfirmationAndUndo();
@@ -943,6 +987,87 @@ void TestMainWindow::testToolboxDragPayloadUsesDraggedPlugin() {
     QVERIFY(mimeData != nullptr);
     QCOMPARE(PluginDragPayload::pluginName(mimeData), QStringLiteral("GrabImage"));
     delete mimeData;
+}
+
+void TestMainWindow::testToolboxDragCarriesCanonicalPluginIds() {
+    TestableMainWindow window;
+    QTreeWidget* toolbox = window.findChild<QTreeWidget*>(QStringLiteral("ToolBoxTree"));
+    QVERIFY(toolbox);
+
+    PluginManager& plugins = PluginManager::instance();
+    int pluginCount = 0;
+    for (QTreeWidgetItemIterator it(toolbox); *it; ++it) {
+        QTreeWidgetItem* item = *it;
+        if (item->data(0, Qt::UserRole).toString() != QStringLiteral("plugin")) {
+            continue;
+        }
+        ++pluginCount;
+        const QString alias = item->data(0, Qt::UserRole + 1).toString();
+        const QString resolvedAlias = plugins.resolveModuleName(alias);
+        const PluginInfo info = plugins.pluginInfo(resolvedAlias.isEmpty() ? alias : resolvedAlias);
+        QVERIFY2(!info.id.isEmpty(), qPrintable(item->text(0)));
+        const QString canonicalName = plugins.resolveModuleName(info.id);
+        if (canonicalName.isEmpty()) {
+            QVERIFY(!(item->flags() & Qt::ItemIsDragEnabled));
+            continue; // Camera plugins have separate lifecycle and cannot be workflow modules.
+        }
+        QVERIFY2(item->data(0, Qt::UserRole + 2).toString() == info.id,
+                 qPrintable(QStringLiteral("%1 alias=%2 got=%3 expected=%4")
+                                .arg(item->text(0), item->data(0, Qt::UserRole + 1).toString(),
+                                     item->data(0, Qt::UserRole + 2).toString(), info.id)));
+        QCOMPARE(canonicalName, info.name);
+
+        const QModelIndex index = treeModelIndexForItem(toolbox, item);
+        QVERIFY(index.isValid());
+        std::unique_ptr<QMimeData> mimeData(toolbox->model()->mimeData({index}));
+        QVERIFY(mimeData);
+        QCOMPARE(PluginDragPayload::pluginId(mimeData.get()), info.id);
+    }
+    QVERIFY(pluginCount >= 50);
+
+    const PluginInfo logicPlugin = plugins.pluginInfo(QStringLiteral("If"));
+    QVERIFY(!logicPlugin.id.isEmpty());
+    QCOMPARE(plugins.resolveModuleName(QStringLiteral("If")), logicPlugin.name);
+    QCOMPARE(plugins.pluginInfo(QStringLiteral("While")).name, plugins.resolveModuleName(QStringLiteral("While")));
+    QCOMPARE(plugins.pluginInfo(QStringLiteral("StopWhile")).name,
+             plugins.resolveModuleName(QStringLiteral("StopWhile")));
+    QVERIFY(plugins.loadPlugin(QStringLiteral("If")));
+    PluginManager::ModulePtr module = plugins.createManagedModule(logicPlugin.id);
+    QVERIFY(module);
+
+    Project* project = ProjectManager::instance().newProject();
+    QVERIFY(project);
+    FlowCanvas* canvas = window.findChild<FlowCanvas*>();
+    QVERIFY(canvas);
+    QVERIFY(QMetaObject::invokeMethod(canvas, "pluginDropRequested", Qt::DirectConnection,
+                                      Q_ARG(QString, logicPlugin.id), Q_ARG(QPointF, QPointF(40, 40))));
+    QTRY_COMPARE_WITH_TIMEOUT(project->modules().size(), 1, 2000);
+    QCOMPARE(project->modules().first().moduleId, logicPlugin.name);
+    ProcessTreeController* controller = window.findChild<ProcessTreeController*>();
+    QVERIFY(controller);
+    controller->removeFlowModule(project->modules().first().id);
+    QVERIFY(project->modules().isEmpty());
+
+    QTreeWidgetItem* logicItem = nullptr;
+    for (QTreeWidgetItemIterator it(toolbox); *it; ++it) {
+        if ((*it)->data(0, Qt::UserRole + 1).toString() == QStringLiteral("If")) {
+            logicItem = *it;
+            break;
+        }
+    }
+    QVERIFY(logicItem);
+    const QModelIndex logicIndex = treeModelIndexForItem(toolbox, logicItem);
+    std::unique_ptr<QMimeData> logicMime(toolbox->model()->mimeData({logicIndex}));
+    QVERIFY(logicMime);
+    QDropEvent processDrop(QPointF(20, 20), Qt::CopyAction, logicMime.get(), Qt::NoButton, Qt::NoModifier);
+    QVERIFY(window.eventFilter(controller->tree()->viewport(), &processDrop));
+    QVERIFY(processDrop.isAccepted());
+    QTRY_COMPARE_WITH_TIMEOUT(project->modules().size(), 1, 2000);
+    QCOMPARE(project->modules().first().moduleId, logicPlugin.name);
+    QCOMPARE(controller->topLevelItemCount(), 1);
+    QVERIFY(window.findChild<FlowCanvas*>()->nodeItem(project->modules().first().id));
+    controller->removeFlowModule(project->modules().first().id);
+    QVERIFY(project->modules().isEmpty());
 }
 
 void TestMainWindow::initTestCase() {
@@ -1126,9 +1251,10 @@ void TestMainWindow::testClickingProcessModuleDisplaysIntermediateOutput() {
     Project* project = ProjectManager::instance().newProject();
     QVERIFY(project != nullptr);
 
-    MainWindowOutputProbeModule* module = new MainWindowOutputProbeModule(QStringLiteral("probe_1"));
+    MainWindowDisplayProbeModule* module = new MainWindowDisplayProbeModule(QStringLiteral("probe_1"));
     module->initialize();
     engine.addModule(module);
+    window.registerFlowModule(QStringLiteral("probe_1"), module);
     engine.runOnce();
 
     ModuleInstance instance;
@@ -9131,6 +9257,7 @@ void TestMainWindow::testDualMeasurementInputsShowOwnOverlay() {
     qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
     const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("ShowImage")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("FitCircle")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
 
@@ -9139,6 +9266,7 @@ void TestMainWindow::testDualMeasurementInputsShowOwnOverlay() {
     window.show();
     QCoreApplication::processEvents();
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("GrabImage")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("ShowImage")));
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("FitCircle")));
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
 
@@ -9218,6 +9346,8 @@ void TestMainWindow::testDualMeasurementInputsShowOwnOverlay() {
     connectData(grabB.id, inputB.id, QStringLiteral("image"));
     connectData(inputB.id, fitB.id, QStringLiteral("image"));
     connectData(inputB.id, fitB.id, QStringLiteral("fit_points"));
+    addShowImageModule(*project, QStringLiteral("show_a"), grabA.id);
+    addShowImageModule(*project, QStringLiteral("show_b"), grabB.id);
     QCoreApplication::processEvents();
 
     // 运行前选中支路 B 的拟合节点：运行结束后叠加应归属支路 B
@@ -9272,6 +9402,7 @@ void TestMainWindow::testSharedDownstreamMeasurementResultNotMisattributed() {
     qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
     const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("ShowImage")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
 
@@ -9280,6 +9411,7 @@ void TestMainWindow::testSharedDownstreamMeasurementResultNotMisattributed() {
     window.show();
     QCoreApplication::processEvents();
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("GrabImage")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("ShowImage")));
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
 
@@ -9345,6 +9477,7 @@ void TestMainWindow::testSharedDownstreamMeasurementResultNotMisattributed() {
     connectData(grabB.id, QStringLiteral("image"), inputB.id, QStringLiteral("image"));
     connectData(inputA.id, QStringLiteral("point1"), distShared.id, QStringLiteral("point1"));
     connectData(inputB.id, QStringLiteral("point1"), distShared.id, QStringLiteral("point2"));
+    addShowImageModule(*project, QStringLiteral("show_image"), grabA.id);
     QCoreApplication::processEvents();
 
     ViewportWidget* viewport = window.findChild<ViewportWidget*>();
@@ -9402,6 +9535,7 @@ void TestMainWindow::testSelectedResultModuleShowsItsOwnMeasurementValue() {
     qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
     const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("ShowImage")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
 
@@ -9410,6 +9544,7 @@ void TestMainWindow::testSelectedResultModuleShowsItsOwnMeasurementValue() {
     window.show();
     QCoreApplication::processEvents();
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("GrabImage")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("ShowImage")));
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
 
@@ -9467,6 +9602,7 @@ void TestMainWindow::testSelectedResultModuleShowsItsOwnMeasurementValue() {
     connectData(input.id, QStringLiteral("image"), distB.id, QStringLiteral("image"));
     connectData(input.id, QStringLiteral("point1"), distB.id, QStringLiteral("point1"));
     connectData(input.id, QStringLiteral("point1"), distB.id, QStringLiteral("point2"));
+    addShowImageModule(*project, QStringLiteral("show_image"), grab.id);
     QCoreApplication::processEvents();
 
     ViewportWidget* viewport = window.findChild<ViewportWidget*>();
@@ -9525,6 +9661,7 @@ void TestMainWindow::testNoOutputSelectedModuleClearsOverlays() {
     qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
     const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("ShowImage")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
 
@@ -9584,6 +9721,7 @@ void TestMainWindow::testNoOutputSelectedModuleClearsOverlays() {
     connectData(input.id, QStringLiteral("point2"), distA.id, QStringLiteral("point2"));
     // extraGrab 挂在输入支路下游，运行成功但只产图像、无测量结果。
     connectData(input.id, QStringLiteral("image"), extraGrab.id, QStringLiteral("image"));
+    addShowImageModule(*project, QStringLiteral("show_image"), grab.id);
     QCoreApplication::processEvents();
 
     ViewportWidget* viewport = window.findChild<ViewportWidget*>();
@@ -9634,6 +9772,7 @@ void TestMainWindow::testClearSelectionAndCloseInspectorClearOverlays() {
     qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
     const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("ShowImage")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
 
@@ -9682,6 +9821,7 @@ void TestMainWindow::testClearSelectionAndCloseInspectorClearOverlays() {
     connectData(input.id, QStringLiteral("image"), distA.id, QStringLiteral("image"));
     connectData(input.id, QStringLiteral("point1"), distA.id, QStringLiteral("point1"));
     connectData(input.id, QStringLiteral("point2"), distA.id, QStringLiteral("point2"));
+    addShowImageModule(*project, QStringLiteral("show_image"), grab.id);
     QCoreApplication::processEvents();
 
     ViewportWidget* viewport = window.findChild<ViewportWidget*>();
@@ -13850,8 +13990,9 @@ void TestMainWindow::testLoggedOutUserGetsLoginHandoffWithoutAgentLogin() {
         UserInfo previous;
         ~UserStateRestore() {
             if (previous.isLoggedIn) {
-                if (!users.isLoggedIn() || users.currentUser().userName != previous.userName)
-                    users.login(previous.userName, QString());
+                if (!users.isLoggedIn() || users.currentUser().userName != previous.userName ||
+                    users.currentUser().type != previous.type)
+                    users.login(previous.userName, QString(), previous.type);
             } else if (users.isLoggedIn()) {
                 users.logout();
             }
@@ -13867,7 +14008,11 @@ void TestMainWindow::testLoggedOutUserGetsLoginHandoffWithoutAgentLogin() {
     MainWindow window;
     window.show();
     QCoreApplication::processEvents();
-    controller.setPermissionLevel(AgentController::PermissionLevel::Observer);
+    controller.setPermissionLevel(AgentController::PermissionLevel::Autopilot);
+    controller.clearConversation();
+    ProjectManager::instance().closeProject();
+    MainWindowReplyClient replyClient;
+    controller.setLLMClient(&replyClient);
     if (users.isLoggedIn())
         users.logout();
     QCoreApplication::processEvents();
@@ -13889,20 +14034,33 @@ void TestMainWindow::testLoggedOutUserGetsLoginHandoffWithoutAgentLogin() {
     QVERIFY(QFileInfo(beforePath).size() > 0);
 
     QSignalSpy auditSpy(&controller, &AgentController::actionLogEntryAdded);
-    const QJsonObject result = controller.handleToolCall(QStringLiteral("open_user_login_dialog"), {});
-    QCOMPARE(result.size(), 3);
-    QCOMPARE(result.value(QStringLiteral("status")).toString(), QStringLiteral("opened"));
-    QCOMPARE(result.value(QStringLiteral("dialogAction")).toString(), QStringLiteral("opened"));
-    QCOMPARE(result.value(QStringLiteral("userActionRequired")).toBool(), true);
-    QVERIFY(!result.contains(QStringLiteral("userLoggedIn")));
-    QVERIFY(!result.contains(QStringLiteral("username")));
-    QVERIFY(!result.contains(QStringLiteral("password")));
-    QCOMPARE(auditSpy.count(), 1);
-    const AgentActionLogEntry audit = qvariant_cast<AgentActionLogEntry>(auditSpy.first().at(0));
-    QCOMPARE(audit.action, QStringLiteral("open_user_login_dialog"));
-    const QByteArray auditBytes = (audit.actor + audit.action + audit.params + audit.result).toUtf8().toLower();
-    QVERIFY(!auditBytes.contains("username"));
-    QVERIFY(!auditBytes.contains("password"));
+    controller.sendUserMessage(QStringLiteral("请创建工程"));
+    AgentResponse deniedCall;
+    deniedCall.success = true;
+    deniedCall.toolCalls = QJsonArray{QJsonObject{
+        {QStringLiteral("id"), QStringLiteral("denied-create")},
+        {QStringLiteral("type"), QStringLiteral("function")},
+        {QStringLiteral("name"), QStringLiteral("create_project")},
+        {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("name"), QStringLiteral("AfterLogin")}}}}};
+    replyClient.reply(deniedCall);
+    QCOMPARE(replyClient.requestCount, 2);
+    AgentResponse openLogin;
+    openLogin.success = true;
+    openLogin.toolCalls = QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("login-handoff")},
+                                                 {QStringLiteral("type"), QStringLiteral("function")},
+                                                 {QStringLiteral("name"), QStringLiteral("open_user_login_dialog")},
+                                                 {QStringLiteral("arguments"), QJsonObject{}}}};
+    replyClient.reply(openLogin);
+    QCOMPARE(replyClient.requestCount, 3);
+    AgentResponse loginPrompt;
+    loginPrompt.success = true;
+    loginPrompt.content = QStringLiteral("请先登录，我会继续处理请求。");
+    replyClient.reply(loginPrompt);
+    QCOMPARE(controller.state(), AgentController::AgentState::Idle);
+    QCOMPARE(auditSpy.count(), 2);
+    QCOMPARE(qvariant_cast<AgentActionLogEntry>(auditSpy.first().at(0)).result, QStringLiteral("denied"));
+    QCOMPARE(qvariant_cast<AgentActionLogEntry>(auditSpy.last().at(0)).action,
+             QStringLiteral("open_user_login_dialog"));
 
     LoginDialog* dialog = window.findChild<LoginDialog*>(QStringLiteral("UserLoginDialog"));
     QVERIFY(dialog && dialog->isVisible());
@@ -13914,9 +14072,25 @@ void TestMainWindow::testLoggedOutUserGetsLoginHandoffWithoutAgentLogin() {
     credentialFields.at(0)->clear();
     QVERIFY(credentialFields.at(0)->text().isEmpty());
     credentialFields.at(1)->setFocus(Qt::OtherFocusReason);
-    if (auto* userType = dialog->findChild<QComboBox*>())
-        userType->hidePopup();
+    auto* userType = dialog->findChild<QComboBox*>();
+    QVERIFY(userType);
+    userType->setCurrentIndex(userType->findData(static_cast<int>(UserType::Developer)));
+    userType->hidePopup();
     QCoreApplication::processEvents();
+    auto* feedback = dialog->findChild<QLabel*>(QStringLiteral("LoginFeedbackLabel"));
+    QVERIFY(feedback);
+    QVERIFY(dialog->width() >= 440);
+    QPushButton* loginButton = nullptr;
+    for (QPushButton* button : dialog->findChildren<QPushButton*>()) {
+        if (button->text() == QStringLiteral("Login")) {
+            loginButton = button;
+            break;
+        }
+    }
+    QVERIFY(loginButton);
+    loginButton->click();
+    QVERIFY(dialog->isVisible());
+    QVERIFY(!feedback->text().isEmpty());
     QCOMPARE(loginRequestSpy.count(), 0);
     QVERIFY(!users.isLoggedIn());
     QCOMPARE(users.currentUser().type, UserType::Guest);
@@ -13926,7 +14100,39 @@ void TestMainWindow::testLoggedOutUserGetsLoginHandoffWithoutAgentLogin() {
     const QString afterPath = QDir(captureDir).filePath(QStringLiteral("login-handoff-after.png"));
     QVERIFY(dialog->grab().save(afterPath));
     QVERIFY(QFileInfo(afterPath).size() > 0);
-    dialog->close();
+    credentialFields.at(0)->setText(QStringLiteral("Operator"));
+    loginButton->click();
+    QVERIFY(users.isLoggedIn());
+    QCOMPARE(users.currentUser().type, UserType::Developer);
+    QTRY_COMPARE(replyClient.requestCount, 4);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("正在继续")));
+    bool foundContinuation = false;
+    for (const AgentMessage& message : replyClient.lastCtx.messages) {
+        if (message.role == QLatin1String("user") && message.content.contains(QStringLiteral("用户已完成登录")))
+            foundContinuation = true;
+    }
+    QVERIFY(foundContinuation);
+    bool foundOriginalDenial = false;
+    for (const AgentMessage& message : replyClient.lastCtx.messages) {
+        if (message.role == QLatin1String("tool") && message.toolCallId == QLatin1String("denied-create"))
+            foundOriginalDenial = message.content.contains(QStringLiteral("PERMISSION_DENIED"));
+    }
+    QVERIFY(foundOriginalDenial);
+    AgentResponse retryCreate;
+    retryCreate.success = true;
+    retryCreate.toolCalls = QJsonArray{QJsonObject{
+        {QStringLiteral("id"), QStringLiteral("retry-create")},
+        {QStringLiteral("type"), QStringLiteral("function")},
+        {QStringLiteral("name"), QStringLiteral("create_project")},
+        {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("name"), QStringLiteral("AfterLogin")}}}}};
+    replyClient.reply(retryCreate);
+    QCOMPARE(replyClient.requestCount, 5);
+    QVERIFY(ProjectManager::instance().currentProject());
+    QCOMPARE(ProjectManager::instance().currentProject()->name(), QStringLiteral("AfterLogin"));
+    AgentResponse completed;
+    completed.success = true;
+    completed.content = QStringLiteral("继续处理完成。");
+    replyClient.reply(completed);
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 }
 
@@ -16191,7 +16397,7 @@ void TestMainWindow::testDirtyStateInvalidatesDownstreamResults() {
         instance.moduleId = QStringLiteral("OutputProbe");
         instance.name = id;
         project->addModule(instance);
-        auto* module = new MainWindowOutputProbeModule(id);
+        auto* module = new MainWindowDisplayProbeModule(id);
         module->initialize();
         window.registerFlowModule(id, module);
     }
@@ -17899,7 +18105,8 @@ void TestMainWindow::testMixedDataSourcesKeep2DVisibleAndClearStaleMode() {
     QCOMPARE(mainViewport->viewport3D()->pointSize(), 3.5f);
     QAction* toggleAction = mainViewport->findChild<QAction*>(QStringLiteral("ViewportToggleViewAction"));
     QVERIFY(toggleAction != nullptr);
-    QTRY_VERIFY(!toggleAction->isVisible());
+    QTRY_VERIFY(toggleAction->isVisible());
+    QVERIFY(!toggleAction->isEnabled());
 
     imageItem->setCheckState(0, Qt::Checked);
     QTRY_VERIFY(mainViewport->displayMode() == ViewportWidget::DisplayMode::Auto2D);
@@ -17919,7 +18126,8 @@ void TestMainWindow::testMixedDataSourcesKeep2DVisibleAndClearStaleMode() {
     QVERIFY(mainViewport->imageWidget()->hasImage());
     cloudItem->setCheckState(0, Qt::Unchecked);
     QTRY_VERIFY(mainViewport->displayMode() == ViewportWidget::DisplayMode::Auto2D);
-    QTRY_VERIFY(!toggleAction->isVisible());
+    QTRY_VERIFY(toggleAction->isVisible());
+    QVERIFY(!toggleAction->isEnabled());
 
     PointCloudData cloud;
     cloud.points = {{0.0, 0.0, 0.0}, {1.0, 0.0, 1.0}};
@@ -19564,6 +19772,7 @@ void TestMainWindow::testProjectSwitchDropsLateDisplayFrames() {
     qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
     const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("ShowImage")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
 
@@ -19572,6 +19781,7 @@ void TestMainWindow::testProjectSwitchDropsLateDisplayFrames() {
     window.show();
     QCoreApplication::processEvents();
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("GrabImage")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("ShowImage")));
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
 
@@ -19622,6 +19832,7 @@ void TestMainWindow::testProjectSwitchDropsLateDisplayFrames() {
     point2ToDist.fromPort = QStringLiteral("point2");
     point2ToDist.toPort = QStringLiteral("point2");
     project->addConnection(point2ToDist);
+    addShowImageModule(*project, QStringLiteral("t17_show"), grab.id);
     QCoreApplication::processEvents();
 
     ViewportWidget* viewport = window.findChild<ViewportWidget*>();
@@ -19689,7 +19900,7 @@ void TestMainWindow::testDelayedQueueThroughRealMainWindowConnections() {
     engine.clearOutputs();
     engine.clearDisplayJobId();
     engine.clearLatestDisplayFrames();
-    MainWindowOutputProbeModule module(QStringLiteral("t26_real_probe"));
+    MainWindowDisplayProbeModule module(QStringLiteral("t26_real_probe"));
     module.distinctImages = true; // 五次任务输出不同像素，才能识别「画面来自最后任务」
     QVERIFY(module.initialize());
     engine.addModule(&module);
@@ -19817,6 +20028,7 @@ void TestMainWindow::testMeasurementOverlayReadsFrameSnapshotNotLiveOutput() {
     qputenv("DEEPLUX_APP_DATA_DIR", appDir.path().toLocal8Bit());
     const QString pluginRoot = QDir(appDir.path()).filePath("plugins");
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("GrabImage")));
+    QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("ShowImage")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("DistancePP")));
     QVERIFY(installRuntimePlugin(pluginRoot, QStringLiteral("MeasurementInput")));
 
@@ -19825,6 +20037,7 @@ void TestMainWindow::testMeasurementOverlayReadsFrameSnapshotNotLiveOutput() {
     window.show();
     QCoreApplication::processEvents();
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("GrabImage")));
+    QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("ShowImage")));
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("DistancePP")));
     QTRY_VERIFY(PluginManager::instance().isPluginLoaded(QStringLiteral("MeasurementInput")));
 
@@ -19875,6 +20088,7 @@ void TestMainWindow::testMeasurementOverlayReadsFrameSnapshotNotLiveOutput() {
     point2ToDist.fromPort = QStringLiteral("point2");
     point2ToDist.toPort = QStringLiteral("point2");
     project->addConnection(point2ToDist);
+    addShowImageModule(*project, QStringLiteral("snapshot_show"), grab.id);
     QCoreApplication::processEvents();
 
     ViewportWidget* viewport = window.findChild<ViewportWidget*>();
@@ -20212,12 +20426,12 @@ void TestMainWindow::testFocusModePreservesLogVisibility() {
     // 测试 1: 日志原本可见
     {
         const bool logVisibleBefore = logDock->isVisible();
-        QWidget* imageDisplay = window.findChild<QWidget*>("ImageDisplayWidget");
-        QVERIFY(imageDisplay != nullptr);
-        QTest::mouseDClick(imageDisplay, Qt::LeftButton);
+        QAction* focusModeAction = window.findChild<QAction*>("FocusModeAction");
+        QVERIFY(focusModeAction != nullptr);
+        focusModeAction->trigger();
         QCoreApplication::processEvents();
         QVERIFY2(!logDock->isVisible(), "Log dock should be hidden in focus mode (test 1)");
-        QTest::mouseDClick(imageDisplay, Qt::LeftButton);
+        focusModeAction->trigger();
         QCoreApplication::processEvents();
         QVERIFY2(logDock->isVisible() == logVisibleBefore, "Log dock visibility should be restored (test 1)");
     }
@@ -20226,11 +20440,12 @@ void TestMainWindow::testFocusModePreservesLogVisibility() {
     {
         logDock->setVisible(false);
         QCoreApplication::processEvents();
-        QWidget* imageDisplay = window.findChild<QWidget*>("ImageDisplayWidget");
-        QTest::mouseDClick(imageDisplay, Qt::LeftButton);
+        QAction* focusModeAction = window.findChild<QAction*>("FocusModeAction");
+        QVERIFY(focusModeAction != nullptr);
+        focusModeAction->trigger();
         QCoreApplication::processEvents();
         QVERIFY2(!logDock->isVisible(), "Log dock should be hidden in focus mode (test 2)");
-        QTest::mouseDClick(imageDisplay, Qt::LeftButton);
+        focusModeAction->trigger();
         QCoreApplication::processEvents();
         QVERIFY2(!logDock->isVisible(), "Log dock should remain hidden after exiting focus mode (test 2)");
     }

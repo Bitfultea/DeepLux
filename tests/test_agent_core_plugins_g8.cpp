@@ -11,6 +11,7 @@
 
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
@@ -215,7 +216,22 @@ private slots:
                               QStringLiteral(G8_LOADPOINTCLOUD_METADATA)));
         QVERIFY(PluginManager::instance().initialize());
         QVERIFY(PluginManager::instance().pluginPaths().contains(QDir(pluginRoot).absolutePath()));
-        QCOMPARE(PluginManager::instance().availableModules().size(), 15);
+        QStringList expectedNames;
+        QDirIterator metadataFiles(pluginRoot, {QStringLiteral("metadata.json")}, QDir::Files,
+                                   QDirIterator::Subdirectories);
+        while (metadataFiles.hasNext()) {
+            QFile metadataFile(metadataFiles.next());
+            if (!metadataFile.open(QIODevice::ReadOnly))
+                continue;
+            const QString name = QJsonDocument::fromJson(metadataFile.readAll()).object().value("name").toString();
+            if (!name.isEmpty())
+                expectedNames.append(name);
+        }
+        QCOMPARE(expectedNames.size(), 15);
+        const QStringList availableModules = PluginManager::instance().availableModules();
+        for (const QString& name : expectedNames)
+            QVERIFY2(availableModules.contains(name),
+                     qPrintable(QStringLiteral("Missing fixture plugin: %1").arg(name)));
         ToolSchema::instance().registerDefaultTools();
         QVERIFY(UserManager::instance().login(QStringLiteral("developer"), QString()));
         qRegisterMetaType<RunResult>("DeepLux::RunResult");

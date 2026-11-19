@@ -10,11 +10,11 @@ namespace DeepLux {
 // （height_invalid_value，按源精度量化；键存在但类型错误或非有限均失败
 // 关闭），旧无效像素统一转为本次 fillValue；自动 NoData 检测复用 TiffLoader
 // 重复极值判据（原始像素单位启发式，单通道 32/64 位浮点，autoNoData 可关，
-// 携带契约时让位，双侧极值同满足判据的歧义图失败关闭不按分布猜测）。执行可选 ROI（宽高必须同为 0 或同 >0）
-// 与高度筛选：非有限值、契约值、NoData 哨兵、区间外与 ROI 外像素统一填充
-// fillValue；填充值与存活合法高度碰撞时失败关闭（契约无法区分二者）；输出
-// CV_32F 高度图、筛选统计，且实际填充过像素时写出 float 量化的
-// height_invalid_value 契约键供下游优先采用。
+// 携带契约时让位，双侧极值同满足判据的歧义图失败关闭不按分布猜测）。ROI 坐标按输入像素网格解释，
+// 任一 ROI 维度为 0 表示该轴全幅，支持参数逐项编辑；高度筛选按输入单位计算。
+// 下采样按步长保留样本，scaleZ 缩放输出高度/统计，scaleX/scaleY 缩放输出点云坐标。
+// 非有限值、契约值、NoData 哨兵、区间外与 ROI 外像素统一填充 fillValue；填充值与存活合法高度碰撞时失败关闭；
+// 输出 CV_32F 高度图、筛选统计，并写出供下游使用的 height_invalid_value 契约键。
 class DEEPLUX_PLUGIN_API PreProcessing3DPlugin : public ModuleBase {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID DEEPLUX_MODULE_INTERFACE_IID FILE "metadata.json")

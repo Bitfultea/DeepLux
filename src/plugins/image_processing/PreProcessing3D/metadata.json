@@ -4,11 +4,11 @@
     "category": "image_processing",
     "version": "1.0.0",
     "author": "DeepLux Team",
-    "description": "深度/高度图预处理：2 通道提取深度通道，自动 NoData 检测（TiffLoader 判据，autoNoData 可关、输入携带契约时让位），消费上游 height_invalid_value 并统一转为本次填充值，可选 ROI（宽高须同为 0 或同 >0）与高度筛选；填充值与存活高度碰撞时失败关闭；输出 CV_32F 高度图、统计与 float 量化的 height_invalid_value 契约键",
+    "description": "深度/高度图预处理：可设置原图像素 ROI、高度筛选、XYZ 缩放和步长下采样；高度筛选区间按输入单位计算，输出 Z/统计按 scaleZ 缩放，X/Y 按像素坐标缩放；有效/过滤统计针对下采样后的输出样本。填充值与存活高度碰撞时失败关闭。",
     "ui": {
         "parameters": {
             "heightFilterEnabled": {
-                "order": 10,
+                "order": 50,
                 "label": "启用高度筛选"
             },
             "heightFilterMin": {
@@ -16,27 +16,27 @@
                 "max": 1000000,
                 "step": 0.1,
                 "decimals": 3,
-                "order": 20,
-                "label": "高度下限"
+                "order": 60,
+                "label": "输入高度下限"
             },
             "heightFilterMax": {
                 "min": -1000000,
                 "max": 1000000,
                 "step": 0.1,
                 "decimals": 3,
-                "order": 30,
-                "label": "高度上限"
+                "order": 70,
+                "label": "输入高度上限"
             },
             "fillValue": {
                 "min": -1000000,
                 "max": 1000000,
                 "step": 0.1,
                 "decimals": 3,
-                "order": 40,
-                "label": "越界填充值"
+                "order": 80,
+                "label": "无效高度填充值（输入单位）"
             },
             "autoNoData": {
-                "order": 45,
+                "order": 90,
                 "label": "自动 NoData 检测"
             },
             "roiCenterX": {
@@ -44,7 +44,7 @@
                 "max": 1000000,
                 "step": 1,
                 "decimals": 0,
-                "order": 50,
+                "order": 10,
                 "label": "ROI 中心X（当前输入深度/高度图局部像素）"
             },
             "roiCenterY": {
@@ -52,7 +52,7 @@
                 "max": 1000000,
                 "step": 1,
                 "decimals": 0,
-                "order": 60,
+                "order": 20,
                 "label": "ROI 中心Y（当前输入深度/高度图局部像素）"
             },
             "roiWidth": {
@@ -60,16 +60,48 @@
                 "max": 1000000,
                 "step": 1,
                 "decimals": 0,
-                "order": 70,
-                "label": "ROI 宽度（像素；0=全图）"
+                "order": 30,
+                "label": "ROI 宽度（像素；0=全宽）"
             },
             "roiHeight": {
                 "min": 0,
                 "max": 1000000,
                 "step": 1,
                 "decimals": 0,
-                "order": 80,
-                "label": "ROI 高度（像素；0=全图）"
+                "order": 40,
+                "label": "ROI 高度（像素；0=全高）"
+            },
+            "scaleX": {
+                "min": 0.000001,
+                "max": 1000000000,
+                "step": 0.1,
+                "decimals": 6,
+                "order": 100,
+                "label": "X 轴缩放（输出单位/像素）"
+            },
+            "scaleY": {
+                "min": 0.000001,
+                "max": 1000000000,
+                "step": 0.1,
+                "decimals": 6,
+                "order": 110,
+                "label": "Y 轴缩放（输出单位/像素）"
+            },
+            "scaleZ": {
+                "min": 0.000001,
+                "max": 1000000000,
+                "step": 0.1,
+                "decimals": 6,
+                "order": 120,
+                "label": "Z 轴缩放（输出高度单位/输入单位）"
+            },
+            "downsampleStep": {
+                "min": 1,
+                "max": 1024,
+                "step": 1,
+                "decimals": 0,
+                "order": 130,
+                "label": "下采样步长（1=不降采样）"
             }
         }
     },

@@ -232,8 +232,13 @@ LLMErrorInfo OpenAILLMClient::classifyError(int httpStatus, QNetworkReply::Netwo
             info.message = QStringLiteral("The model service did not respond in time.");
         } else {
             info.category = LLMErrorCategory::Network;
+            const QString diagnostic = errorString.simplified().left(240);
             info.message =
-                QStringLiteral("Network error while contacting the model service. Check connectivity/proxy.");
+                diagnostic.isEmpty()
+                    ? QStringLiteral("Network error while contacting the model service. Check connectivity/proxy.")
+                    : QStringLiteral("Network error while contacting the model service (%1). Check "
+                                     "connectivity/proxy.")
+                          .arg(diagnostic);
         }
         info.retryable = true;
         return info;

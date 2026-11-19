@@ -59,7 +59,11 @@ QJsonObject preParams(bool filterOn, double hMin, double hMax, double fill, int 
                        {"roiCenterX", cx},
                        {"roiCenterY", cy},
                        {"roiWidth", rw},
-                       {"roiHeight", rh}};
+                       {"roiHeight", rh},
+                       {"scaleX", 1.0},
+                       {"scaleY", 1.0},
+                       {"scaleZ", 1.0},
+                       {"downsampleStep", 1}};
 }
 
 QJsonObject planeParams(double cx, double cy, double l1, double l2, double ang, double px, double py, double zs,
@@ -157,6 +161,72 @@ private slots:
         QVERIFY(std::abs(out.data("max_height").toDouble() - 50.0) < 1e-3);
     }
 
+    void testPre3DUpdatesAttachedPointCloudForStagePreview() {
+        PreProcessing3DPlugin plugin;
+        plugin.setParams(preParams(true, 5.0, 8.0, -1.0, 0, 0, 0, 0));
+        QVERIFY(plugin.initialize());
+
+        cv::Mat height(3, 4, CV_32F);
+        PointCloudData sourceCloud;
+        for (int y = 0; y < height.rows; ++y) {
+            for (int x = 0; x < height.cols; ++x) {
+                const float z = static_cast<float>(y * height.cols + x + 1);
+                height.at<float>(y, x) = z;
+                sourceCloud.points.emplace_back(x, y, 100.0);
+            }
+        }
+        ImageData input(height);
+        MeasurementData::setPointCloud(input, sourceCloud);
+
+        ImageData output;
+        QVERIFY2(plugin.execute(input, output), "height filter should preserve its updated 3D preview data");
+        const auto processedCloud = MeasurementData::pointCloud(output, nullptr);
+        QVERIFY(processedCloud.has_value());
+        QCOMPARE(processedCloud->points.size(), size_t(4));
+        for (const Eigen::Vector3d& point : processedCloud->points) {
+            QVERIFY(point.z() >= 5.0 && point.z() <= 8.0);
+            QCOMPARE(point.z(), point.y() * 4.0 + point.x() + 1.0);
+        }
+    }
+
+    void testPre3DDefaultFillAndScaleDownsample() {
+        PreProcessing3DPlugin plugin;
+        QCOMPARE(plugin.currentParams()["fillValue"].toDouble(), -1.0);
+        QJsonObject params = preParams(true, 0.0, 1.0, -1.0, 0, 0, 0, 0);
+        params["scaleX"] = 2.0;
+        params["scaleY"] = 3.0;
+        params["scaleZ"] = 0.5;
+        params["downsampleStep"] = 2;
+        plugin.setParams(params);
+        QVERIFY(plugin.initialize());
+
+        cv::Mat height(4, 6, CV_32F);
+        for (int y = 0; y < height.rows; ++y) {
+            for (int x = 0; x < height.cols; ++x)
+                height.at<float>(y, x) = 1.0f;
+        }
+        height.at<float>(0, 0) = 0.0f;
+        height.at<float>(2, 4) = 2.0f;
+        ImageData input(height);
+        PointCloudData sourceCloud;
+        sourceCloud.points.emplace_back(0, 0, 0);
+        MeasurementData::setPointCloud(input, sourceCloud);
+
+        ImageData output;
+        QVERIFY2(plugin.execute(input, output), "zero heights must not collide with the default fill value");
+        QCOMPARE(output.toMat().cols, 3);
+        QCOMPARE(output.toMat().rows, 2);
+        QCOMPARE(output.toMat().at<float>(0, 1), 0.5f);
+        QCOMPARE(output.toMat().at<float>(1, 2), -0.5f);
+        QCOMPARE(output.data("valid_pixel_count").toInt(), 5);
+        const auto cloud = MeasurementData::pointCloud(output, nullptr);
+        QVERIFY(cloud.has_value());
+        QCOMPARE(cloud->points.size(), size_t(5));
+        QCOMPARE(cloud->points[1].x(), 4.0);
+        QCOMPARE(cloud->points[3].y(), 6.0);
+        QCOMPARE(cloud->points[4].z(), 0.5);
+    }
+
     void testPre3DFilterDisabledPassthrough() {
         PreProcessing3DPlugin plugin;
         plugin.setParams(preParams(false, 0.0, 65535.0, -1.0, 0, 0, 0, 0));
@@ -198,15 +268,16 @@ private slots:
 
     void testPre3DRoiFill() {
         PreProcessing3DPlugin plugin;
-        plugin.setParams(preParams(false, 0.0, 65535.0, -7.0, 320, 240, 100, 100));
+        plugin.setParams(preParams(false, 0.0, 65535.0, -7.0, 320, 240, 100, 0));
         QVERIFY(plugin.initialize());
         ImageData input(makeTiltedPlane(640, 480, 0.1, 0.0, 0.0));
         ImageData out;
         QVERIFY2(plugin.execute(input, out), "ROI must succeed");
-        QCOMPARE(out.data("valid_pixel_count").toDouble(), 100.0 * 100.0);
+        QCOMPARE(out.data("valid_pixel_count").toDouble(), 100.0 * 480.0);
         QVERIFY(std::abs(out.toMat().at<float>(240, 300) - 30.0f) < 1e-3f); // ROI 内保留
         QCOMPARE(out.toMat().at<float>(240, 100), -7.0f);                   // ROI 外填充
-        QCOMPARE(out.toMat().at<float>(100, 300), -7.0f);
+        QCOMPARE(out.toMat().at<float>(100, 300), 30.0f);
+        QCOMPARE(out.toMat().at<float>(100, 100), -7.0f);
     }
 
     void testPre3DNaNFilled() {
@@ -591,9 +662,9 @@ private slots:
     void testPre3DValidation() {
         PreProcessing3DPlugin plugin;
         QString error;
-        // 阶7 批3复核（P2-5）：ROI 单维度配置必须拒绝（不得静默退回全图）
-        QVERIFY(!plugin.validateParams(preParams(false, 0.0, 100.0, 0.0, 10, 10, 100, 0), error));
-        QVERIFY(!plugin.validateParams(preParams(false, 0.0, 100.0, 0.0, 10, 10, 0, 100), error));
+        // ROI 宽高可逐项编辑；0 表示对应轴使用全幅。
+        QVERIFY(plugin.validateParams(preParams(false, 0.0, 100.0, 0.0, 10, 10, 100, 0), error));
+        QVERIFY(plugin.validateParams(preParams(false, 0.0, 100.0, 0.0, 10, 10, 0, 100), error));
         QVERIFY(plugin.validateParams(preParams(false, 0.0, 100.0, 0.0, 10, 10, 100, 100), error));
         QVERIFY(!plugin.validateParams(preParams(true, 50.0, 10.0, 0.0, 0, 0, 0, 0), error)); // min>max
         QVERIFY(!plugin.validateParams(QJsonObject{{"heightFilterEnabled", QStringLiteral("yes")},
@@ -603,7 +674,11 @@ private slots:
                                                    {"roiCenterX", 0},
                                                    {"roiCenterY", 0},
                                                    {"roiWidth", 0},
-                                                   {"roiHeight", 0}},
+                                                   {"roiHeight", 0},
+                                                   {"scaleX", 1.0},
+                                                   {"scaleY", 1.0},
+                                                   {"scaleZ", 1.0},
+                                                   {"downsampleStep", 1}},
                                        error)); // 布尔类型严格
         QVERIFY(!plugin.validateParams(QJsonObject{{"heightFilterEnabled", false},
                                                    {"heightFilterMin", 0.0},
@@ -612,7 +687,11 @@ private slots:
                                                    {"roiCenterX", 0},
                                                    {"roiCenterY", 0},
                                                    {"roiWidth", 10.5},
-                                                   {"roiHeight", 0}},
+                                                   {"roiHeight", 0},
+                                                   {"scaleX", 1.0},
+                                                   {"scaleY", 1.0},
+                                                   {"scaleZ", 1.0},
+                                                   {"downsampleStep", 1}},
                                        error)); // ROI 宽度必须整数
         QVERIFY(plugin.validateParams(preParams(true, -5.0, 100.0, 0.0, 10, 10, 20, 20), error));
         // 阶7 批3复核三轮（P1-1）：autoNoData 布尔严格

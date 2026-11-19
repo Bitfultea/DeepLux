@@ -49,6 +49,7 @@ public:
 
     // 直接显示已解码的 QImage（执行线程显示帧的深拷贝，经合并器调度后进入；仅转换一次）。
     void displayImage(const QImage& image, const QString& viewportId, bool preserveView = true);
+    void displayDualData(const QImage& image, const DisplayData& cloudData, int delayMs = 0, bool preserveView = false);
 
     // Access the central display widget containing all viewports
     QWidget* centralDisplay() const {

@@ -3403,7 +3403,8 @@ QJsonObject AgentActor::validateFlow(const QJsonObject& params) {
     if (messages.size() == 1 && messages.first().startsWith(QLatin1String("Flow is running")))
         return makeToolError(messages.first(), QStringLiteral("ENGINE_BUSY"), true);
     if (messages.size() == 1 && messages.first().startsWith(QLatin1String("Runtime modules are out of sync")))
-        return makeToolError(messages.first(), QStringLiteral("ENGINE_OUT_OF_SYNC"), true);
+        return makeToolError(messages.first(), QStringLiteral("ENGINE_OUT_OF_SYNC"), true,
+                             {{QStringLiteral("recommendedTool"), QStringLiteral("validate_workflow")}});
 
     QJsonArray issues;
     const QRegularExpression requiredInput(QStringLiteral("^节点 (.+) 的必需输入端口 (.+) 无上游连接$"));

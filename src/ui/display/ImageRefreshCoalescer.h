@@ -17,10 +17,11 @@ namespace DeepLux {
  *
  * 每视口一个“刷新节流器” + 待刷新槽位：
  * - 50ms 是刷新频率上限，不是每次通知都重置的防抖延迟；
- * - 距上次渲染不足 50ms 时只更新槽位，已排定的刷新时点不被重置；
+ * - 距上次渲染不足 50ms 时只更新槽位，节流截止点不被推迟；
+ * - 帧携带显示延时时，等待该帧的延时截止点，同时仍只保留最新帧；
  * - 到点后取最新帧渲染；若渲染期间又有新帧，则安排到 `lastRender + 50ms` 的下一个时点；
  * - 同一窗口内多次通知只渲染最后一帧，不积压历史帧；
- * - `forceFlush()` 只在 job 级结束/停止/暂停等时点由 UI 调用，立即渲染最新帧；
+ * - `forceFlush()` 在 job 级结束/停止/暂停时渲染最新帧，但保留帧配置的显示延时；
  * - `setExpectedIdentity()` 之后，旧 job（jobId 更小）与旧轮（runId 失配）的迟到帧被丢弃。
  *
  * 本类只负责调度与身份过滤，不做线程同步：所有调用都必须发生在 UI 线程（信号槽）。
@@ -70,6 +71,7 @@ private:
         bool hasPending = false;
         QTimer* timer = nullptr;
         qint64 lastRenderMs = -1; // 自 m_clock 起算；-1 表示尚未渲染
+        qint64 pendingAtMs = 0;
     };
 
     Slot& slotFor(const QString& viewportId);

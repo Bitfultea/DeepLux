@@ -323,11 +323,9 @@ private slots:
         PluginManager& plugins = PluginManager::instance();
         QVERIFY(plugins.initialize());
         QVERIFY(plugins.pluginPaths().contains(QDir(pluginRoot).absolutePath()));
-        const QList<PluginInfo> scanned = plugins.moduleInfos();
-        QCOMPARE(scanned.size(), 1);
-        QCOMPARE(scanned.first().id, QStringLiteral("com.deeplux.plugin.plcread"));
-        QCOMPARE(scanned.first().name, QStringLiteral("PLC读取"));
-        QVERIFY(plugins.cameraInfos().isEmpty());
+        const PluginInfo scanned = plugins.pluginInfo(QStringLiteral("PLC读取"));
+        QCOMPARE(scanned.id, QStringLiteral("com.deeplux.plugin.plcread"));
+        QCOMPARE(scanned.name, QStringLiteral("PLC读取"));
         QVERIFY(plugins.loadPlugin(QStringLiteral("PLC读取")));
         QVERIFY(AgentController::instance().initialize());
     }

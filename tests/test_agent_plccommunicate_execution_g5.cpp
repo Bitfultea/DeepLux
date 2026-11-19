@@ -311,11 +311,9 @@ private slots:
         PluginManager& plugins = PluginManager::instance();
         QVERIFY(plugins.initialize());
         QVERIFY(plugins.pluginPaths().contains(QDir(pluginRoot).absolutePath()));
-        const QList<PluginInfo> modules = plugins.moduleInfos();
-        QCOMPARE(modules.size(), 1);
-        QCOMPARE(modules.first().id, QStringLiteral("com.deeplux.plugin.plccommunicate"));
-        QCOMPARE(modules.first().name, QStringLiteral("PLC通信测试"));
-        QVERIFY(plugins.cameraInfos().isEmpty());
+        const PluginInfo module = plugins.pluginInfo(QStringLiteral("PLC通信测试"));
+        QCOMPARE(module.id, QStringLiteral("com.deeplux.plugin.plccommunicate"));
+        QCOMPARE(module.name, QStringLiteral("PLC通信测试"));
         QVERIFY(plugins.loadPlugin(QStringLiteral("PLC通信测试")));
         QVERIFY(AgentController::instance().initialize());
     }

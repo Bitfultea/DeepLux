@@ -145,6 +145,28 @@
 
 namespace DeepLux {
 
+namespace {
+class PluginToolBoxTree final : public QTreeWidget {
+protected:
+    QStringList mimeTypes() const override {
+        QStringList formats = QTreeWidget::mimeTypes();
+        formats.append(QString::fromLatin1(PluginDragPayload::kPluginIdMimeType));
+        return formats;
+    }
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    QMimeData* mimeData(const QList<QTreeWidgetItem*>& items) const override{
+#else
+    QMimeData* mimeData(const QList<QTreeWidgetItem*> items) const override {
+#endif
+        QMimeData* result = QTreeWidget::mimeData(items);
+    if (items.size() == 1) {
+        PluginDragPayload::setPluginId(result, items.first()->data(0, Qt::UserRole + 2).toString());
+    }
+    return result;
+}
+}; // namespace
+} // namespace DeepLux
 #ifdef DEEPLUX_BUILD_TESTS
 AgentChatPanel* MainWindow::agentChatPanel() const {
     return m_agentChatPanel.data();
@@ -824,10 +846,20 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), m_displayManager(
                 // 后台执行（设计 §7.2/§7.3）：删除 moduleFinished → displayImage 的大图刷新路径；
                 // 2D 大图只经合并器刷新，这里只更新节点状态/耗时/检查器，并保留 3D 点云的既有路径。
                 const ImageData out = RunEngine::instance().moduleOutput(moduleName);
-                if (out.isValid() && (m_selectedModuleId.isEmpty() || m_selectedModuleId == moduleName)) {
+                IModule* module = m_flowModules.value(moduleName, nullptr);
+                if (out.isValid() && dynamic_cast<IDisplayPort*>(module) &&
+                    (m_selectedModuleId.isEmpty() || m_selectedModuleId == moduleName)) {
                     const auto cloud = MeasurementData::pointCloud(out, nullptr);
                     if (cloud && !cloud->isEmpty()) {
-                        displayImage(out, QString(), moduleName);
+                        const DisplayFrame frame = RunEngine::instance().latestDisplayFrame();
+                        const bool hasImageFrame = frame.runId == RunEngine::instance().lastRunId() &&
+                                                   frame.moduleId == moduleName && frame.hasImage();
+                        if (!hasImageFrame) {
+                            const auto* displayPort = dynamic_cast<IDisplayPort*>(module);
+                            const int delayMs =
+                                displayPort ? displayPort->getDisplayData().metadata().value("delay").toInt() : 0;
+                            displayImage(out, QString(), moduleName, qMax(0, delayMs));
+                        }
                     }
                 }
                 // 更新检查器结果（选择模块时同时更新检查器）
@@ -1339,6 +1371,15 @@ void MainWindow::setupMenuBar() {
     connect(m_viewBottomPanelAction, &QAction::toggled, this, &MainWindow::onToggleBottomPanel);
     viewMenu->addAction(m_viewBottomPanelAction);
 
+    m_focusModeAction = new QAction(tr("聚焦模式"), this);
+    m_focusModeAction->setObjectName(QStringLiteral("FocusModeAction"));
+    m_focusModeAction->setCheckable(true);
+    connect(m_focusModeAction, &QAction::toggled, this, [this](bool enabled) {
+        if (enabled != m_focusMode)
+            toggleFocusMode();
+    });
+    viewMenu->addAction(m_focusModeAction);
+
     viewMenu->addSeparator();
     viewMenu->addAction(AppIconProvider::icon(AppIconProvider::Icon::QuickMode, 20, QColor("#D97706")), tr("快捷模式"),
                         this, &MainWindow::onQuickMode);
@@ -1551,7 +1592,7 @@ void MainWindow::setupMainLayout() {
     toolCategoryLayout->setSizeConstraint(QLayout::SetMinAndMaxSize);
     toolCategoryWidget->setObjectName("ToolCategoryWidget");
 
-    m_toolBoxTree = new QTreeWidget();
+    m_toolBoxTree = new PluginToolBoxTree();
     m_toolBoxTree->setHeaderHidden(true);
     m_toolBoxTree->setDragEnabled(true);
     m_toolBoxTree->setDragDropMode(QAbstractItemView::DragOnly);
@@ -1910,6 +1951,23 @@ void MainWindow::setupMainLayout() {
     m_flowCanvas->setObjectName("FlowCanvas");
     m_flowCanvas->setStyleSheet(QString());
     m_processTabWidget->addTab(m_flowCanvas, tr("画布"));
+    connect(m_flowCanvas, &FlowCanvas::pluginDropRequested, this, [this](const QString& pluginId, const QPointF& pos) {
+        const QString pluginName = PluginManager::instance().resolveModuleName(pluginId);
+        if (pluginName.isEmpty()) {
+            statusBar()->showMessage(tr("插件已不可用，未加入流程"), 5000);
+            return;
+        }
+        if (!ProjectManager::instance().currentProject() && !ProjectManager::instance().newProject()) {
+            Logger::instance().error(tr("无法创建工程，不能添加插件：%1").arg(pluginName), "Flow");
+            return;
+        }
+        QPoint quantized;
+        if (!FlowCanvas::quantizeNodePosition(pos, &quantized)) {
+            statusBar()->showMessage(tr("画布位置无效，未加入插件"), 5000);
+            return;
+        }
+        beginPendingToolboxDrop(pluginName, m_processTreeController->topLevelItemCount(), QPointF(quantized), true);
+    });
 
     // 布局协调器：catalog 只从运行时模块（按 ModuleInstance.id）构建，
     // 绝不依赖流程树顺序或显示名。
@@ -2564,12 +2622,19 @@ void MainWindow::setupMainLayout() {
 
 void MainWindow::addToolBoxItem(QTreeWidgetItem* parent, const QString& displayName, const QString& pluginName) {
     const QString text = cleanToolDisplayName(displayName);
-    const PluginInfo info = PluginManager::instance().pluginInfo(pluginName);
+    PluginManager& plugins = PluginManager::instance();
+    const QString canonicalName = plugins.resolveModuleName(pluginName);
+    const PluginInfo info = plugins.pluginInfo(canonicalName.isEmpty() ? pluginName : canonicalName);
     QTreeWidgetItem* item = new QTreeWidgetItem(parent, QStringList(text));
     item->setIcon(0, ModuleIconProvider::instance().iconFor(pluginName, info.category));
     item->setToolTip(0, pluginName);
     item->setData(0, Qt::UserRole, "plugin");
     item->setData(0, Qt::UserRole + 1, pluginName);
+    item->setData(0, Qt::UserRole + 2, info.id);
+    if (PluginManager::instance().resolveModuleName(info.id).isEmpty()) {
+        item->setFlags(item->flags() & ~Qt::ItemIsDragEnabled);
+        item->setToolTip(0, tr("该插件不可加入流程"));
+    }
     m_toolDisplayNames.insert(pluginName, text);
 }
 
@@ -2597,10 +2662,19 @@ void MainWindow::updateToolBoxPluginItem(const QString& pluginName) {
 
     for (QTreeWidgetItemIterator it(m_toolBoxTree); *it; ++it) {
         QTreeWidgetItem* item = *it;
+        const QString itemName = item->data(0, Qt::UserRole + 1).toString();
         if (item->data(0, Qt::UserRole).toString() == "plugin" &&
-            item->data(0, Qt::UserRole + 1).toString() == pluginName) {
+            (itemName == pluginName || PluginManager::instance().resolveModuleName(itemName) == pluginName ||
+             item->data(0, Qt::UserRole + 2).toString() == info.id)) {
             item->setText(0, displayName);
             item->setIcon(0, icon);
+            item->setData(0, Qt::UserRole + 2, info.id);
+            Qt::ItemFlags flags = item->flags();
+            if (PluginManager::instance().resolveModuleName(info.id).isEmpty())
+                flags &= ~Qt::ItemIsDragEnabled;
+            else
+                flags |= Qt::ItemIsDragEnabled;
+            item->setFlags(flags);
             m_toolDisplayNames.insert(pluginName, displayName);
             return;
         }
@@ -5525,7 +5599,16 @@ QJsonObject MainWindow::executeAgentDataSourceViewAction(const QString& toolName
             dialog->setAttribute(Qt::WA_DeleteOnClose);
             dialog->setWindowModality(Qt::NonModal);
             m_agentLoginDialog = dialog;
-            connect(dialog, &QDialog::finished, this, [this, dialog](int) {
+        }
+        if (!dialog->property("AgentLoginResumeConnected").toBool()) {
+            dialog->setProperty("AgentLoginResumeConnected", true);
+            connect(dialog, &QDialog::finished, this, [this, dialog](int result) {
+                if (result == QDialog::Accepted) {
+                    statusBar()->showMessage(
+                        tr("登录成功：%1，Agent 正在继续此前请求").arg(UserManager::instance().currentUser().userName),
+                        5000);
+                    AgentController::instance().resumeAfterLogin();
+                }
                 if (m_agentLoginDialog == dialog)
                     m_agentLoginDialog.clear();
             });
@@ -6614,7 +6697,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
             QString instanceName = item->data(0, Qt::UserRole + 1).toString();
             if (!instanceName.isEmpty()) {
                 // 普通双击打开检查器（切换到参数页）
-                selectModule(instanceName, true, true);
+                selectModule(instanceName, true, true, false);
                 if (m_inspectorPanel) {
                     m_inspectorPanel->showParamsTab();
                 }
@@ -6623,10 +6706,10 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
         }
     }
 
-    // 主视图：双击进入/退出聚焦模式，拖放处理文件
+    // 主视图：拖放处理文件
     QWidget* imgWidget = m_displayManager ? m_displayManager->centralDisplay() : nullptr;
     if (imgWidget) {
-        // 高: 双击事件可能由子视口接收，检查 watched 是否是 imgWidget 或其后代
+        // 主视图的拖放事件可能由子视口接收，检查 watched 是否是 imgWidget 或其后代
         bool isMainView = (watched == imgWidget);
         if (!isMainView) {
             QWidget* w = qobject_cast<QWidget*>(watched);
@@ -6637,10 +6720,6 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 }
                 w = w->parentWidget();
             }
-        }
-        if (isMainView && event->type() == QEvent::MouseButtonDblClick) {
-            toggleFocusMode();
-            return true;
         }
         if (isMainView && event->type() == QEvent::DragEnter) {
             QDragEnterEvent* de = static_cast<QDragEnterEvent*>(event);
@@ -6718,7 +6797,10 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 return dropEvent->pos().y() < itemMiddle ? hoverRow : hoverRow + 1;
             };
 
-            const QString pluginName = PluginDragPayload::pluginName(mimeData);
+            const QString payloadPluginId = PluginDragPayload::pluginId(mimeData);
+            const QString pluginAlias = payloadPluginId.isEmpty() ? PluginDragPayload::pluginName(mimeData) : QString();
+            const QString pluginName =
+                PluginManager::instance().resolveModuleName(payloadPluginId.isEmpty() ? pluginAlias : payloadPluginId);
             const QString draggedFlowInstanceId = PluginDragPayload::flowInstanceId(mimeData);
             const bool hasPluginPayload = !pluginName.isEmpty() && draggedFlowInstanceId.isEmpty();
             const bool isToolBoxDrop =
@@ -6774,7 +6856,6 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 
             // 检查是否有来自工具箱的拖放
             if (isToolBoxDrop && mimeData->hasFormat("application/x-qabstractitemmodeldatalist")) {
-                const QString pluginName = PluginDragPayload::pluginName(mimeData);
                 if (!pluginName.isEmpty()) {
                     if (!ProjectManager::instance().currentProject() && !ProjectManager::instance().newProject()) {
                         Logger::instance().error(tr("无法创建工程，不能添加插件：%1").arg(pluginName), "Flow");
@@ -6782,32 +6863,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                         return true;
                     }
 
-                    // 隐藏提示标签
-                    m_processTreeController->hideHintLabel();
-
-                    const int insertRow = insertRowForDrop();
-
-                    // 先添加树节点（即时视觉反馈），再异步创建模块实例
-                    QTreeWidgetItem* newItem = new QTreeWidgetItem();
-                    newItem->setFlags((newItem->flags() | Qt::ItemIsDragEnabled) & ~Qt::ItemIsDropEnabled);
-                    m_processTreeController->insertTopLevelItem(insertRow, newItem);
-
-                    QString instanceName = pluginName;
-                    int counter = 1;
-                    while (m_processTreeController->isUsedName(instanceName)) {
-                        instanceName = QString("%1_%2").arg(pluginName).arg(counter++);
-                    }
-                    m_processTreeController->insertUsedName(instanceName);
-                    newItem->setData(0, Qt::UserRole, "flow_item");
-                    newItem->setData(0, Qt::UserRole + 1, instanceName);
-                    newItem->setData(0, Qt::UserRole + 2, pluginName);
-                    const QString placeholderToken = QUuid::createUuid().toString(QUuid::WithoutBraces);
-                    newItem->setData(0, Qt::UserRole + 3, placeholderToken);
-                    m_processTreeController->insertPendingInsertion(instanceName, newItem, placeholderToken);
-
-                    // 推迟模块创建到事件循环 — 避免在拖放嵌套循环中阻塞
-                    schedulePendingToolboxDrop(pluginName, instanceName, newItem, placeholderToken,
-                                               ProjectManager::instance().currentProject());
+                    beginPendingToolboxDrop(pluginName, insertRowForDrop());
 
                     dropEvent->setDropAction(Qt::CopyAction);
                     dropEvent->accept();
@@ -6824,16 +6880,43 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     return QMainWindow::eventFilter(watched, event);
 }
 
+void MainWindow::beginPendingToolboxDrop(const QString& pluginName, int insertRow, const QPointF& canvasPosition,
+                                         bool positionCanvasNode) {
+    m_processTreeController->hideHintLabel();
+    QTreeWidgetItem* item = new QTreeWidgetItem();
+    item->setFlags((item->flags() | Qt::ItemIsDragEnabled) & ~Qt::ItemIsDropEnabled);
+    m_processTreeController->insertTopLevelItem(insertRow, item);
+
+    QString instanceName = pluginName;
+    int counter = 1;
+    while (m_processTreeController->isUsedName(instanceName)) {
+        instanceName = QString("%1_%2").arg(pluginName).arg(counter++);
+    }
+    m_processTreeController->insertUsedName(instanceName);
+    item->setData(0, Qt::UserRole, "flow_item");
+    item->setData(0, Qt::UserRole + 1, instanceName);
+    item->setData(0, Qt::UserRole + 2, pluginName);
+    const QString token = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    item->setData(0, Qt::UserRole + 3, token);
+    m_processTreeController->insertPendingInsertion(instanceName, item, token);
+    schedulePendingToolboxDrop(pluginName, instanceName, item, token, ProjectManager::instance().currentProject(),
+                               canvasPosition, positionCanvasNode);
+}
+
 void MainWindow::schedulePendingToolboxDrop(const QString& pluginName, const QString& instanceName,
-                                            QTreeWidgetItem* item, const QString& token, Project* targetProject) {
+                                            QTreeWidgetItem* item, const QString& token, Project* targetProject,
+                                            const QPointF& canvasPosition, bool positionCanvasNode) {
     QPointer<Project> guardedProject(targetProject);
-    QTimer::singleShot(0, this, [this, pluginName, instanceName, item, token, guardedProject]() {
-        commitPendingToolboxDrop(pluginName, instanceName, item, token, guardedProject.data());
-    });
+    QTimer::singleShot(
+        0, this, [this, pluginName, instanceName, item, token, guardedProject, canvasPosition, positionCanvasNode]() {
+            commitPendingToolboxDrop(pluginName, instanceName, item, token, guardedProject.data(), canvasPosition,
+                                     positionCanvasNode);
+        });
 }
 
 void MainWindow::commitPendingToolboxDrop(const QString& pluginName, const QString& instanceName, QTreeWidgetItem* item,
-                                          const QString& token, Project* targetProject) {
+                                          const QString& token, Project* targetProject, const QPointF& canvasPosition,
+                                          bool positionCanvasNode) {
     auto discardPlaceholder = [this, &instanceName, item, &token]() {
         if (m_processTreeController)
             m_processTreeController->discardPendingInsertion(instanceName, item, token);
@@ -6853,11 +6936,13 @@ void MainWindow::commitPendingToolboxDrop(const QString& pluginName, const QStri
     IModule* module = PluginManager::instance().createModule(pluginName);
     if (!module) {
         Logger::instance().error(tr("无法创建插件：%1").arg(pluginName), "Flow");
+        statusBar()->showMessage(tr("无法创建插件：%1").arg(pluginName), 5000);
         discardPlaceholder();
         return;
     }
     if (!module->initialize()) {
         Logger::instance().error(tr("插件初始化失败：%1").arg(pluginName), "Flow");
+        statusBar()->showMessage(tr("插件初始化失败：%1").arg(pluginName), 5000);
         PluginManager::instance().destroyModule(module);
         discardPlaceholder();
         return;
@@ -6880,8 +6965,16 @@ void MainWindow::commitPendingToolboxDrop(const QString& pluginName, const QStri
     inst.id = instanceName;
     inst.moduleId = pluginName;
     inst.name = displayName;
+    if (positionCanvasNode) {
+        inst.posX = qRound(canvasPosition.x());
+        inst.posY = qRound(canvasPosition.y());
+    }
     targetProject->addModule(inst);
     targetProject->moveModule(instanceName, m_processTreeController->indexOfTopLevelItem(item));
+    if (positionCanvasNode && m_flowCanvas) {
+        if (FlowNodeItem* node = m_flowCanvas->nodeItem(instanceName))
+            node->setPos(canvasPosition);
+    }
     Logger::instance().info(tr("已添加插件到流程：%1 (%2)").arg(displayName).arg(instanceName), "Flow");
     selectModule(instanceName, true);
 }
@@ -7106,9 +7199,7 @@ bool MainWindow::importImageFile(const QString& filePath, const QString& existin
         }
     }
 
-    if (existingDataSourceId.isEmpty()) {
-        autoConfigureGrabImage(filePath);
-    }
+    const bool configuredGrabImage = existingDataSourceId.isEmpty() && autoConfigureGrabImage(filePath);
 
     QImage image(filePath);
     if (!image.isNull()) {
@@ -7116,7 +7207,7 @@ bool MainWindow::importImageFile(const QString& filePath, const QString& existin
         data.variant() = ImageData(image);
         data.setMetadata(QVariantMap{{"dataSourceId", ds.id}, {"dataSourceName", ds.name}});
         m_dataSourceDisplayData.insert(ds.id, std::move(data));
-        if (rebuildPrimaryDisplay)
+        if (rebuildPrimaryDisplay && !configuredGrabImage)
             rebuildPrimaryDataSourceDisplay();
     }
 
@@ -7172,7 +7263,7 @@ void MainWindow::updateRenderModeComboForData(const PointCloudData& pc) {
     }
 }
 
-void MainWindow::autoConfigureGrabImage(const QString& filePath) {
+bool MainWindow::autoConfigureGrabImage(const QString& filePath) {
     // 查找流程中第一个 GrabImage 模块
     for (auto it = m_flowModules.begin(); it != m_flowModules.end(); ++it) {
         IModule* module = it.value();
@@ -7187,9 +7278,10 @@ void MainWindow::autoConfigureGrabImage(const QString& filePath) {
             }
             m_modulesNeedSync = true;
             Logger::instance().info(tr("已自动配置 GrabImage 模块使用文件：%1").arg(filePath), "System");
-            return;
+            return true;
         }
     }
+    return false;
 }
 
 void MainWindow::clearCentralDisplay() {
@@ -7608,6 +7700,10 @@ void MainWindow::openAdvancedPluginConfig(const QString& instanceId) {
 
 void MainWindow::toggleFocusMode() {
     m_focusMode = !m_focusMode;
+    if (m_focusModeAction && m_focusModeAction->isChecked() != m_focusMode) {
+        const QSignalBlocker blocker(m_focusModeAction);
+        m_focusModeAction->setChecked(m_focusMode);
+    }
 
     // 高: 抑制 visibilityChanged 在 hide/show 时设 userClosed
     m_toolPanelSuppressSignal = true;
@@ -7720,7 +7816,8 @@ void MainWindow::showProcessModuleOutput(QTreeWidgetItem* item, bool userInitiat
     }
 
     // 统一走 selectModule 入口
-    selectModule(instanceId, userInitiated, userInitiated);
+    // 树点击仍负责展开检查器并保持原固定行为，但同一模块已显示时不重建属性控件。
+    selectModule(instanceId, userInitiated, userInitiated, false);
 }
 
 void MainWindow::pushParamCommand(const QString& instanceId, const QString& key, const QVariant& value) {
@@ -7875,7 +7972,7 @@ void MainWindow::resetInspectorClosed() {
 }
 #endif
 
-void MainWindow::selectModule(const QString& instanceId, bool revealInspector, bool force) {
+void MainWindow::selectModule(const QString& instanceId, bool revealInspector, bool force, bool refreshInspector) {
     // 如果检查器已固定且 instanceId 不同，不切换
     if (!force && m_inspectorPanel && m_inspectorPanel->isPinned() && !m_selectedModuleId.isEmpty() &&
         instanceId != m_selectedModuleId) {
@@ -7968,7 +8065,8 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector, b
             // P1-6: 直接用 moduleId() 查询，pluginInfo() 内部支持 id/name/大小写多级匹配
             const QString moduleId = module->moduleId();
             PluginInfo info = PluginManager::instance().pluginInfo(moduleId);
-            m_inspectorPanel->setModule(module, instanceId, info);
+            if (m_inspectorPanel->currentInstanceId() != instanceId || (refreshInspector && force))
+                m_inspectorPanel->setModule(module, instanceId, info);
             const bool dirty = m_dirtyModuleIds.contains(instanceId);
             m_inspectorPanel->setDirty(dirty);
 
@@ -8002,7 +8100,8 @@ void MainWindow::selectModule(const QString& instanceId, bool revealInspector, b
 
     // 同时显示模块输出到主视图（传入模块身份，记录模块→视口归属）
     const ImageData output = RunEngine::instance().moduleOutput(instanceId);
-    if (!m_dirtyModuleIds.contains(instanceId) && output.isValid()) {
+    if (!m_dirtyModuleIds.contains(instanceId) && output.isValid() &&
+        dynamic_cast<IDisplayPort*>(m_flowModules.value(instanceId, nullptr))) {
         displayImage(output, QString(), instanceId);
     }
     // 切换模块后按当前选中支路刷新测量叠加，避免旧支路叠加残留
@@ -8361,7 +8460,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     }
     // 阶段1 §3：退出也是"关闭"路径——未保存修改须经用户三态决策；
     // 保存失败、取消或另存为被取消都不退出（默认保留当前工程）
-    if (ProjectManager::instance().hasUnsavedChanges()) {
+    if (ProjectManager::instance().hasUnsavedChanges() && !m_closeUnsavedChangesResolved) {
         ProjectManager::UnsavedPolicy policy;
         if (!prepareUnsavedSwitch(this, tr("退出"), &policy)) {
             event->ignore();
@@ -8374,6 +8473,8 @@ void MainWindow::closeEvent(QCloseEvent* event) {
             event->ignore(); // PROJECT_UNSAVED(取消)与保存失败都不退出
             return;
         }
+        // 丢弃不会清除工程的 modified 标记；相机异步关闭后 close() 重试时不能重复询问。
+        m_closeUnsavedChangesResolved = true;
     }
     CameraManager& cameraManager = CameraManager::instance();
     if (!m_cameraShutdownReady && cameraManager.isShutdownComplete())
@@ -8401,6 +8502,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
                                  CameraManager::instance().cameraState(deviceId) == CameraState::Error);
                             if (m_cameraShutdownStarted && cleanupFailed) {
                                 m_cameraShutdownStarted = false;
+                                m_closeUnsavedChangesResolved = false;
                                 Logger::instance().error(QString("Camera shutdown is still pending: %1").arg(errorCode),
                                                          "Camera");
                             }
@@ -8458,7 +8560,7 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
     adaptInspectorLayout();
 }
 
-void MainWindow::displayImage(const ImageData& image, const QString& label, const QString& moduleId) {
+void MainWindow::displayImage(const ImageData& image, const QString& label, const QString& moduleId, int delayMs) {
     Q_UNUSED(label);
     // 如果 ImageData 元数据中包含 PointCloudData，走 3D 显示路径（不参与 2D 测量叠加绑定）
     auto cloud = MeasurementData::pointCloud(image, nullptr);
@@ -8469,7 +8571,11 @@ void MainWindow::displayImage(const ImageData& image, const QString& label, cons
         data.variant() = std::move(*cloud);
         data.setTimestamp(QDateTime::currentMSecsSinceEpoch());
         if (m_displayManager) {
-            m_displayManager->displayData(data);
+            const QImage preview = image.toQImage();
+            if (!preview.isNull())
+                m_displayManager->displayDualData(preview, data, delayMs);
+            else
+                m_displayManager->displayData(data, delayMs);
         }
         return;
     }
@@ -8483,7 +8589,7 @@ void MainWindow::displayImage(const ImageData& image, const QString& label, cons
     m_displayingImage2D = true;
     DisplayData data(image);
     if (m_displayManager) {
-        m_displayManager->displayData(data);
+        m_displayManager->displayData(data, delayMs);
     }
 }
 
@@ -9020,6 +9126,26 @@ void MainWindow::renderDisplayFrame(const DisplayFrame& frame) {
     if (frame.hasImage() && m_displayManager) {
         m_displayingModuleId = frame.moduleId;
         m_displayingImage2D = true;
+        bool displayedDualData = false;
+        if (frame.hasSnapshot()) {
+            const QVariant pointCloudValue =
+                frame.moduleDataSnapshot.value(frame.moduleId).value(QString::fromLatin1(MeasurementKeys::PointCloud));
+            if (pointCloudValue.canConvert<PointCloudData>()) {
+                PointCloudData cloud = pointCloudValue.value<PointCloudData>();
+                if (!cloud.isEmpty()) {
+                    DisplayData cloudData;
+                    cloudData.variant() = std::move(cloud);
+                    m_displayManager->displayDualData(frame.image, cloudData, 0, /*preserveView=*/true);
+                    updateRenderModeComboForData(*cloudData.pointCloudData());
+                    displayedDualData = true;
+                }
+            }
+        }
+        if (displayedDualData) {
+            if (frame.hasSnapshot())
+                updateMeasurementResultOnOverlay();
+            return;
+        }
         // 后台/周期刷新保留用户缩放与 ROI（设计 §7.4）。
         ImageData image(frame.image);
         image.setCoordinateProvenance(frame.coordinateProvenance);
@@ -9085,7 +9211,9 @@ void MainWindow::onUserLogin() {
     // 使用已实现的 LoginDialog
     LoginDialog dialog(this);
     dialog.setWindowTitle(tr("用户登录"));
-    dialog.exec();
+    if (dialog.exec() == QDialog::Accepted) {
+        statusBar()->showMessage(tr("登录成功：%1").arg(UserManager::instance().currentUser().userName), 4000);
+    }
     Logger::instance().info(tr("用户登录"), "System");
 }
 

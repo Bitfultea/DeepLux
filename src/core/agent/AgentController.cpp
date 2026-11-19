@@ -2178,6 +2178,7 @@ void AgentController::logAction(const AgentActionLogEntry& entry) {
 }
 
 void AgentController::clearConversation() {
+    m_resumeAfterLoginPending = false;
     if (!m_activeLLMRequestId.isEmpty() && m_llmClient)
         m_llmClient->cancelRequest();
     m_activeLLMRequestId.clear();
@@ -2246,11 +2247,31 @@ bool AgentController::undoLastAgentAction() {
 // ========== State Machine ==========
 
 void AgentController::transitionTo(AgentState newState) {
-    QMutexLocker locker(&m_stateMutex);
-    if (m_state == newState)
+    {
+        QMutexLocker locker(&m_stateMutex);
+        if (m_state == newState)
+            return;
+        qDebug() << "[AgentState]" << stateName(m_state) << "->" << stateName(newState);
+        m_state = newState;
+    }
+    if (newState == AgentState::Idle && m_resumeAfterLoginPending)
+        QTimer::singleShot(0, this, &AgentController::startLoginContinuationIfIdle);
+}
+
+void AgentController::resumeAfterLogin() {
+    if (!m_initialized || !m_llmClient || m_resumeAfterLoginPending)
         return;
-    qDebug() << "[AgentState]" << stateName(m_state) << "->" << stateName(newState);
-    m_state = newState;
+    m_resumeAfterLoginPending = true;
+    if (state() == AgentState::Idle)
+        QTimer::singleShot(0, this, &AgentController::startLoginContinuationIfIdle);
+}
+
+void AgentController::startLoginContinuationIfIdle() {
+    if (!m_resumeAfterLoginPending || state() != AgentState::Idle)
+        return;
+    m_resumeAfterLoginPending = false;
+    sendUserMessage(QStringLiteral("用户已完成登录，请继续完成此前未完成的请求。"
+                                   "若仍缺少操作权限，请说明具体权限；不要重复打开登录窗口。"));
 }
 
 bool AgentController::tryTransitionTo(AgentState expected, AgentState newState) {
@@ -3375,6 +3396,13 @@ void AgentController::extendAgentLoop(const QJsonArray& toolCalls, const QString
     // 已经执行过任一工具的批次不自动重试。只有全批预校验零执行、明确可修正的参数错误
     // 才回传给模型；相同工具/错误码/有效参数重复两次或达到纠错上限时终止。
     if (batchResult["status"].toString() == "partial_failed") {
+        if (batchResult.value(QStringLiteral("failedTool")).toString() == QLatin1String("validate_flow") &&
+            batchResult.value(QStringLiteral("errorCode")).toString() == QLatin1String("ENGINE_OUT_OF_SYNC")) {
+            m_parameterFailureSignatures.clear();
+            cancelPendingQueries(QStringLiteral("batch_failed"));
+            continueAgentLoop();
+            return;
+        }
         if (batchResult.value(QStringLiteral("errorCode")).toString() == QLatin1String("PROJECT_SWITCHED")) {
             m_parameterFailureSignatures.clear();
             continueAgentLoop();
@@ -5274,8 +5302,10 @@ QString AgentController::defaultSystemPrompt() {
         "4. If the user only asked a question or gave a simple instruction that is already fulfilled, do NOT call "
         "additional tools just to verify — respond directly.\n"
         "5. When tools are available, use read_documentation when unsure about module parameters.\n"
-        "6. Before running a flow you just modified, call validate_workflow. If ok=false, fix the reported issues "
-        "instead of running.\n"
+        "6. After editing a flow, call validate_workflow before running. Do not call validate_flow on an edited "
+        "project: it only checks an already-synchronized runtime and can return ENGINE_OUT_OF_SYNC. If "
+        "validate_flow returns that error, continue with validate_workflow without repeating prior edits. If "
+        "validate_workflow returns ok=false, fix the reported issues instead of running.\n"
         "7. run_flow wait defaults to true for a single run; use wait=false to return immediately with runId, then "
         "wait_for_run for completion. Cycle mode always returns immediately.\n"
         "   After a run, use get_node_runtime_outputs or get_execution_logs to inspect per-node results and "

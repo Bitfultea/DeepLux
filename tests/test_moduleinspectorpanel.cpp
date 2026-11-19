@@ -1,13 +1,16 @@
 #include <QAction>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTableWidget>
 #include <QToolButton>
 #include <QtTest/QtTest>
 #include <core/base/ModuleBase.h>
+#include <core/geometry/MeasurementData.h>
 #include <core/manager/PluginManager.h>
 #include <core/model/ImageData.h>
+#include <ui/ThemeManager.h>
 #include <ui/widgets/ModuleInspectorPanel.h>
 
 using namespace DeepLux;
@@ -52,6 +55,7 @@ private slots:
     void testEmptyStateWhenNoSelection();
     void testSetModuleShowsNameAndIcon();
     void testSetOutputShowsResultsData();
+    void testGrabImageResultsShowImageAndPointCloudInfo();
     void testFailureWithoutImageShowsReadableError();
     void testSetDirtyShowsRerunHint();
     void testSetModuleClearsDirtyState();
@@ -60,6 +64,7 @@ private slots:
     void testThemeSwitchDoesNotCrash();
     void testCloseSignalEmitted();
     void testPrimaryAndOverflowActions();
+    void testRerunButtonFitsScaledText();
 };
 
 void TestModuleInspectorPanel::init() {}
@@ -145,6 +150,37 @@ void TestModuleInspectorPanel::testSetOutputShowsResultsData() {
     QLabel* statusLabel = panel.findChild<QLabel*>("InspectorStatus");
     QVERIFY(statusLabel != nullptr);
     QVERIFY(statusLabel->text().contains(QStringLiteral("成功")));
+}
+
+void TestModuleInspectorPanel::testGrabImageResultsShowImageAndPointCloudInfo() {
+    ModuleInspectorPanel panel;
+    InspectorTestModule module(QStringLiteral("com.deeplux.plugin.grabimage"));
+    PluginInfo info;
+    info.id = module.moduleId();
+    panel.setModule(&module, QStringLiteral("grab_1"), info);
+
+    ImageData output(QImage(640, 480, QImage::Format_RGB888));
+    panel.setOutput(output, true, 15);
+
+    auto* table = panel.findChild<QTableWidget*>(QStringLiteral("InspectorResultsTable"));
+    QVERIFY(table != nullptr);
+    const auto valueFor = [table](const QString& label) {
+        for (int row = 0; row < table->rowCount(); ++row) {
+            if (table->item(row, 0)->text() == label)
+                return table->item(row, 1)->text();
+        }
+        return QString();
+    };
+    QCOMPARE(valueFor(QStringLiteral("图像尺寸")), QStringLiteral("640 × 480"));
+    QCOMPARE(valueFor(QStringLiteral("通道数")), QStringLiteral("3"));
+
+    PointCloudData cloud;
+    cloud.points = {Eigen::Vector3d(-1.0, 2.0, 0.0), Eigen::Vector3d(3.0, -4.0, 5.0), Eigen::Vector3d(0.0, 1.0, -2.0)};
+    MeasurementData::setPointCloud(output, cloud);
+    panel.setOutput(output, true, 15);
+    QCOMPARE(valueFor(QStringLiteral("3D 点数")), QStringLiteral("3"));
+    QCOMPARE(valueFor(QStringLiteral("3D AABB 最小值")), QStringLiteral("(-1, -4, -2)"));
+    QCOMPARE(valueFor(QStringLiteral("3D AABB 最大值")), QStringLiteral("(3, 2, 5)"));
 }
 
 void TestModuleInspectorPanel::testFailureWithoutImageShowsReadableError() {
@@ -298,6 +334,42 @@ void TestModuleInspectorPanel::testPrimaryAndOverflowActions() {
     resetAction->trigger();
     QCOMPARE(advancedSpy.count(), 1);
     QCOMPARE(resetSpy.count(), 1);
+}
+
+void TestModuleInspectorPanel::testRerunButtonFitsScaledText() {
+    ModuleInspectorPanel panel;
+    panel.setStyleSheet(ThemeManager::styleSheet(false));
+    panel.setLayoutMode(ModuleInspectorPanel::LayoutMode::Floating);
+    panel.resize(285, 500);
+    InspectorTestModule module;
+    panel.setModule(&module, QStringLiteral("scaled-text"), PluginInfo{});
+    panel.show();
+
+    auto* rerunButton = panel.findChild<QPushButton*>("InspectorRerunBtn");
+    QVERIFY(rerunButton != nullptr);
+    QFont scaledFont = rerunButton->font();
+    scaledFont.setPixelSize(24);
+    rerunButton->setFont(scaledFont);
+    QCoreApplication::processEvents();
+
+    QVERIFY(rerunButton->width() >= rerunButton->fontMetrics().horizontalAdvance(rerunButton->text()) + 24);
+    const QWidget* bottomBar = panel.findChild<QWidget*>("InspectorBottomBar");
+    QVERIFY(bottomBar != nullptr);
+    for (QWidget* child : bottomBar->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
+        if (child->isVisible())
+            QVERIFY(child->geometry().right() <= bottomBar->contentsRect().right());
+    }
+
+    panel.resize(500, 500);
+    QCoreApplication::processEvents();
+    auto* noteEdit = panel.findChild<QLineEdit*>("InspectorNoteEdit");
+    QVERIFY(noteEdit != nullptr);
+    QVERIFY(rerunButton->geometry().top() < noteEdit->geometry().bottom());
+    QVERIFY(noteEdit->geometry().top() < rerunButton->geometry().bottom());
+
+    panel.resize(285, 500);
+    QCoreApplication::processEvents();
+    QVERIFY(noteEdit->geometry().top() >= rerunButton->geometry().bottom());
 }
 
 QTEST_MAIN(TestModuleInspectorPanel)

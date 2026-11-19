@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <limits>
+#include <utility>
 
 namespace DeepLux {
 
@@ -12,23 +15,21 @@ PointCloudLODBuffer::PointCloudLODBuffer() {
     }
 }
 
-void PointCloudLODBuffer::setData(const PointCloudGPUBuffer& original) {
+void PointCloudLODBuffer::setData(const PointCloudGPUBuffer& original, const LODController& controller) {
     m_originalBuffer = original;
+    for (auto& level : m_lodLevels)
+        level.clear();
     m_currentLevel = 0;
     m_dirty = true;
 
     if (original.isValid()) {
-        generateLODLevels();
+        generateLODLevels(controller);
     }
 }
 
 const PointCloudGPUBuffer* PointCloudLODBuffer::getLevel(int level) const {
     if (level < 0 || level >= LODController::MAX_LOD_LEVELS) {
         return nullptr;
-    }
-
-    if (level == 0) {
-        return &m_originalBuffer;
     }
 
     return &m_lodLevels[level];
@@ -42,9 +43,7 @@ void PointCloudLODBuffer::setCurrentLevel(int level) {
     if (m_currentLevel != level) {
         m_currentLevel = level;
         // 标记当前级别缓冲区需要上传
-        if (level > 0) {
-            m_lodLevels[level].dirty = true;
-        }
+        m_lodLevels[level].dirty = true;
     }
 }
 
@@ -66,27 +65,64 @@ size_t PointCloudLODBuffer::currentPointCount() const {
     return level ? level->pointCount() : 0;
 }
 
-void PointCloudLODBuffer::generateLODLevels() {
+void PointCloudLODBuffer::generateLODLevels(const LODController& controller) {
     size_t originalCount = m_originalBuffer.pointCount();
     if (originalCount == 0) {
         return;
     }
 
-    // 生成各级降采样数据
-    for (int level = 1; level < LODController::MAX_LOD_LEVELS; ++level) {
-        // 采样率: 50%, 25%, 12.5%, 6.25%
-        float rate = std::pow(0.5f, level);
-        size_t targetCount = static_cast<size_t>(originalCount * rate);
+    std::array<float, 3> minimum{std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
+                                 std::numeric_limits<float>::infinity()};
+    std::array<float, 3> maximum{-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(),
+                                 -std::numeric_limits<float>::infinity()};
+    for (size_t i = 0; i < m_originalBuffer.positions.size(); i += 3) {
+        for (size_t axis = 0; axis < 3; ++axis) {
+            const float value = m_originalBuffer.positions[i + axis];
+            if (std::isfinite(value)) {
+                minimum[axis] = std::min(minimum[axis], value);
+                maximum[axis] = std::max(maximum[axis], value);
+            }
+        }
+    }
+    for (size_t axis = 0; axis < 3; ++axis) {
+        if (!std::isfinite(minimum[axis]))
+            minimum[axis] = maximum[axis] = 0.0f;
+    }
 
-        // 最小保留 100 点
-        targetCount = std::max(targetCount, size_t(100));
+    const auto spreadBits = [](uint32_t value) {
+        uint64_t bits = value & 0x3ffu;
+        bits = (bits | (bits << 16)) & 0x030000FFu;
+        bits = (bits | (bits << 8)) & 0x0300F00Fu;
+        bits = (bits | (bits << 4)) & 0x030C30C3u;
+        bits = (bits | (bits << 2)) & 0x09249249u;
+        return bits;
+    };
+    std::vector<std::pair<uint64_t, size_t>> orderedPoints;
+    orderedPoints.reserve(originalCount);
+    for (size_t i = 0; i < originalCount; ++i) {
+        uint64_t key = 0;
+        for (size_t axis = 0; axis < 3; ++axis) {
+            const float extent = maximum[axis] - minimum[axis];
+            const float value = m_originalBuffer.positions[i * 3 + axis];
+            const float normalized = std::isfinite(value) && extent > 0.0f ? (value - minimum[axis]) / extent : 0.0f;
+            const uint32_t quantized = static_cast<uint32_t>(std::clamp(normalized, 0.0f, 1.0f) * 1023.0f);
+            key |= spreadBits(quantized) << axis;
+        }
+        orderedPoints.emplace_back(key, i);
+    }
+    std::sort(orderedPoints.begin(), orderedPoints.end());
 
-        m_lodLevels[level] = downsample(m_originalBuffer, targetCount);
+    // 生成各级空间均匀的降采样数据，最细层也遵守点数预算。
+    for (int level = 0; level < LODController::MAX_LOD_LEVELS; ++level) {
+        const size_t targetCount = controller.getTargetPointCount(originalCount, level);
+        m_lodLevels[level] = downsample(m_originalBuffer, targetCount, orderedPoints);
         m_lodLevels[level].dirty = true;
     }
 }
 
-PointCloudGPUBuffer PointCloudLODBuffer::downsample(const PointCloudGPUBuffer& input, size_t targetCount) const {
+PointCloudGPUBuffer
+PointCloudLODBuffer::downsample(const PointCloudGPUBuffer& input, size_t targetCount,
+                                const std::vector<std::pair<uint64_t, size_t>>& spatialOrder) const {
     PointCloudGPUBuffer output;
     size_t originalCount = input.pointCount();
 
@@ -94,53 +130,37 @@ PointCloudGPUBuffer PointCloudLODBuffer::downsample(const PointCloudGPUBuffer& i
         return input; // 不需要降采样
     }
 
-    // 计算采样步长 (等间距采样保证均匀性)
-    float step = static_cast<float>(originalCount) / static_cast<float>(targetCount);
-
-    // positions 是交错格式 (x,y,z,x,y,z,...)
     output.positions.reserve(targetCount * 3);
+    if (input.hasColors())
+        output.colors.reserve(targetCount * 3);
+    if (input.hasNormals())
+        output.normals.reserve(targetCount * 3);
+    if (input.hasIntensities())
+        output.intensities.reserve(targetCount);
+    if (input.hasLabels())
+        output.labels.reserve(targetCount);
     for (size_t i = 0; i < targetCount; ++i) {
-        // 使用四舍五入获得更均匀的分布
-        size_t idx = static_cast<size_t>(std::round(i * step));
-        if (idx >= originalCount)
-            idx = originalCount - 1; // 边界保护
+        const size_t sourcePosition =
+            static_cast<size_t>((static_cast<long double>(i) + 0.5L) * originalCount / targetCount);
+        const size_t idx = spatialOrder[std::min(originalCount - 1, sourcePosition)].second;
         size_t base = idx * 3;
         output.positions.push_back(input.positions[base]);
         output.positions.push_back(input.positions[base + 1]);
         output.positions.push_back(input.positions[base + 2]);
-    }
-
-    // 颜色同步采样
-    if (input.hasColors()) {
-        output.colors.reserve(targetCount * 3);
-        for (size_t i = 0; i < targetCount; ++i) {
-            size_t idx = static_cast<size_t>(i * step);
-            size_t base = idx * 3;
+        if (input.hasColors()) {
             output.colors.push_back(input.colors[base]);
             output.colors.push_back(input.colors[base + 1]);
             output.colors.push_back(input.colors[base + 2]);
         }
-    }
-
-    // 法向量同步采样
-    if (input.hasNormals()) {
-        output.normals.reserve(targetCount * 3);
-        for (size_t i = 0; i < targetCount; ++i) {
-            size_t idx = static_cast<size_t>(i * step);
-            size_t base = idx * 3;
+        if (input.hasNormals()) {
             output.normals.push_back(input.normals[base]);
             output.normals.push_back(input.normals[base + 1]);
             output.normals.push_back(input.normals[base + 2]);
         }
-    }
-
-    // 标签同步采样
-    if (input.hasLabels()) {
-        output.labels.reserve(targetCount);
-        for (size_t i = 0; i < targetCount; ++i) {
-            size_t idx = static_cast<size_t>(i * step);
+        if (input.hasIntensities())
+            output.intensities.push_back(input.intensities[idx]);
+        if (input.hasLabels())
             output.labels.push_back(input.labels[idx]);
-        }
     }
 
     output.dirty = true;
